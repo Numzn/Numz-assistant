@@ -1,0 +1,169 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #020617;
+}
+
+#canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  vertical-align: middle;
+}
+
+#voiceUi {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  display: grid;
+  gap: 8px;
+  width: min(360px, calc(100vw - 32px));
+  z-index: 10;
+  user-select: none;
+}
+
+#voiceControls,
+#micDeviceControls {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+}
+
+#micDeviceControls {
+  grid-template-columns: 1fr auto auto;
+}
+
+#micButton,
+#wakeButton,
+#micSettingsButton,
+#micRefreshButton,
+#micTestButton,
+#micDeviceSelect {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(2, 6, 23, 0.42);
+  color: rgba(255, 255, 255, 0.92);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font: inherit;
+  letter-spacing: 0;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#micButton,
+#wakeButton,
+#micSettingsButton,
+#micRefreshButton,
+#micTestButton {
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+#micButton:active,
+#wakeButton:active,
+#micSettingsButton:active,
+#micRefreshButton:active,
+#micTestButton:active {
+  transform: scale(0.98);
+  border-color: rgba(47, 240, 255, 0.45);
+  background: rgba(2, 6, 23, 0.55);
+}
+
+#micButton:disabled,
+#wakeButton:disabled,
+#micSettingsButton:disabled,
+#micRefreshButton:disabled,
+#micTestButton:disabled,
+#micDeviceSelect:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+#wakeButton[aria-pressed="true"] {
+  border-color: rgba(47, 240, 255, 0.55);
+  background: rgba(47, 240, 255, 0.18);
+}
+
+#micSettingsButton,
+#wakeButton,
+#micRefreshButton,
+#micTestButton {
+  min-width: 58px;
+  padding-inline: 12px;
+}
+
+#micSettingsPanel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#micSettingsPanel[hidden] {
+  display: none;
+}
+
+#micSettingsPanel label,
+#micDeviceHint {
+  font-size: 12px;
+  color: rgba(240, 250, 255, 0.7);
+}
+
+#micDeviceSelect {
+  width: 100%;
+  min-width: 0;
+}
+
+#micDeviceSelect option {
+  background: #020617;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+#voiceStatus {
+  font-size: 12px;
+  color: rgba(240, 250, 255, 0.7);
+  min-height: 16px;
+}
+
+#voiceTranscript {
+  font-size: 13px;
+  line-height: 1.35;
+  color: rgba(240, 250, 255, 0.85);
+  min-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#voiceDebugPanel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 11;
+  margin: 0;
+  padding: 10px 12px;
+  max-width: 280px;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: rgba(200, 255, 240, 0.9);
+  background: rgba(2, 6, 23, 0.82);
+  border: 1px solid rgba(47, 240, 255, 0.25);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  pointer-events: none;
+  user-select: text;
+}

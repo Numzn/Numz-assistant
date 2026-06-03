@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Core</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="voiceUi" aria-label="Voice controls">
+      <div id="voiceControls">
+        <button id="micButton" type="button" aria-label="Hold to talk">
+          Hold to talk
+        </button>
+        <button id="wakeButton" type="button" aria-label="Toggle wake word mode" title="Toggle wake word mode">
+          Wake
+        </button>
+        <button id="micSettingsButton" type="button" aria-label="Microphone settings" title="Microphone settings">
+          Mic
+        </button>
+      </div>
+      <div id="micSettingsPanel" hidden>
+        <label for="micDeviceSelect">Microphone test device</label>
+        <div id="micDeviceControls">
+          <select id="micDeviceSelect"></select>
+          <button id="micRefreshButton" type="button">Refresh</button>
+          <button id="micTestButton" type="button">Test</button>
+        </div>
+        <div id="micDeviceHint"></div>
+      </div>
+      <div id="voiceStatus" aria-live="polite"></div>
+      <div id="voiceTranscript" aria-live="polite"></div>
+    </div>
+    <pre id="voiceDebugPanel" hidden aria-label="Voice debug"></pre>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
