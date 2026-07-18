@@ -1,0 +1,39 @@
+# Host :443 — TLS router (numz-assistant-https container)
+# HTTPS terminates here; proxy directly to app ports (not gateway :80 — that redirects to HTTPS).
+# Deploy: bash scripts/deploy-https-router.sh && bash scripts/deploy-numzlab-tls.sh
+
+{
+	auto_https off
+}
+
+# assistant.numzlab — MIGRATED to assistant.lab.numz.site (2026-07-17).
+# numzlab.tail2839ee.ts.net kept — bare Tailscale MagicDNS hostname, not an
+# app-specific route to migrate away. Updated to point at the new production
+# build (port 3103, Dockerfile.production) instead of the old Vite dev
+# server (:5173).
+numzlab.tail2839ee.ts.net {
+	tls /certs/cert.pem /certs/key.pem
+	reverse_proxy 127.0.0.1:3103
+}
+
+# dashboard.numzlab — MIGRATED to lab.numz.site (2026-07-17).
+# See infrastructure/platform-gateway/Caddyfile.
+
+# brainwave.numzlab, api.brainwave.numzlab — MIGRATED to
+# brainwave.lab.numz.site (2026-07-17). See infrastructure/platform-gateway/Caddyfile.
+
+# fleet.numzlab, api.fleet.numzlab, track.fleet.numzlab — MIGRATED to
+# fleet.lab.numz.site (2026-07-17). See infrastructure/platform-gateway/Caddyfile.
+
+# pos.numzlab, api.pos.numzlab — MIGRATED to pos.lab.numz.site (2026-07-17).
+# See infrastructure/platform-gateway/Caddyfile.
+
+# drive.numzlab, fuel.numzlab — REMOVED (2026-07-17). Already dead before
+# removal: both pointed at 127.0.0.1:80 (numzlab-gateway's own port, not
+# either app), returning empty 200s — confirmed via curl before deleting.
+# NumzDrive was never registered on the new standard (personal-data-exposure
+# decision still pending); Fuel Station is fuel.lab.numz.site.
+
+# NUMZ Connect decommissioned 2026-07-17 — connect.numzlab TLS block removed,
+# service torn down entirely (container, DB, DNS). This container stays running
+# for the bare Tailscale hostname (numzlab.tail2839ee.ts.net) only.
