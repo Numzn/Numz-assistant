@@ -56,6 +56,7 @@ stored. Generated intelligence is derived and must keep evidence references.
 | Meeting API | `server/routes/meetings.js`, `server/http/errorHandler.js` | Implemented |
 | Persistence readiness (health, startup log) | `server/meetings/meetingHealth.js`, `audio/speech/live/health.py` | Implemented |
 | Outbox operator tool | `audio/outbox_cli.py` (`npm run outbox:status`, `npm run outbox:replay`) | Implemented |
+| Meeting operator CLI | `scripts/meeting-admin.js`, `scripts/lib/meetingAdmin.js` (`npm run meeting`) | Implemented |
 | Grounded notes | `server/services/speechNotesService.js` | Implemented |
 | Rolling intelligence | `server/services/rollingIntelligenceService.js` | Seam only; not connected to the live transport |
 

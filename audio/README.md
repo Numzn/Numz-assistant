@@ -68,6 +68,16 @@ MEETING_TICKET=<ticket> npm run outbox:replay -- <meeting-id>
 
 See [`docs/meeting-lifecycle.md`](../docs/meeting-lifecycle.md) and [`docs/speech-architecture.md`](../docs/speech-architecture.md).
 
+## Tests
+
+```bash
+npm test                                                        # Node: domain, persistence, auth, API, end to end
+cd audio && .venv/bin/python -m unittest discover -s tests -t .  # Python: speech core, live transport, outbox, health
+```
+
+The Python integration tests start the real Node server and a real SQLite file, so they need Node on `PATH`. On a
+memory-starved host the server can take a minute to start; the tests wait up to 3 minutes.
+
 ## Dev stack
 
 ```bash
