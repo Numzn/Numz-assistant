@@ -56,12 +56,112 @@ export function createMeetingSessionService({
     return session
   }
 
-  function move(meetingId, status) {
+  function move(meetingId, status, { reason } = {}) {
     const meeting = getRequired(meetingId)
-    const next = transitionMeeting(meeting, status, nowIso())
+    let next = transitionMeeting(meeting, status, nowIso())
+    if (next === meeting) return meeting // already there: nothing to save and nothing to announce
+    if (reason) next = { ...next, metadata: { ...next.metadata, closeReason: reason } }
     meetingRepository.save(next)
     emit(`Meeting${status[0]}${status.slice(1).toLowerCase()}`, { meetingId, status })
     return next
+  }
+
+  const MAX_COMMITTED_SEGMENTS = 10_000_000
+  const MAX_CLOSE_REASON_LENGTH = 200
+
+  function committedCountFrom(value) {
+    if (value === undefined || value === null) return null
+    if (!Number.isInteger(value) || value < 0 || value > MAX_COMMITTED_SEGMENTS) {
+      throw new MeetingDomainError('committedSegments must be a non-negative integer', {
+        statusCode: 400,
+        code: 'invalid-committed-segments'
+      })
+    }
+    return value
+  }
+
+  function closeReasonFrom(reason) {
+    if (reason === undefined || reason === null) return undefined
+    if (typeof reason !== 'string' || reason.trim() === '' || reason.length > MAX_CLOSE_REASON_LENGTH) {
+      throw new MeetingDomainError(`reason must be a non-empty string of at most ${MAX_CLOSE_REASON_LENGTH} characters`, {
+        statusCode: 400,
+        code: 'invalid-close-reason'
+      })
+    }
+    return reason.trim()
+  }
+
+  /**
+   * Compares what each speech session says it committed with what is stored.
+   *   VERIFIED     reported count equals stored count
+   *   INCOMPLETE   reported more than stored: segments are missing (known loss)
+   *   INCONSISTENT stored more than reported: the report cannot be trusted
+   *   OPEN         the session is still active and has produced transcript
+   *   UNVERIFIED   no report, but segments are stored (for example the transport crashed)
+   *   EMPTY        no report and nothing stored: nothing to lose
+   * `complete` means no known loss and nothing still streaming. `verified` additionally means
+   * no session is left unverified.
+   */
+  function computeIntegrity(meetingId) {
+    const stored = transcriptRepository.countBySession(meetingId)
+    const sessions = speechSessionRepository.getByMeeting(meetingId).map((session) => {
+      const storedSegments = stored[session.speechSessionId] ?? 0
+      const committed = session.committedSegments
+      let state
+      if (committed !== null) {
+        state = storedSegments === committed ? 'VERIFIED' : storedSegments < committed ? 'INCOMPLETE' : 'INCONSISTENT'
+      } else if (session.status === 'ACTIVE' && storedSegments > 0) {
+        state = 'OPEN'
+      } else {
+        state = storedSegments > 0 ? 'UNVERIFIED' : 'EMPTY'
+      }
+      return {
+        speechSessionId: session.speechSessionId,
+        status: session.status,
+        endReason: session.endReason,
+        committedSegments: committed,
+        storedSegments,
+        missingSegments: committed === null ? null : Math.max(0, committed - storedSegments),
+        state
+      }
+    })
+    const blocking = sessions.filter((entry) => ['INCOMPLETE', 'INCONSISTENT', 'OPEN'].includes(entry.state))
+    const unverified = sessions.filter((entry) => entry.state === 'UNVERIFIED').length
+    return {
+      complete: blocking.length === 0,
+      verified: blocking.length === 0 && unverified === 0,
+      unverifiedSessions: unverified,
+      missingSegments: sessions.reduce((sum, entry) => sum + (entry.missingSegments ?? 0), 0),
+      sessions
+    }
+  }
+
+  /** Refuses to close a meeting whose transcript is known to be incomplete. Nothing changes when it throws. */
+  function assertTranscriptComplete(meetingId) {
+    const integrity = computeIntegrity(meetingId)
+    if (integrity.sessions.some((entry) => entry.state === 'OPEN')) {
+      throw new MeetingDomainError('A speech session is still streaming transcript. End it before ending the meeting.', {
+        statusCode: 409,
+        code: 'speech-session-active',
+        details: integrity
+      })
+    }
+    if (!integrity.complete) {
+      throw new MeetingDomainError(
+        `The transcript is incomplete: ${integrity.missingSegments} committed segment(s) are not stored. ` +
+          'Deliver them (replay the transport outbox) or mark the meeting failed.',
+        { statusCode: 409, code: 'transcript-incomplete', details: integrity }
+      )
+    }
+    return integrity
+  }
+
+  function completeMeeting(meetingId) {
+    assertTransition(getRequired(meetingId).status, S.COMPLETED)
+    assertTranscriptComplete(meetingId)
+    endActiveSessions(meetingId, 'meeting-completed')
+    const completed = move(meetingId, S.COMPLETED)
+    return { ...completed, integrity: computeIntegrity(meetingId) }
   }
 
   function timelineOffsetFor(meeting, nowMs) {
@@ -187,46 +287,79 @@ export function createMeetingSessionService({
       return openSpeechSession(meeting)
     },
 
-    endSpeechSession(meetingId, speechSessionId, reason) {
+    /**
+     * Ends a session. `committedSegments` is how many final segments the transport produced, which lets
+     * the API tell a complete transcript from one with segments still missing. A session that already
+     * ended (for example superseded before its transport could report) still accepts its first report.
+     */
+    endSpeechSession(meetingId, speechSessionId, reason, { committedSegments } = {}) {
       if (!SPEECH_SESSION_END_REASONS.includes(reason)) {
         throw new MeetingDomainError(`reason must be one of: ${SPEECH_SESSION_END_REASONS.join(', ')}`, {
           statusCode: 400,
           code: 'invalid-end-reason'
         })
       }
+      const committed = committedCountFrom(committedSegments)
       getRequired(meetingId)
       const session = getSessionForMeeting(meetingId, speechSessionId)
-      if (session.status !== 'ACTIVE') return session
-      speechSessionRepository.end({ speechSessionId, reason, now: nowIso() })
+      if (session.status !== 'ACTIVE') {
+        if (committed !== null) {
+          speechSessionRepository.recordCommitted({ speechSessionId, committedSegments: committed, now: nowIso() })
+        }
+        return speechSessionRepository.getById(speechSessionId)
+      }
+      speechSessionRepository.end({ speechSessionId, reason, now: nowIso(), committedSegments: committed })
       emit('SpeechSessionEnded', { meetingId, speechSessionId, reason })
       return speechSessionRepository.getById(speechSessionId)
     },
 
     listSpeechSessions(meetingId) {
       getRequired(meetingId)
-      return speechSessionRepository.getByMeeting(meetingId)
+      const stored = transcriptRepository.countBySession(meetingId)
+      return speechSessionRepository
+        .getByMeeting(meetingId)
+        .map((session) => ({ ...session, storedSegments: stored[session.speechSessionId] ?? 0 }))
+    },
+
+    /** The completeness report for a meeting's transcript (see computeIntegrity). */
+    getIntegrity(meetingId) {
+      getRequired(meetingId)
+      return computeIntegrity(meetingId)
     },
 
     beginFinalization(meetingId) {
       return move(meetingId, S.FINALIZING)
     },
 
-    completeMeeting(meetingId) {
-      assertTransition(getRequired(meetingId).status, S.COMPLETED)
-      endActiveSessions(meetingId, 'meeting-completed')
-      return move(meetingId, S.COMPLETED)
+    /**
+     * Ends a meeting: FINALIZING, then COMPLETED. The completeness check runs first, so a refusal
+     * leaves the meeting exactly as it was and capture can continue.
+     */
+    endMeeting(meetingId) {
+      const meeting = getRequired(meetingId)
+      assertTransition(meeting.status, S.FINALIZING)
+      assertTranscriptComplete(meetingId)
+      if (meeting.status !== S.FINALIZING) move(meetingId, S.FINALIZING)
+      return completeMeeting(meetingId)
     },
 
-    cancelMeeting(meetingId) {
+    /** COMPLETED means no known loss: it is refused while segments are missing or a stream is open. */
+    completeMeeting,
+
+    /** Abandons a meeting on purpose. Stored segments stay readable; nothing more is accepted. */
+    cancelMeeting(meetingId, { reason } = {}) {
+      const closeReason = closeReasonFrom(reason)
       assertTransition(getRequired(meetingId).status, S.CANCELLED)
       endActiveSessions(meetingId, 'stopped')
-      return move(meetingId, S.CANCELLED)
+      return move(meetingId, S.CANCELLED, { reason: closeReason })
     },
 
-    failMeeting(meetingId) {
+    /** Marks a meeting failed, for example when its transcript can never be made complete. */
+    failMeeting(meetingId, { reason } = {}) {
+      const closeReason = closeReasonFrom(reason)
       assertTransition(getRequired(meetingId).status, S.FAILED)
       endActiveSessions(meetingId, 'error')
-      return move(meetingId, S.FAILED)
+      return move(meetingId, S.FAILED, { reason: closeReason })
     },
 
     /**

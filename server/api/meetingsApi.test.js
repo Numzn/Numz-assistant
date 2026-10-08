@@ -239,3 +239,156 @@ test('unexpected failures return a generic 500 and never leak internal detail', 
     await close()
   }
 })
+
+test('cancel and fail are admin-only lifecycle routes; a closed meeting refuses everything with 409', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const admin = (method, path, extra) => call(base, method, path, { token: ADMIN, ...extra })
+    const created = (await admin('POST', '', { body: {} })).json
+    const id = created.meetingId
+
+    assert.equal((await call(base, 'POST', `/${id}/cancel`)).status, 401, 'no credentials')
+    assert.equal((await call(base, 'POST', `/${id}/fail`, { token: created.ticket.token })).status, 403, 'a ticket cannot close a meeting')
+    assert.equal((await admin('POST', `/${UUID(999)}/cancel`)).status, 404)
+    assert.equal((await admin('POST', '', { body: { metadata: { closeReason: 'forged' } } })).status, 400, 'closeReason is reserved')
+
+    await admin('POST', `/${id}/start`)
+    const tooLong = await admin('POST', `/${id}/fail`, { body: { reason: 'x'.repeat(201) } })
+    assert.equal(tooLong.status, 400)
+    assert.equal(tooLong.json.code, 'invalid-close-reason')
+    assert.equal((await admin('GET', `/${id}`)).json.status, 'LIVE', 'a rejected request changes nothing')
+
+    const session = (await call(base, 'POST', `/${id}/sessions`, { token: created.ticket.token, body: {} })).json
+    const cancelled = await admin('POST', `/${id}/cancel`, { body: { reason: 'duplicate meeting' } })
+    assert.equal(cancelled.status, 200)
+    assert.equal(cancelled.json.status, 'CANCELLED')
+    assert.equal(cancelled.json.metadata.closeReason, 'duplicate meeting')
+
+    for (const [method, path] of [['POST', 'fail'], ['POST', 'start'], ['POST', 'resume'], ['POST', 'end']]) {
+      const refused = await admin(method, `/${id}/${path}`)
+      assert.equal(refused.status, 409, `${path} on a cancelled meeting`)
+      assert.equal(refused.json.code, 'invalid-meeting-transition')
+    }
+    // A retry of the same close is safe and rewrites nothing.
+    const retried = await admin('POST', `/${id}/cancel`, { body: { reason: 'a different reason' } })
+    assert.equal(retried.status, 200)
+    assert.equal(retried.json.endedAt, cancelled.json.endedAt, 'the end time did not move')
+    assert.equal(retried.json.metadata.closeReason, 'duplicate meeting', 'the original reason stands')
+    const append = await call(base, 'POST', `/${id}/transcript/final`, {
+      token: created.ticket.token,
+      body: { speechSessionId: session.speechSessionId, segment: seg('late', 1, 'too late') }
+    })
+    assert.equal(append.status, 409)
+    assert.equal(append.json.code, 'meeting-not-accepting-transcript')
+    assert.equal((await call(base, 'POST', `/${id}/sessions`, { token: created.ticket.token, body: {} })).status, 409)
+
+    const failedMeeting = (await admin('POST', '', { body: {} })).json
+    await admin('POST', `/${failedMeeting.meetingId}/start`)
+    const failed = await admin('POST', `/${failedMeeting.meetingId}/fail`, { body: { reason: 'transcript can never be completed' } })
+    assert.equal(failed.json.status, 'FAILED')
+    assert.equal(failed.json.endedAt !== null, true)
+  } finally {
+    await close()
+  }
+})
+
+test('ending a meeting is refused with details while a stream is open or segments are missing, then works', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const admin = (method, path, extra) => call(base, method, path, { token: ADMIN, ...extra })
+    const created = (await admin('POST', '', { body: {} })).json
+    const id = created.meetingId
+    const ticket = created.ticket.token
+    await admin('POST', `/${id}/start`)
+    const session = (await call(base, 'POST', `/${id}/sessions`, { token: ticket, body: {} })).json
+    const post = (segment) => call(base, 'POST', `/${id}/transcript/final`, { token: ticket, body: { speechSessionId: session.speechSessionId, segment } })
+    assert.equal((await post(seg('c-1', 1, 'delivered'))).status, 201)
+
+    // 1. The stream is still open and has produced transcript.
+    const streaming = await admin('POST', `/${id}/end`)
+    assert.equal(streaming.status, 409)
+    assert.equal(streaming.json.code, 'speech-session-active')
+    assert.equal(streaming.json.details.sessions.find((s) => s.speechSessionId === session.speechSessionId).state, 'OPEN')
+    assert.doesNotMatch(streaming.text, /\n\s+at /)
+    assert.equal((await admin('GET', `/${id}`)).json.status, 'LIVE', 'the refusal left the meeting live')
+
+    // 2. The transport stops and reports two committed segments, but only one is stored.
+    const ended = await call(base, 'POST', `/${id}/sessions/${session.speechSessionId}/end`, { token: ticket, body: { reason: 'stopped', committedSegments: 2 } })
+    assert.equal(ended.status, 200)
+    assert.equal(ended.json.committedSegments, 2)
+    const incomplete = await admin('POST', `/${id}/end`)
+    assert.equal(incomplete.status, 409)
+    assert.equal(incomplete.json.code, 'transcript-incomplete')
+    assert.equal(incomplete.json.details.missingSegments, 1)
+    assert.equal((await admin('GET', `/${id}`)).json.status, 'LIVE')
+    const listed = (await admin('GET', `/${id}/sessions`)).json.speechSessions.find((s) => s.speechSessionId === session.speechSessionId)
+    assert.deepEqual([listed.committedSegments, listed.storedSegments], [2, 1], 'the operator can see the gap per session')
+
+    // 3. The missing segment is delivered late from the ended session, and the meeting can end.
+    assert.equal((await post(seg('c-2', 3, 'late delivery'))).status, 201)
+    const done = await admin('POST', `/${id}/end`)
+    assert.equal(done.status, 200)
+    assert.equal(done.json.status, 'COMPLETED')
+    assert.equal(done.json.integrity.verified, true)
+    const transcript = (await admin('GET', `/${id}/transcript`)).json
+    assert.deepEqual(transcript.segments.map((s) => s.text), ['delivered', 'late delivery'])
+    assert.equal(transcript.integrity.verified, true)
+
+    // 4. A malformed count is a 400 and changes nothing.
+    const other = (await admin('POST', '', { body: {} })).json
+    await admin('POST', `/${other.meetingId}/start`)
+    const otherSession = (await call(base, 'POST', `/${other.meetingId}/sessions`, { token: other.ticket.token, body: {} })).json
+    for (const committedSegments of [-1, 1.5, '3']) {
+      const bad = await call(base, 'POST', `/${other.meetingId}/sessions/${otherSession.speechSessionId}/end`, {
+        token: other.ticket.token,
+        body: { reason: 'stopped', committedSegments }
+      })
+      assert.equal(bad.status, 400, `committedSegments ${JSON.stringify(committedSegments)}`)
+      assert.equal(bad.json.code, 'invalid-committed-segments')
+    }
+  } finally {
+    await close()
+  }
+})
+
+test('two speech sessions writing concurrently never collide, and a genuine id clash is reported, never swallowed', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const admin = (method, path, extra) => call(base, method, path, { token: ADMIN, ...extra })
+    const created = (await admin('POST', '', { body: {} })).json
+    const id = created.meetingId
+    const ticket = created.ticket.token
+    await admin('POST', `/${id}/start`)
+    const a = (await call(base, 'POST', `/${id}/sessions`, { token: ticket, body: {} })).json
+    const b = (await call(base, 'POST', `/${id}/sessions`, { token: ticket, body: {} })).json // supersedes A, which keeps writing
+    const post = (session, segment) =>
+      call(base, 'POST', `/${id}/transcript/final`, { token: ticket, body: { speechSessionId: session.speechSessionId, segment } })
+
+    const writes = []
+    for (let n = 1; n <= 25; n++) {
+      writes.push(post(a, seg(`a-${n}`, n, `A${n}`)))
+      writes.push(post(b, seg(`b-${n}`, n, `B${n}`)))
+    }
+    const results = await Promise.all(writes)
+    assert.deepEqual([...new Set(results.map((r) => r.status))], [201], 'fifty concurrent writes, all stored, none a 5xx')
+
+    // The old failure: two sessions both numbering from the same counter. One wins; the other is told.
+    const clash = await Promise.all([post(a, seg('seg_0001', 100, 'from A')), post(b, seg('seg_0001', 100, 'from B'))])
+    assert.deepEqual(clash.map((r) => r.status).sort(), [201, 409])
+    assert.equal(clash.find((r) => r.status === 409).json.code, 'segment-id-conflict')
+
+    const stored = (await admin('GET', `/${id}/transcript`)).json.segments
+    assert.equal(stored.length, 51)
+    assert.equal(new Set(stored.map((s) => s.id)).size, 51, 'no duplicate ids')
+    for (const segment of stored.filter((s) => /^[AB]\d+$/.test(s.text))) {
+      const owner = segment.text.startsWith('A') ? a : b
+      assert.equal(segment.speechSessionId, owner.speechSessionId, `${segment.text} is linked to the session that wrote it`)
+    }
+    for (let i = 1; i < stored.length; i++) assert.ok(stored[i].start >= stored[i - 1].start, 'ordered on the meeting timeline')
+  } finally {
+    await close()
+  }
+})

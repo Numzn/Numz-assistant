@@ -129,10 +129,11 @@ test('end to end: one meeting survives a disconnect, a reconnect, and a process 
     // 3. Disconnect session A, reconnect as session B on the same meeting.
     const ended = await api(base, 'POST', `/meetings/${meetingId}/sessions/${sessionA.body.speechSessionId}/end`, {
       token: ticket,
-      body: { reason: 'disconnected' }
+      body: { reason: 'disconnected', committedSegments: 3 }
     })
     assert.equal(ended.body.status, 'ENDED')
     assert.equal(ended.body.endReason, 'disconnected')
+    assert.equal(ended.body.committedSegments, 3)
 
     const sessionB = await api(base, 'POST', `/meetings/${meetingId}/sessions`, { token: ticket, body: {} })
     assert.equal(sessionB.status, 201)
@@ -144,9 +145,21 @@ test('end to end: one meeting survives a disconnect, a reconnect, and a process 
     assert.equal((await appendB(finalSegment('b-0001', 1, 'session B first'))).status, 201)
     assert.equal((await appendB(finalSegment('b-0002', 3, 'session B second'))).status, 201)
 
-    // 4. Complete (admin) and retrieve.
-    assert.equal((await api(base, 'POST', `/meetings/${meetingId}/end`, { token: ADMIN })).body.status, 'COMPLETED')
+    // 4. Session B is still streaming: the meeting cannot end underneath it. Once B stops and reports its
+    //    count, the meeting completes and says the transcript is verified.
+    const early = await api(base, 'POST', `/meetings/${meetingId}/end`, { token: ADMIN })
+    assert.equal(early.status, 409)
+    assert.equal(early.body.code, 'speech-session-active')
+    assert.equal((await api(base, 'GET', `/meetings/${meetingId}`, { token: ADMIN })).body.status, 'LIVE', 'a refusal changes nothing')
+    await api(base, 'POST', `/meetings/${meetingId}/sessions/${sessionB.body.speechSessionId}/end`, {
+      token: ticket,
+      body: { reason: 'stopped', committedSegments: 2 }
+    })
+    const completed = await api(base, 'POST', `/meetings/${meetingId}/end`, { token: ADMIN })
+    assert.equal(completed.body.status, 'COMPLETED')
+    assert.equal(completed.body.integrity.verified, true)
     const transcript = await api(base, 'GET', `/meetings/${meetingId}/transcript`, { token: ADMIN })
+    assert.equal(transcript.body.integrity.verified, true)
     const segments = transcript.body.segments
     assert.deepEqual(
       segments.map((s) => s.text),
@@ -207,7 +220,14 @@ test('end to end: one meeting survives a disconnect, a reconnect, and a process 
     })
     assert.equal(postRestart.status, 201)
     assert.equal((await api(server.base, 'POST', `/meetings/${secondId}/resume`, { token: ADMIN })).body.status, 'LIVE')
-    assert.equal((await api(server.base, 'POST', `/meetings/${secondId}/end`, { token: ADMIN })).body.status, 'COMPLETED')
+    await api(server.base, 'POST', `/meetings/${secondId}/sessions/${resumedSession.body.speechSessionId}/end`, {
+      token: secondTicket,
+      body: { reason: 'stopped', committedSegments: 1 }
+    })
+    const secondDone = await api(server.base, 'POST', `/meetings/${secondId}/end`, { token: ADMIN })
+    assert.equal(secondDone.body.status, 'COMPLETED')
+    assert.equal(secondDone.body.integrity.complete, true)
+    assert.equal(secondDone.body.integrity.verified, false, 'the pre-restart session never reported its count')
 
     const finalText = (await api(server.base, 'GET', `/meetings/${secondId}/transcript`, { token: ADMIN })).body.segments.map(
       (s) => s.text

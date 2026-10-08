@@ -87,13 +87,56 @@ const MIGRATIONS = [
       `)
       backfillContentHashes(database)
     }
+  },
+  {
+    version: 3,
+    name: 'committed segment counts for completion checks; closed meetings are immutable in the database',
+    run(database) {
+      // committed_segments: how many final segments the session says it produced (NULL = never reported).
+      // The triggers back the service-level rules: even a buggy writer cannot add to, edit, or reopen a
+      // closed meeting. They raise instead of silently ignoring the write.
+      database.exec(`
+        ALTER TABLE speech_sessions ADD COLUMN committed_segments INTEGER;
+
+        CREATE TRIGGER trg_closed_meeting_takes_no_segments
+        BEFORE INSERT ON transcript_segments
+        WHEN (SELECT status FROM meetings WHERE meeting_id = NEW.meeting_id) IN ('COMPLETED', 'FAILED', 'CANCELLED')
+        BEGIN
+          SELECT RAISE(ABORT, 'meeting-closed');
+        END;
+
+        CREATE TRIGGER trg_closed_meeting_segments_are_not_edited
+        BEFORE UPDATE ON transcript_segments
+        WHEN (SELECT status FROM meetings WHERE meeting_id = OLD.meeting_id) IN ('COMPLETED', 'FAILED', 'CANCELLED')
+        BEGIN
+          SELECT RAISE(ABORT, 'meeting-closed');
+        END;
+
+        CREATE TRIGGER trg_closed_meeting_takes_no_sessions
+        BEFORE INSERT ON speech_sessions
+        WHEN (SELECT status FROM meetings WHERE meeting_id = NEW.meeting_id) IN ('COMPLETED', 'FAILED', 'CANCELLED')
+        BEGIN
+          SELECT RAISE(ABORT, 'meeting-closed');
+        END;
+
+        CREATE TRIGGER trg_closed_meeting_never_reopens
+        BEFORE UPDATE OF status ON meetings
+        WHEN OLD.status IN ('COMPLETED', 'FAILED', 'CANCELLED') AND NEW.status <> OLD.status
+        BEGIN
+          SELECT RAISE(ABORT, 'meeting-terminal');
+        END;
+      `)
+    }
   }
 ]
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version
 
-/** Applies every pending migration. Safe to call on an already-migrated database. */
-export function applyMigrations(database) {
+/**
+ * Applies every pending migration. Safe to call on an already-migrated database.
+ * `target` stops at an earlier version, which lets a test build an old database and upgrade it.
+ */
+export function applyMigrations(database, { target = SCHEMA_VERSION } = {}) {
   database.exec('PRAGMA foreign_keys = ON;')
   database.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -104,7 +147,7 @@ export function applyMigrations(database) {
   const applied = new Set(database.prepare('SELECT version FROM schema_migrations').all().map((row) => row.version))
 
   for (const migration of MIGRATIONS) {
-    if (applied.has(migration.version)) continue
+    if (applied.has(migration.version) || migration.version > target) continue
     database.exec('BEGIN IMMEDIATE')
     try {
       migration.run(database)

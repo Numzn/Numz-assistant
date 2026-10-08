@@ -6,7 +6,7 @@ const MAX_METADATA_BYTES = 16 * 1024
 
 /**
  * Meeting API. Credentials per route (see server/auth/meetingAuth.js):
- *   admin      - create, lifecycle, reads, ticket minting, session listing
+ *   admin      - create, lifecycle (start, pause, resume, recover, end, cancel, fail), reads, ticket minting
  *   admin|ticket (bound to the meeting) - speech-session attach/end, canonical segment append
  */
 function badRequest(message, code) {
@@ -30,6 +30,8 @@ function metadataFrom(body) {
   if (Buffer.byteLength(JSON.stringify(metadata), 'utf8') > MAX_METADATA_BYTES) {
     throw badRequest(`metadata exceeds ${MAX_METADATA_BYTES} bytes`, 'invalid-metadata')
   }
+  // The server records why a meeting was cancelled or failed under this key.
+  if (Object.hasOwn(metadata, 'closeReason')) throw badRequest('metadata.closeReason is reserved', 'invalid-metadata')
   return metadata
 }
 
@@ -76,10 +78,18 @@ export function createMeetingsRouter({ meetingService, auth }) {
     res.json(meetingService.recoverMeeting(meetingIdFrom(req)))
   })
 
+  // Refused with 409 (and the meeting left untouched) while committed segments are missing
+  // (`transcript-incomplete`) or a speech session that produced transcript is still open (`speech-session-active`).
   router.post('/:meetingId/end', auth.requireAdmin(), (req, res) => {
-    const meetingId = meetingIdFrom(req)
-    meetingService.beginFinalization(meetingId)
-    res.json(meetingService.completeMeeting(meetingId))
+    res.json(meetingService.endMeeting(meetingIdFrom(req)))
+  })
+
+  router.post('/:meetingId/cancel', auth.requireAdmin(), (req, res) => {
+    res.json(meetingService.cancelMeeting(meetingIdFrom(req), { reason: req.body?.reason }))
+  })
+
+  router.post('/:meetingId/fail', auth.requireAdmin(), (req, res) => {
+    res.json(meetingService.failMeeting(meetingIdFrom(req), { reason: req.body?.reason }))
   })
 
   router.get('/:meetingId/sessions', auth.requireAdmin(), (req, res) => {
@@ -95,7 +105,11 @@ export function createMeetingsRouter({ meetingService, auth }) {
     const meetingId = meetingIdFrom(req)
     const speechSessionId = requireUuid(req.params.speechSessionId, 'invalid-speech-session-id', 'speechSessionId')
     if (typeof req.body?.reason !== 'string') throw badRequest('reason is required', 'invalid-end-reason')
-    res.json(meetingService.endSpeechSession(meetingId, speechSessionId, req.body.reason))
+    res.json(
+      meetingService.endSpeechSession(meetingId, speechSessionId, req.body.reason, {
+        committedSegments: req.body.committedSegments
+      })
+    )
   })
 
   router.post('/:meetingId/transcript/final', auth.requireMeetingWriter(), (req, res) => {
@@ -114,7 +128,7 @@ export function createMeetingsRouter({ meetingService, auth }) {
 
   router.get('/:meetingId/transcript', auth.requireAdmin(), (req, res) => {
     const meetingId = meetingIdFrom(req)
-    res.json({ meetingId, segments: meetingService.getTranscript(meetingId) })
+    res.json({ meetingId, segments: meetingService.getTranscript(meetingId), integrity: meetingService.getIntegrity(meetingId) })
   })
 
   return router

@@ -41,3 +41,14 @@ test('terminal states accept nothing except a no-op to themselves', () => {
     )
   }
 })
+
+test('repeating the current state changes nothing, so a closed meeting is never rewritten', () => {
+  const closedAt = '2026-10-08T10:00:00.000Z'
+  for (const status of ['COMPLETED', 'FAILED', 'CANCELLED']) {
+    const closed = { ...createMeeting({ now: closedAt }), status, endedAt: closedAt, updatedAt: closedAt }
+    const again = transitionMeeting(closed, status, '2026-10-08T11:00:00.000Z')
+    assert.equal(again, closed, `${status}: the same record is returned untouched`)
+    assert.equal(again.endedAt, closedAt)
+    assert.equal(again.updatedAt, closedAt)
+  }
+})

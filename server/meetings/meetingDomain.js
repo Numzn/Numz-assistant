@@ -32,14 +32,19 @@ const transitions = {
  * statusCode to the response and exposes `message` and `code` (never stacks).
  */
 export class MeetingDomainError extends Error {
-  constructor(message, { statusCode = 409, code = 'meeting-conflict' } = {}) {
+  constructor(message, { statusCode = 409, code = 'meeting-conflict', details = null } = {}) {
     super(message)
     this.name = 'MeetingDomainError'
     this.statusCode = statusCode
     this.code = code
     this.expose = true
+    // Structured, safe-to-return facts that help the caller act (for example which sessions are incomplete).
+    this.details = details
   }
 }
+
+/** A meeting in one of these states is closed: it accepts nothing and never reopens. */
+export const TERMINAL_MEETING_STATES = Object.freeze([S.COMPLETED, S.FAILED, S.CANCELLED])
 
 /** Meeting states that accept canonical transcript appends. FINALIZING accepts late, already-produced events. */
 export const TRANSCRIPT_ACCEPTING_STATES = Object.freeze(
@@ -86,6 +91,9 @@ export function createMeeting({ meetingId = randomUUID(), metadata = {}, now = n
 
 export function transitionMeeting(meeting, status, now = new Date().toISOString()) {
   assertTransition(meeting.status, status)
+  // Repeating the current state is a safe no-op. In particular a closed meeting is never rewritten,
+  // so its end time cannot drift when a client retries.
+  if (meeting.status === status) return meeting
   const next = { ...meeting, status, updatedAt: now }
 
   if (status === S.LIVE && meeting.startedAt === null) next.startedAt = now

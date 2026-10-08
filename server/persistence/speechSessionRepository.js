@@ -10,7 +10,9 @@ function fromRow(row) {
     endedAt: row.ended_at,
     updatedAt: row.updated_at,
     timelineOffsetMs: row.timeline_offset_ms,
-    endReason: row.end_reason ?? null
+    endReason: row.end_reason ?? null,
+    // How many final segments the session says it produced; null until the transport reports it.
+    committedSegments: row.committed_segments ?? null
   }
 }
 
@@ -37,8 +39,12 @@ export function createSpeechSessionRepository(database) {
   `)
   const endOne = database.prepare(`
     UPDATE speech_sessions
-    SET status = 'ENDED', ended_at = ?, updated_at = ?, end_reason = ?
+    SET status = 'ENDED', ended_at = ?, updated_at = ?, end_reason = ?, committed_segments = ?
     WHERE speech_session_id = ? AND status = 'ACTIVE'
+  `)
+  const recordOne = database.prepare(`
+    UPDATE speech_sessions SET committed_segments = ?, updated_at = ?
+    WHERE speech_session_id = ? AND committed_segments IS NULL
   `)
 
   const repository = {
@@ -64,8 +70,16 @@ export function createSpeechSessionRepository(database) {
     },
 
     /** Moves an ACTIVE session to ENDED. Returns true only when this call performed the transition. */
-    end({ speechSessionId, reason, now = new Date().toISOString() }) {
-      return endOne.run(now, now, reason, speechSessionId).changes === 1
+    end({ speechSessionId, reason, now = new Date().toISOString(), committedSegments = null }) {
+      return endOne.run(now, now, reason, committedSegments, speechSessionId).changes === 1
+    },
+
+    /**
+     * Records the committed-segment count of a session that already ended (for example one that was
+     * superseded before its transport could report). The first report wins; later ones are ignored.
+     */
+    recordCommitted({ speechSessionId, committedSegments, now = new Date().toISOString() }) {
+      return recordOne.run(committedSegments, now, speechSessionId).changes === 1
     }
   }
   return repository

@@ -22,6 +22,12 @@ export function createTranscriptRepository(database) {
   `)
   const select = database.prepare('SELECT * FROM transcript_segments WHERE meeting_id = ? AND segment_id = ?')
   const maxEnd = database.prepare('SELECT MAX(end_ms) AS max_end FROM transcript_segments WHERE meeting_id = ?')
+  const perSession = database.prepare(`
+    SELECT speech_session_id AS session, COUNT(*) AS stored
+    FROM transcript_segments
+    WHERE meeting_id = ? AND speech_session_id IS NOT NULL
+    GROUP BY speech_session_id
+  `)
   const chronological = database.prepare(`
     SELECT segment_json FROM transcript_segments
     WHERE meeting_id = ?
@@ -63,6 +69,11 @@ export function createTranscriptRepository(database) {
     /** Latest end of any stored segment for the meeting, in meeting milliseconds (0 when empty). */
     maxEndMs(meetingId) {
       return maxEnd.get(meetingId)?.max_end ?? 0
+    },
+
+    /** Stored segment counts keyed by speech session id. Sessions with no segments are absent. */
+    countBySession(meetingId) {
+      return Object.fromEntries(perSession.all(meetingId).map((row) => [row.session, row.stored]))
     },
 
     getById(meetingId, segmentId) {
