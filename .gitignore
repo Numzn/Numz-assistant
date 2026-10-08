@@ -1,9 +1,13 @@
 node_modules/
 dist/
 .env
+.env.secrets
 *.log
 .DS_Store
 audio/.venv/
 audio/models/
 audio/__pycache__/
 *.pyc
+lectures/
+data/
+docker/certs/key.pem

@@ -1,10 +1,4 @@
-function safeJsonParse(text) {
-  try {
-    return { ok: true, value: JSON.parse(text) }
-  } catch (err) {
-    return { ok: false, error: err }
-  }
-}
+import { safeJsonParse } from '../utils/json.js'
 
 /**
  * Minimal WS streaming client.

@@ -1,0 +1,9 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: numz-assistant-https
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/certs:/certs:ro

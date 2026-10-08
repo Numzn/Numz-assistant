@@ -8,6 +8,11 @@
     "dev:api": "node server/server.js",
     "dev:audio": "node scripts/run-audio-server.js",
     "dev:all": "concurrently -n web,api -c blue,green \"npm run dev\" \"npm run dev:api\"",
+    "lecture:transcribe": "node scripts/run-lecture-transcribe.js",
+    "lecture:notes": "node scripts/lecture-notes.js",
+    "speech:process": "node scripts/run-speech-process.js",
+    "speech:notes": "node scripts/speech-notes.js",
+    "test": "node --test server/meetings/*.test.js server/persistence/*.test.js",
     "build": "vite build",
     "start": "cross-env NODE_ENV=production node server/server.js",
     "preview": "vite preview"

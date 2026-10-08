@@ -1,9 +1,8 @@
 """
-Decode audio → Silero VAD trim → faster-whisper transcription.
+Decode audio → faster-whisper transcription (Whisper built-in VAD).
 Model is loaded once at import/startup.
 """
 
-import io
 import logging
 import os
 import subprocess
@@ -12,7 +11,6 @@ import time
 from typing import Any
 
 import numpy as np
-import torch
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +19,21 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 
-VAD_MIN_SPEECH_MS = int(os.environ.get("VAD_MIN_SPEECH_MS", "250"))
-VAD_MIN_SILENCE_MS = int(os.environ.get("VAD_MIN_SILENCE_MS", "300"))
-VAD_SPEECH_PAD_MS = int(os.environ.get("VAD_SPEECH_PAD_MS", "80"))
+DOMAIN_PROMPT = (
+    "Numz, NUMZ, NUMZFLEET, immobilize, unit, tracker, dashboard, "
+    "fleet, summary, status, show, locate, find, cancel, stop, "
+    "yes, no, one, two, three, four, five, six, seven, eight, nine, ten, "
+    "vehicle, speed, fuel, location, maintenance, alert, warning"
+)
+
+WHISPER_VAD_PARAMETERS = {
+    "threshold": 0.3,
+    "min_speech_duration_ms": 50,
+    "min_silence_duration_ms": 800,
+    "speech_pad_ms": 300,
+}
 
 _whisper_model = None
-_vad_model = None
-_vad_get_speech_timestamps = None
 
 
 def _load_whisper():
@@ -52,19 +58,13 @@ def _load_whisper():
     return _whisper_model
 
 
-def _load_vad():
-    """Load Silero VAD via the silero-vad PyPI package (ONNX runtime, no torchaudio)."""
-    global _vad_model, _vad_get_speech_timestamps
-    if _vad_model is not None:
-        return _vad_model, _vad_get_speech_timestamps
-    from silero_vad import get_speech_timestamps, load_silero_vad
-
-    logger.info("Loading Silero VAD (onnx)")
-    t0 = time.perf_counter()
-    _vad_model = load_silero_vad(onnx=True)
-    _vad_get_speech_timestamps = get_speech_timestamps
-    logger.info("Silero VAD loaded in %.2fs", time.perf_counter() - t0)
-    return _vad_model, _vad_get_speech_timestamps
+def _build_initial_prompt(client_prompt: str = "") -> str:
+    client = (client_prompt or "").strip()
+    if not client:
+        return DOMAIN_PROMPT
+    if DOMAIN_PROMPT in client:
+        return client
+    return f"{client} {DOMAIN_PROMPT}"
 
 
 def decode_audio_to_pcm(audio_bytes: bytes, mime_type: str = "audio/webm") -> np.ndarray:
@@ -120,35 +120,57 @@ def decode_audio_to_pcm(audio_bytes: bytes, mime_type: str = "audio/webm") -> np
                 pass
 
 
-def trim_with_silero(pcm: np.ndarray) -> tuple[np.ndarray, int]:
-    """
-    Trim leading/trailing silence using Silero VAD.
-    Returns (trimmed_pcm, original_duration_ms).
-    """
-    if pcm.size == 0:
-        return pcm, 0
+MIME_BY_EXT = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "m4a": "audio/m4a",
+    "mp4": "audio/mp4",
+    "ogg": "audio/ogg",
+    "webm": "audio/webm",
+    "flac": "audio/flac",
+}
 
-    original_ms = int(len(pcm) / SAMPLE_RATE * 1000)
-    model, get_speech_timestamps = _load_vad()
 
-    wav = torch.from_numpy(pcm)
-    timestamps = get_speech_timestamps(
-        wav,
-        model,
-        sampling_rate=SAMPLE_RATE,
-        min_speech_duration_ms=VAD_MIN_SPEECH_MS,
-        min_silence_duration_ms=VAD_MIN_SILENCE_MS,
-        speech_pad_ms=VAD_SPEECH_PAD_MS,
-        return_seconds=False,
+def decode_audio_file(path: str) -> np.ndarray:
+    """decode_audio_to_pcm for a file on disk (mime type guessed from the extension)."""
+    with open(path, "rb") as f:
+        audio_bytes = f.read()
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    return decode_audio_to_pcm(audio_bytes, MIME_BY_EXT.get(ext, "audio/webm"))
+
+
+def _transcribe_segments(
+    pcm: np.ndarray,
+    language: str = "",
+    prompt: str = "",
+    word_timestamps: bool = False,
+    vad_parameters=None,
+):
+    """Run faster-whisper and return its (raw segment iterator, info).
+
+    The one place decode parameters live. Shared by transcribe_pcm (live
+    sidecar, text only), transcribe_pcm_with_timestamps (Lecture Engine CLI)
+    and speech/asr.py (Speech Intelligence pipeline + live streaming ASR), so
+    all of them stay on identical model/decode parameters. Callers only vary
+    word_timestamps and, for the pipeline, its own tuned vad_parameters.
+    """
+    model = _load_whisper()
+    lang = language.split("-")[0] if language else None
+    lang = lang if lang else None
+    initial_prompt = _build_initial_prompt(prompt)
+
+    return model.transcribe(
+        pcm,
+        language=lang,
+        initial_prompt=initial_prompt,
+        beam_size=5,
+        temperature=0.0,
+        condition_on_previous_text=False,
+        word_timestamps=word_timestamps,
+        vad_filter=True,
+        vad_parameters=WHISPER_VAD_PARAMETERS if vad_parameters is None else vad_parameters,
+        no_speech_threshold=0.4,
     )
-
-    if not timestamps:
-        return np.array([], dtype=np.float32), original_ms
-
-    start = timestamps[0]["start"]
-    end = timestamps[-1]["end"]
-    trimmed = pcm[start:end]
-    return trimmed, original_ms
 
 
 def transcribe_pcm(
@@ -159,17 +181,7 @@ def transcribe_pcm(
     if pcm.size == 0:
         return ""
 
-    model = _load_whisper()
-    lang = language.split("-")[0] if language else None
-    lang = lang if lang else None
-
-    segments, _info = model.transcribe(
-        pcm,
-        language=lang,
-        initial_prompt=prompt or None,
-        beam_size=1,
-        vad_filter=False,
-    )
+    segments, _info = _transcribe_segments(pcm, language=language, prompt=prompt)
 
     parts = []
     for seg in segments:
@@ -179,6 +191,31 @@ def transcribe_pcm(
     return " ".join(parts).strip()
 
 
+def transcribe_pcm_with_timestamps(
+    pcm: np.ndarray,
+    language: str = "",
+    prompt: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    """
+    Same model/VAD path as transcribe_pcm, but keeps per-segment start/end
+    timestamps. Used by the offline Lecture Engine CLI (lecture_cli.py) —
+    the live sidecar keeps using transcribe_pcm/transcribe_blob unchanged.
+    """
+    if pcm.size == 0:
+        return [], ""
+
+    segments, _info = _transcribe_segments(pcm, language=language, prompt=prompt)
+
+    timestamped = []
+    parts = []
+    for seg in segments:
+        t = (seg.text or "").strip()
+        if t:
+            timestamped.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": t})
+            parts.append(t)
+    return timestamped, " ".join(parts).strip()
+
+
 def transcribe_blob(
     audio_bytes: bytes,
     mime_type: str = "audio/webm",
@@ -186,58 +223,66 @@ def transcribe_blob(
     prompt: str = "",
 ) -> dict[str, Any]:
     """
-    Full pipeline: decode → VAD trim → whisper.
+    Full pipeline: decode → whisper (full PCM, Whisper VAD).
     """
     t0 = time.perf_counter()
     pcm = decode_audio_to_pcm(audio_bytes, mime_type)
     t_decode = time.perf_counter()
-    trimmed, original_ms = trim_with_silero(pcm)
-    t_vad = time.perf_counter()
-    vad_trimmed_ms = int(len(trimmed) / SAMPLE_RATE * 1000) if trimmed.size else 0
+    original_ms = int(len(pcm) / SAMPLE_RATE * 1000) if pcm.size else 0
     decode_ms = int((t_decode - t0) * 1000)
-    vad_ms = int((t_vad - t_decode) * 1000)
 
-    if trimmed.size == 0:
+    if pcm.size == 0:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        logger.info(
+            '[AUDIO] duration=0.0s words=0 latency=%sms text=""',
+            elapsed_ms,
+        )
         return {
             "text": "",
             "error": "no-speech",
-            "durationMs": original_ms,
-            "vadTrimmedMs": 0,
+            "durationMs": 0,
+            "vadTrimmedMs": original_ms,
             "decodeMs": decode_ms,
-            "vadMs": vad_ms,
+            "vadMs": 0,
             "whisperMs": 0,
-            "elapsedMs": int((time.perf_counter() - t0) * 1000),
+            "elapsedMs": elapsed_ms,
         }
 
-    text = transcribe_pcm(trimmed, language=language, prompt=prompt)
+    text = transcribe_pcm(pcm, language=language, prompt=prompt)
     t_whisper = time.perf_counter()
-    whisper_ms = int((t_whisper - t_vad) * 1000)
+    whisper_ms = int((t_whisper - t_decode) * 1000)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    word_count = len(text.split()) if text else 0
+    audio_duration_s = round(len(pcm) / SAMPLE_RATE, 2)
+
     logger.info(
-        "transcribe ok original_ms=%s vad_trimmed_ms=%s decode_ms=%s vad_ms=%s whisper_ms=%s elapsed_ms=%s chars=%s",
-        original_ms,
-        vad_trimmed_ms,
-        decode_ms,
-        vad_ms,
-        whisper_ms,
+        '[AUDIO] duration=%.1fs words=%s latency=%sms text="%s"',
+        audio_duration_s,
+        word_count,
         elapsed_ms,
-        len(text),
+        text,
     )
 
-    return {
+    result: dict[str, Any] = {
         "text": text,
         "durationMs": original_ms,
-        "vadTrimmedMs": vad_trimmed_ms,
+        "vadTrimmedMs": original_ms,
         "decodeMs": decode_ms,
-        "vadMs": vad_ms,
+        "vadMs": 0,
         "whisperMs": whisper_ms,
         "elapsedMs": elapsed_ms,
+        "audioDurationS": audio_duration_s,
+        "wordCount": word_count,
     }
+
+    if not text:
+        result["error"] = "no-speech"
+
+    return result
 
 
 def warmup():
-    """Pre-load models at server startup."""
-    _load_vad()
+    """Pre-load Whisper at server startup."""
     _load_whisper()
 
 
@@ -248,4 +293,5 @@ def health_info() -> dict[str, Any]:
         "whisperDevice": WHISPER_DEVICE,
         "computeType": WHISPER_COMPUTE_TYPE,
         "sampleRate": SAMPLE_RATE,
+        "vadMode": "whisper",
     }

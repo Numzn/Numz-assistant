@@ -1,34 +1,11 @@
 import { createPorcupineWake } from './porcupineWake.js'
+import { createVoiceInputWebSpeech } from './voiceInputWebSpeech.js'
+import { getMediaDevices, pickMimeType, speechAudioConstraints, stopTracks } from './micUtils.js'
+import { matchWakePhrase, normalizeText } from './wakePhrase.js'
+import { parseJsonBody } from '../../utils/json.js'
 
 function createUnsupportedError() {
   return new Error('Local voice input is not supported in this browser')
-}
-
-function getMediaDevices() {
-  return globalThis?.navigator?.mediaDevices ?? null
-}
-
-function pickMimeType() {
-  const w = globalThis?.window
-  const MR = w?.MediaRecorder
-  if (!MR?.isTypeSupported) return ''
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/ogg'
-  ]
-  return candidates.find((t) => MR.isTypeSupported(t)) ?? ''
-}
-
-async function parseJson(res) {
-  const text = await res.text().catch(() => '')
-  if (!text) return {}
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { raw: text }
-  }
 }
 
 /**
@@ -46,6 +23,17 @@ export function createVoiceInputLocal({
   keywordPublicPath = '',
   modelPublicPath = '/porcupine/porcupine_params_en.pv',
   keywordLabel = 'numz',
+  wakePhrases = ['numz', 'hello numz', 'hi numz'],
+  vadSilenceMs = 1800,
+  vadEnergyThreshold = 0.02,
+  vadMinSpeechMs = 250,
+  minRecordingMs = 2000,
+  vadSpeechRatio = 2.2,
+  vadSpeechMinDelta = 0.012,
+  vadSilenceRatio = 0.42,
+  vadCooldownMs = 1200,
+  vadBargeInMinMs = 600,
+  vadBargeInThreshold = 0.04,
   getDeviceId = () => ''
 } = {}) {
   let onPartial = () => {}
@@ -67,20 +55,295 @@ export function createVoiceInputLocal({
     }
   })
 
+  const usePorcupineWake = porcupine.isConfigured() && Boolean(String(keywordPublicPath ?? '').trim())
+  const normalizedWakePhrases = (Array.isArray(wakePhrases) ? wakePhrases : [keywordLabel])
+    .map(normalizeText)
+    .filter(Boolean)
+
+  const webSpeechWake = createVoiceInputWebSpeech({
+    lang,
+    interimResults: true,
+    continuous: true
+  })
+
+  let lastWebWakeAt = 0
+
+  function handleWebSpeechWakeTranscript(text) {
+    if (!wakeArmed || captureActive) return
+
+    const now = Date.now()
+    if (now - lastWebWakeAt < wakeDebounceMs) return
+
+    const command = matchWakePhrase(text, normalizedWakePhrases)
+    if (command === null) return
+
+    lastWebWakeAt = now
+    webSpeechWake.stop()
+    onWakeDetected({ keyword: keywordLabel, transcript: text })
+
+    if (command) {
+      onFinal(command)
+      return
+    }
+
+    startUtteranceCapture({ fromWake: true }).catch((err) => onError(err))
+  }
+
+  webSpeechWake.setOnFinal(handleWebSpeechWakeTranscript)
+  webSpeechWake.setOnPartial((text) => {
+    if (!wakeArmed || captureActive) return
+    const command = matchWakePhrase(text, normalizedWakePhrases)
+    if (command === null) return
+    handleWebSpeechWakeTranscript(text)
+  })
+
   let stream = null
   let recorder = null
   let chunks = []
   let captureActive = false
+  let captureStartedAt = 0
   let wakeArmed = false
   let utteranceTimer = null
   let holdToTalkActive = false
 
-  function emitPhase(phase) {
-    onPhase(phase)
+  // Continuous (hands-free) conversation state — energy VAD via Web Audio API.
+  let continuousActive = false
+  let detectionEnabled = false
+  let speakingPhase = false
+  let onBargeIn = () => {}
+  let audioCtx = null
+  let analyserNode = null
+  let sourceNode = null
+  let vadTimer = null
+  let vadBuffer = null
+  let speechStartAt = 0
+  let silenceStartAt = 0
+  let bargeStartAt = 0
+  let noiseFloorRms = vadEnergyThreshold * 0.5
+  let capturePeakRms = 0
+  let cooldownUntil = 0
+  let cooldownTimer = null
+
+  function now() {
+    return performance.now?.() ?? Date.now()
   }
 
-  function stopTracks(s) {
-    for (const t of s?.getTracks?.() ?? []) t.stop()
+  function readRms() {
+    if (!analyserNode || !vadBuffer) return 0
+    analyserNode.getByteTimeDomainData(vadBuffer)
+    let sumSq = 0
+    for (let i = 0; i < vadBuffer.length; i++) {
+      const v = (vadBuffer[i] - 128) / 128
+      sumSq += v * v
+    }
+    return Math.sqrt(sumSq / vadBuffer.length)
+  }
+
+  function updateNoiseFloor(rms) {
+    const rate = 0.06
+    if (rms < noiseFloorRms * 1.8) {
+      noiseFloorRms = noiseFloorRms * (1 - rate) + rms * rate
+    }
+    noiseFloorRms = Math.max(vadEnergyThreshold * 0.35, Math.min(noiseFloorRms, 0.12))
+  }
+
+  function speechStartThreshold() {
+    return Math.max(
+      vadEnergyThreshold,
+      noiseFloorRms + vadSpeechMinDelta,
+      noiseFloorRms * vadSpeechRatio
+    )
+  }
+
+  function isSpeechStart(rms) {
+    return rms >= speechStartThreshold()
+  }
+
+  function isCaptureSilent(rms) {
+    const relative = capturePeakRms > 0 ? capturePeakRms * vadSilenceRatio : 0
+    const quietCeiling = Math.max(noiseFloorRms * 1.35, relative, vadEnergyThreshold * 0.55)
+    return rms < quietCeiling
+  }
+
+  function scheduleDetectionCooldown() {
+    detectionEnabled = false
+    cooldownUntil = now() + vadCooldownMs
+    if (cooldownTimer) clearTimeout(cooldownTimer)
+    cooldownTimer = setTimeout(() => {
+      cooldownTimer = null
+      if (!continuousActive || captureActive || speakingPhase) return
+      if (now() < cooldownUntil) return
+      detectionEnabled = true
+      speechStartAt = 0
+      silenceStartAt = 0
+    }, vadCooldownMs)
+  }
+
+  function vadTick() {
+    if (!continuousActive) return
+    const rms = readRms()
+    const t = now()
+
+    if (speakingPhase) {
+      // Barge-in: require clearly louder than ambient noise (not random clicks).
+      const bargeLoud = rms >= Math.max(vadBargeInThreshold, speechStartThreshold() * 1.15)
+      if (bargeLoud) {
+        if (!bargeStartAt) bargeStartAt = t
+        if (t - bargeStartAt >= vadBargeInMinMs) {
+          bargeStartAt = 0
+          onBargeIn()
+        }
+      } else {
+        bargeStartAt = 0
+      }
+      return
+    }
+    bargeStartAt = 0
+
+    if (captureActive) {
+      if (!isCaptureSilent(rms)) {
+        capturePeakRms = Math.max(capturePeakRms, rms)
+        silenceStartAt = 0
+      } else {
+        if (!silenceStartAt) silenceStartAt = t
+        const silenceElapsed = t - silenceStartAt
+        const captureElapsed = captureStartedAt ? t - captureStartedAt : 0
+        if (silenceElapsed >= vadSilenceMs && captureElapsed >= minRecordingMs) {
+          silenceStartAt = 0
+          scheduleDetectionCooldown()
+          stopRecorderOnly()
+        }
+      }
+      return
+    }
+
+    if (!detectionEnabled || t < cooldownUntil) {
+      speechStartAt = 0
+      if (!captureActive && !speakingPhase) updateNoiseFloor(rms)
+      return
+    }
+
+    updateNoiseFloor(rms)
+
+    if (isSpeechStart(rms)) {
+      if (!speechStartAt) {
+        // Start the MediaRecorder on the FIRST above-threshold sample, not
+        // after vadMinSpeechMs of confirmed speech — the recorder only
+        // captures audio from the moment it's started, so waiting here
+        // permanently loses the beginning of every utterance (the exact
+        // sound that triggered detection). vadMinSpeechMs no longer gates
+        // starting; minRecordingMs (already in place) absorbs any brief
+        // false triggers by requiring the capture to run a minimum length
+        // before silence can end it, same as it already does today.
+        speechStartAt = t
+        silenceStartAt = 0
+        capturePeakRms = rms
+        startUtteranceCapture({ continuous: true }).catch((err) => onError(err))
+      }
+    } else {
+      speechStartAt = 0
+    }
+  }
+
+  async function startContinuous() {
+    // Idempotent: if already running, just (re)enable speech detection.
+    if (continuousActive) {
+      speechStartAt = 0
+      silenceStartAt = 0
+      detectionEnabled = now() >= cooldownUntil
+      emitPhase('listening')
+      return true
+    }
+
+    await ensureStream()
+    const AC = globalThis.window?.AudioContext ?? globalThis.window?.webkitAudioContext
+    if (!AC) throw createUnsupportedError()
+
+    audioCtx = new AC()
+    if (audioCtx.state === 'suspended') {
+      try {
+        await audioCtx.resume()
+      } catch {
+        /* handled by the state check below */
+      }
+    }
+    if (audioCtx.state !== 'running') {
+      // Mobile browsers routinely refuse to run an AudioContext started
+      // without a direct user gesture (e.g. on page load via
+      // autoStartOnLoad) — without this check the VAD loop below would
+      // silently analyze a dead/suspended context forever: no speech ever
+      // detected, nothing ever sent, no visible error.
+      try {
+        await audioCtx.close()
+      } catch {
+        /* ignore */
+      }
+      audioCtx = null
+      stopTracks(stream)
+      stream = null
+      const err = new Error('Audio context is suspended — a user gesture is required to enable the microphone')
+      err.code = 'audio-context-suspended'
+      throw err
+    }
+    sourceNode = audioCtx.createMediaStreamSource(stream)
+    analyserNode = audioCtx.createAnalyser()
+    analyserNode.fftSize = 1024
+    analyserNode.smoothingTimeConstant = 0.4
+    vadBuffer = new Uint8Array(analyserNode.fftSize)
+    sourceNode.connect(analyserNode)
+
+    continuousActive = true
+    detectionEnabled = true
+    speechStartAt = 0
+    silenceStartAt = 0
+    bargeStartAt = 0
+    emitPhase('listening')
+    vadTimer = setInterval(vadTick, 50)
+    return true
+  }
+
+  async function stopContinuous() {
+    continuousActive = false
+    detectionEnabled = false
+    speakingPhase = false
+    cooldownUntil = 0
+    if (cooldownTimer) {
+      clearTimeout(cooldownTimer)
+      cooldownTimer = null
+    }
+    if (vadTimer) {
+      clearInterval(vadTimer)
+      vadTimer = null
+    }
+    stopRecorderOnly()
+    try {
+      sourceNode?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    try {
+      analyserNode?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    if (audioCtx) {
+      try {
+        await audioCtx.close()
+      } catch {
+        /* ignore */
+      }
+      audioCtx = null
+    }
+    sourceNode = null
+    analyserNode = null
+    vadBuffer = null
+    stopTracks(stream)
+    stream = null
+    emitPhase('idle')
+  }
+
+  function emitPhase(phase) {
+    onPhase(phase)
   }
 
   function clearUtteranceTimer() {
@@ -97,7 +360,7 @@ export function createVoiceInputLocal({
     if (stream?.active) return stream
 
     const deviceId = typeof getDeviceId === 'function' ? getDeviceId() : ''
-    const audio = deviceId ? { deviceId: { exact: deviceId } } : true
+    const audio = speechAudioConstraints({ deviceId })
     try {
       stream = await mediaDevices.getUserMedia({ audio, video: false })
     } catch (err) {
@@ -127,7 +390,7 @@ export function createVoiceInputLocal({
       body: buf
     })
 
-    const data = await parseJson(res)
+    const data = await parseJsonBody(res)
     if (!res.ok) {
       const msg = data.error ?? `STT failed: ${res.status}`
       if (res.status === 503 || String(msg).toLowerCase().includes('audio service')) {
@@ -150,6 +413,7 @@ export function createVoiceInputLocal({
   function stopRecorderOnly() {
     clearUtteranceTimer()
     captureActive = false
+    captureStartedAt = 0
     try {
       if (recorder?.state === 'recording') recorder.stop()
     } catch {
@@ -157,15 +421,18 @@ export function createVoiceInputLocal({
     }
   }
 
-  async function startUtteranceCapture({ fromWake = false } = {}) {
+  async function startUtteranceCapture({ fromWake = false, continuous = false } = {}) {
+    void continuous
     if (captureActive) {
       onRejected({ reason: 'capture-active' })
       return
     }
     captureActive = true
+    capturePeakRms = 0
     chunks = []
     onPartial('')
     emitPhase('recording')
+    detectionEnabled = false
 
     const limitMs = fromWake ? maxUtteranceMsWake : maxUtteranceMs
 
@@ -190,6 +457,7 @@ export function createVoiceInputLocal({
         captureActive = false
         const wasHold = holdToTalkActive
         holdToTalkActive = false
+        if (continuousActive) scheduleDetectionCooldown()
 
         try {
           if (!chunks.length) {
@@ -208,13 +476,15 @@ export function createVoiceInputLocal({
         } finally {
           chunks = []
           recorder = null
-          if (!wasHold && !wakeArmed) {
+          capturePeakRms = 0
+          if (!wasHold && !wakeArmed && !continuousActive) {
             stopTracks(stream)
             stream = null
           }
         }
       }
 
+      captureStartedAt = now()
       recorder.start()
       utteranceTimer = setTimeout(() => {
         if (recorder?.state === 'recording') recorder.stop()
@@ -232,7 +502,9 @@ export function createVoiceInputLocal({
   }
 
   function isWakeSupported() {
-    return isSupported() && porcupine.isSupported()
+    if (!isSupported()) return false
+    if (usePorcupineWake) return porcupine.isSupported()
+    return webSpeechWake.isSupported()
   }
 
   return {
@@ -240,7 +512,11 @@ export function createVoiceInputLocal({
     isWakeSupported,
 
     isWakeConfigured() {
-      return porcupine.isConfigured()
+      return usePorcupineWake ? porcupine.isConfigured() : webSpeechWake.isSupported()
+    },
+
+    getWakeMode() {
+      return usePorcupineWake ? 'porcupine' : 'webspeech'
     },
 
     setOnPartial(fn) {
@@ -267,15 +543,46 @@ export function createVoiceInputLocal({
       onRejected = typeof fn === 'function' ? fn : () => {}
     },
 
+    setOnBargeIn(fn) {
+      onBargeIn = typeof fn === 'function' ? fn : () => {}
+    },
+
+    setDetectionEnabled(enabled) {
+      detectionEnabled = Boolean(enabled)
+      if (!enabled) {
+        speechStartAt = 0
+        silenceStartAt = 0
+      }
+    },
+
+    setSpeakingPhase(active) {
+      speakingPhase = Boolean(active)
+      bargeStartAt = 0
+      if (active) {
+        detectionEnabled = false
+        speechStartAt = 0
+      }
+    },
+
+    startContinuous,
+    stopContinuous,
+
+    isContinuous() {
+      return continuousActive
+    },
+
     async armWake() {
       wakeArmed = true
       await ensureStream()
-      return porcupine.arm()
+      if (usePorcupineWake) return porcupine.arm()
+      webSpeechWake.start()
+      return true
     },
 
     async disarmWake() {
       wakeArmed = false
-      await porcupine.disarm()
+      if (usePorcupineWake) await porcupine.disarm()
+      else webSpeechWake.stop()
       stopRecorderOnly()
       stopTracks(stream)
       stream = null
@@ -283,11 +590,14 @@ export function createVoiceInputLocal({
     },
 
     async pauseWake() {
-      await porcupine.pause()
+      if (usePorcupineWake) await porcupine.pause()
+      else webSpeechWake.stop()
     },
 
     async resumeWake() {
-      if (wakeArmed) await porcupine.resume()
+      if (!wakeArmed) return
+      if (usePorcupineWake) await porcupine.resume()
+      else webSpeechWake.start()
     },
 
     async start() {
@@ -306,6 +616,7 @@ export function createVoiceInputLocal({
     },
 
     async release() {
+      if (continuousActive) await stopContinuous()
       await this.disarmWake()
       await porcupine.release()
     }

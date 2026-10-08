@@ -1,0 +1,11 @@
+node_modules
+audio/.venv
+.git
+logs
+dist
+.env.secrets
+*.log
+.cursor
+**/__pycache__
+**/*.pyc
+.pytest_cache

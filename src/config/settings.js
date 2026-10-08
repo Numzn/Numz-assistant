@@ -119,7 +119,7 @@ export const settings = {
     lang: 'en-US',
     /**
      * Audio pipeline:
-     * - `local`: Porcupine wake + local Python STT (Silero VAD + faster-whisper)
+     * - `local`: Porcupine wake + local Python STT (Whisper VAD + faster-whisper)
      * - `legacy`: Web Speech and/or cloud STT (previous behavior)
      */
     audioMode: 'local',
@@ -130,8 +130,36 @@ export const settings = {
      */
     sttMode: 'server',
     sttBackend: 'local',
-    maxUtteranceMs: 8000,
-    sttPrompt: 'Proper nouns: NUMZ, NUMZFLEET.',
+    maxUtteranceMs: 12000,
+    sttPrompt:
+      'Numz is a helpful personal voice assistant. NUMZ, NUMZFLEET, immobilize, unit, tracker, dashboard, fleet, summary, status, show, locate, find, cancel, stop, yes, no, vehicle, speed, fuel, location, maintenance, alert, warning, dispatch, alarms, notification.',
+    /**
+     * Phase 1 continuous conversation (ChatGPT Voice style):
+     * - `conversationMode`: enable hands-free listen -> respond -> listen loop
+     * - `autoStartOnLoad`: begin the loop automatically once the page is ready
+     * - `hideHoldToTalkButton`: hide the legacy hold-to-talk mic button
+     */
+    conversationMode: true,
+    autoStartOnLoad: true,
+    hideHoldToTalkButton: true,
+    /** Client-side energy VAD tuning (browser AnalyserNode RMS). */
+    vadSilenceMs: 1800,
+    /** Minimum RMS floor; adaptive noise tracking sits above this. */
+    vadEnergyThreshold: 0.02,
+    vadMinSpeechMs: 250,
+    /** Minimum MediaRecorder duration before silence can end an utterance. */
+    minRecordingMs: 2000,
+    /** Speech must exceed noise floor by this ratio (or min delta). */
+    vadSpeechRatio: 2.2,
+    vadSpeechMinDelta: 0.012,
+    /** During capture, RMS below peak * this ratio counts as silence. */
+    vadSilenceRatio: 0.42,
+    /** Pause new triggers after an utterance ends (ms). */
+    vadCooldownMs: 1200,
+    vadBargeInMinMs: 600,
+    vadBargeInThreshold: 0.04,
+    vadIdleTimeoutMs: 30000,
+    latencyAuditEnabled: true,
     porcupineKeyword: 'numz',
     porcupineAccessKey: import.meta.env.VITE_PICOVOICE_ACCESS_KEY ?? '',
     porcupineKeywordPublicPath: import.meta.env.VITE_PORCUPINE_KEYWORD_PUBLIC_PATH ?? '',

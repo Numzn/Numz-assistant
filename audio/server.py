@@ -1,5 +1,5 @@
 """
-Local audio sidecar: Silero VAD + faster-whisper.
+Local audio sidecar: faster-whisper with built-in VAD.
 Run: python server.py  (default http://127.0.0.1:8765)
 """
 
@@ -9,6 +9,7 @@ import os
 from flask import Flask, jsonify, request
 
 from transcribe import health_info, transcribe_blob, warmup
+from live_speech_ws import register_live_speech_route
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +22,7 @@ PORT = int(os.environ.get("AUDIO_PORT", "8765"))
 WARMUP_ON_START = os.environ.get("AUDIO_WARMUP", "1") != "0"
 
 app = Flask(__name__)
+register_live_speech_route(app)  # ws://<host>:<port>/live-speech — see live_speech_ws.py
 
 
 @app.route("/health", methods=["GET"])

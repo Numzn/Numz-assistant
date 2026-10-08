@@ -150,6 +150,121 @@ body {
   word-break: break-word;
 }
 
+#assistantResponse {
+  font-size: 14px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.96);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#assistantResponse:empty {
+  display: none;
+}
+
+/* Persistent state badge — always tells the user what the assistant is doing. */
+#assistantStateBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: start;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(240, 250, 255, 0.92);
+  background: rgba(2, 6, 23, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+#assistantStateDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(160, 180, 200, 0.7);
+  flex: none;
+}
+
+#assistantStateBadge[data-state="LISTENING"],
+#assistantStateBadge[data-state="TRANSCRIBING"] {
+  border-color: rgba(52, 211, 153, 0.5);
+}
+#assistantStateBadge[data-state="LISTENING"] #assistantStateDot,
+#assistantStateBadge[data-state="TRANSCRIBING"] #assistantStateDot {
+  background: #34d399;
+  animation: badgePulse 1.4s ease-in-out infinite;
+}
+
+#assistantStateBadge[data-state="PROCESSING"],
+#assistantStateBadge[data-state="THINKING"],
+#assistantStateBadge[data-state="RETRIEVING_MEMORY"],
+#assistantStateBadge[data-state="TOOL_EXECUTION"],
+#assistantStateBadge[data-state="GENERATING"] {
+  border-color: rgba(251, 191, 36, 0.55);
+}
+#assistantStateBadge[data-state="PROCESSING"] #assistantStateDot,
+#assistantStateBadge[data-state="THINKING"] #assistantStateDot,
+#assistantStateBadge[data-state="RETRIEVING_MEMORY"] #assistantStateDot,
+#assistantStateBadge[data-state="TOOL_EXECUTION"] #assistantStateDot,
+#assistantStateBadge[data-state="GENERATING"] #assistantStateDot {
+  background: #fbbf24;
+}
+
+#assistantStateBadge[data-state="SPEAKING"] {
+  border-color: rgba(56, 189, 248, 0.55);
+}
+#assistantStateBadge[data-state="SPEAKING"] #assistantStateDot {
+  background: #38bdf8;
+  animation: badgePulse 1.1s ease-in-out infinite;
+}
+
+#assistantStateBadge[data-state="ERROR"] {
+  border-color: rgba(248, 113, 113, 0.6);
+}
+#assistantStateBadge[data-state="ERROR"] #assistantStateDot {
+  background: #f87171;
+}
+
+@keyframes badgePulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.75);
+  }
+}
+
+/* Hidden when conversation mode owns the mic (hideHoldToTalkButton). */
+#micButton.is-hidden {
+  display: none;
+}
+
+#latencyFooter {
+  position: fixed;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 11;
+  padding: 4px 10px;
+  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: rgba(200, 255, 240, 0.85);
+  background: rgba(2, 6, 23, 0.7);
+  border: 1px solid rgba(47, 240, 255, 0.2);
+  border-radius: 6px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#latencyFooter[hidden] {
+  display: none;
+}
+
 #voiceDebugPanel {
   position: fixed;
   right: 12px;

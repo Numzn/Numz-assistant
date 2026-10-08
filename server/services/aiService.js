@@ -1,13 +1,18 @@
 import { createAiProvider } from '../ai/providers/providerFactory.js'
 
-const provider = createAiProvider()
+let provider
+
+function getProvider() {
+  if (!provider) provider = createAiProvider()
+  return provider
+}
 
 /**
  * @param {{ role: string, content: string }[]} messages
  * @returns {Promise<string>}
  */
 export async function generateResponse(messages) {
-  return provider.generate({ messages })
+  return getProvider().generate({ messages })
 }
 
 /**
@@ -15,5 +20,5 @@ export async function generateResponse(messages) {
  * @returns {AsyncGenerator<{ type: 'token', token: string } | { type: 'message', content: string }>}
  */
 export async function* streamResponse(messages) {
-  yield* provider.stream({ messages })
+  yield* getProvider().stream({ messages })
 }
