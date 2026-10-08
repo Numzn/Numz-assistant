@@ -23,11 +23,18 @@ const FRAME_SAMPLES = 1600 // 100ms @ 16kHz — matches the worklet's default
 const SAMPLE_RATE = 16000
 const WORKLET_URL = '/worklets/pcm-capture-processor.js'
 
+/**
+ * meetingId + meetingTicket (both optional, together): persist this session's final segments
+ * to a meeting. The ticket is issued by an operator with the admin token and is scoped to that
+ * meeting; the browser never holds the admin token. Without them the session is standalone.
+ */
 export function createLiveSpeechClient({
   wsUrl,
   language = '',
   saveRecording = false,
   reprocessOnStop = false,
+  meetingId = '',
+  meetingTicket = '',
   getDeviceId = () => ''
 } = {}) {
   if (!wsUrl) throw new Error('createLiveSpeechClient requires wsUrl (ws:// or wss:// to the audio sidecar)')
@@ -63,13 +70,13 @@ export function createLiveSpeechClient({
     const type = msg?.type
 
     if (type === 'ready') {
-      onReady({ sessionId: msg.sessionId })
+      onReady({ sessionId: msg.sessionId, meetingId: msg.meetingId ?? null, persistence: msg.persistence ?? null })
       return
     }
     if (type === 'transcript') {
       if (msg.state === 'PARTIAL') onPartial(msg.text ?? '')
       else if (msg.state === 'STABILIZING') onStabilizing(msg.text ?? '')
-      else if (msg.state === 'FINAL') onFinalSegment(msg.segment ?? null)
+      else if (msg.state === 'FINAL') onFinalSegment(msg.segment ?? null, msg.persisted ?? null)
       return
     }
     if (type === 'error') {
@@ -158,7 +165,8 @@ export function createLiveSpeechClient({
           format: 'f32le',
           language,
           saveRecording,
-          reprocessOnStop
+          reprocessOnStop,
+          ...(meetingId ? { meetingId, meetingTicket } : {})
         })
       )
 

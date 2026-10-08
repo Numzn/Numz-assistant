@@ -29,6 +29,10 @@
     WS URL: <input id="wsUrl" value="" />
   </div>
   <div style="margin-top: 0.5rem">
+    Meeting ID (optional): <input id="meetingId" value="" />
+    Meeting ticket (optional): <input id="meetingTicket" value="" />
+  </div>
+  <div style="margin-top: 0.5rem">
     <button id="startBtn">Start</button>
     <button id="pauseBtn" disabled>Pause</button>
     <button id="resumeBtn" disabled>Resume</button>
@@ -73,7 +77,11 @@
       finalsEl.innerHTML = ''
       partialEl.textContent = ''
 
-      client = createLiveSpeechClient({ wsUrl: document.getElementById('wsUrl').value })
+      client = createLiveSpeechClient({
+        wsUrl: document.getElementById('wsUrl').value,
+        meetingId: document.getElementById('meetingId').value.trim(),
+        meetingTicket: document.getElementById('meetingTicket').value.trim()
+      })
 
       client.setOnReady(({ sessionId }) => {
         statusEl.textContent = `listening — session ${sessionId}`
@@ -84,10 +92,16 @@
       client.setOnStabilizing((text) => {
         partialEl.textContent = `STABILIZING: ${text}`
       })
-      client.setOnFinalSegment((segment) => {
+      client.setOnFinalSegment((segment, persisted) => {
         partialEl.textContent = ''
+        // Text from speech recognition is never parsed as HTML.
         const div = document.createElement('div')
-        div.innerHTML = `<span class="speaker">[${segment.start.toFixed(1)}–${segment.end.toFixed(1)}] ${segment.speaker ?? 'unknown'}</span>: ${segment.text}`
+        const label = document.createElement('span')
+        label.className = 'speaker'
+        label.textContent = `[${segment.start.toFixed(1)}–${segment.end.toFixed(1)}] ${segment.speaker ?? 'unknown'}`
+        const state = document.createElement('em')
+        state.textContent = ` (${persisted ?? 'unknown'})`
+        div.append(label, ': ', document.createTextNode(segment.text), state)
         finalsEl.appendChild(div)
       })
       client.setOnError((err) => {
