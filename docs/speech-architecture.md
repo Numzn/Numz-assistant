@@ -1,72 +1,136 @@
 # Speech and Meeting Intelligence Architecture
 
+Status labels: **Implemented**, **Partially implemented**, **Planned** (see
+[meeting-lifecycle.md](meeting-lifecycle.md)).
+
 ## Scope
 
-This document describes the current Speech / Meeting Intelligence subsystem. The general voice assistant and Three.js renderer are separate consumers and are not part of this subsystem's domain model.
+This describes the Speech / Meeting Intelligence subsystem. The voice assistant (hold-to-talk and
+conversation mode) and the Three.js renderer are separate consumers. They are not part of this
+subsystem's domain model.
 
-## Current canonical flow
+## Canonical flow — **Implemented** for the live transport and the batch CLIs
 
 ```text
 Audio input
-  -> live WebSocket or batch file ingestion
+  -> live WebSocket (audio/live_speech_ws.py) or batch file (speech_cli.py / lecture_cli.py)
   -> frame/file decoding and validation
   -> live frame VAD + endpointing, or batch VAD metadata
-  -> ASR adapter
+  -> ASR adapter (faster-whisper)
   -> optional alignment
   -> optional diarization
-  -> reconciliation
+  -> reconciliation (TranscriptReconciler, live; reconcile.py, batch)
   -> canonical transcript schema 1.0
-  -> grounded notes or rolling intelligence
+  -> [live + meeting]  durable outbox -> meeting API -> SQLite
+  -> grounded notes (speechNotesService) or rolling intelligence (seam only)
 ```
 
-The canonical transcript is the source of truth. Partial ASR hypotheses are provisional; generated intelligence is derived and must retain evidence references.
+The canonical transcript is the source of truth. Partial hypotheses are provisional and are never
+stored. Generated intelligence is derived and must keep evidence references.
 
-## Existing module ownership
+## Module ownership
 
-| Responsibility | Current implementation |
-|---|---|
-| Batch ingestion and decoding | `audio/transcribe.py`, `audio/speech/audio_io.py` |
-| Batch VAD | `audio/speech/vad.py` |
-| Batch ASR adapter | `audio/speech/asr.py` |
-| Alignment contract | `audio/speech/alignment.py` |
-| Diarization contract/backends | `audio/speech/diarization.py` |
-| Batch reconciliation | `audio/speech/reconcile.py` |
-| Batch orchestration | `audio/speech/pipeline.py` |
-| Live frame VAD | `audio/speech/live/frame_vad.py` |
-| Live endpointing | `audio/speech/live/endpointing.py` |
-| Live streaming ASR | `audio/speech/live/streaming_asr.py` |
-| Live hypothesis events | `audio/speech/live/events.py` |
-| Live hypothesis reconciliation | `audio/speech/reconciler.py` |
-| Live session lifecycle | `audio/speech/live/session.py` |
-| Live transport | `audio/live_speech_ws.py` |
-| Grounded notes | `server/services/speechNotesService.js` |
-| Rolling intelligence seam | `server/services/rollingIntelligenceService.js` |
+| Responsibility | Module | Status |
+|---|---|---|
+| Batch decoding and ingestion | `audio/transcribe.py`, `audio/speech/audio_io.py` | Implemented |
+| Batch VAD metadata | `audio/speech/vad.py` | Implemented |
+| Batch ASR adapter | `audio/speech/asr.py` (uses `transcribe._transcribe_segments`) | Implemented |
+| Alignment contract | `audio/speech/alignment.py` | Implemented (native pass-through) |
+| Diarization contract and backends | `audio/speech/diarization.py` | Implemented; pyannote optional, not installed |
+| Batch reconciliation | `audio/speech/reconcile.py` | Implemented |
+| Batch orchestration | `audio/speech/pipeline.py` | Implemented |
+| Live frame VAD | `audio/speech/live/frame_vad.py` | Implemented (energy gate) |
+| Live endpointing | `audio/speech/live/endpointing.py` | Implemented |
+| Live streaming ASR | `audio/speech/live/streaming_asr.py` | Implemented; timestamps have known anchoring limits (see gaps) |
+| Live hypothesis events | `audio/speech/live/events.py` | Implemented |
+| Live hypothesis reconciliation | `audio/speech/reconciler.py` | Implemented |
+| Segment identity | `audio/speech/live/ids.py` | Implemented |
+| Live session lifecycle | `audio/speech/live/session.py` | Implemented |
+| Durable outbox | `audio/speech/live/outbox.py` | Implemented, file-based |
+| Meeting persistence client | `audio/speech/live/persistence.py` | Implemented |
+| Live transport | `audio/live_speech_ws.py` | Implemented |
+| Meeting domain and lifecycle | `server/meetings/meetingDomain.js` | Implemented |
+| Meeting service | `server/services/meetingSessionService.js` | Implemented |
+| Meeting persistence (SQLite) | `server/persistence/*` (repositories, migrations) | Implemented |
+| Meeting authentication | `server/auth/meetingAuth.js` | Implemented (shared secrets) |
+| Meeting API | `server/routes/meetings.js`, `server/http/errorHandler.js` | Implemented |
+| Grounded notes | `server/services/speechNotesService.js` | Implemented |
+| Rolling intelligence | `server/services/rollingIntelligenceService.js` | Seam only; not connected to the live transport |
 
-The live transport may persist final segments through the Node meeting API when
-started with a `meetingId` and configured `MEETING_API_URL`; it remains usable as
-a standalone transport when those settings are absent.
+## Persistence path — **Implemented** [`test_live_ws_integration.py`, `meetingE2E.test.js`]
+
+```text
+client  --start {meetingId, meetingTicket}-->  live_speech_ws.py
+          POST /api/v1/meetings/:id/sessions   (Bearer ticket)  -> speechSessionId, timelineOffsetMs
+client  --audio frames-->  LiveSpeechSession  --FINAL-->  drain_committed()
+          Outbox.enqueue (fsync)  ->  POST .../transcript/final  (Bearer ticket)
+              201 INSERTED | 200 ALREADY_EXISTS  -> DELIVERED  (acknowledged)
+              409 / 400 / 404                     -> REJECTED   (quarantined)
+              401 / 403 / 503 / 5xx / timeout     -> PENDING    (retained, retried)
+          client  <-- FINAL frame with "persisted": DELIVERED | PENDING | REJECTED
+client  --stop-->  end session, drain, flush pending, POST .../sessions/:sid/end
+          <-- stopped {transcript, persistence: {delivered, pending, rejected, durable}}
+```
+
+The transport never holds the admin token. It holds a meeting-scoped ticket, which is issued by an
+operator and cannot read or change anything beyond its meeting.
 
 ## Contract rules
 
-- `audio/speech/schema.py` is the only canonical transcript shape.
-- `validate_transcript()` must be called before a transcript crosses into persistence or intelligence processing.
-- `TranscriptReconciler` owns provisional live hypothesis state and stable canonical segment IDs.
+- `audio/speech/schema.py` is the only canonical transcript shape. `validate_transcript()` runs before
+  a transcript crosses into persistence or intelligence processing.
+- `TranscriptReconciler` and `LiveSpeechSession` own provisional hypothesis state and stable
+  canonical segment ids.
 - Only `TranscriptStage.FINAL` creates a canonical segment.
-- VAD, ASR, diarization, and transport implementations are injected into pipeline/session owners where practical.
-- Diarization is optional. Unknown and overlap attribution remain valid outcomes.
+- Persistence is reached through interfaces: `MeetingPersistence` (HTTP) in the sidecar, and
+  services over repositories in the API. No SQL is written in the WebSocket handler, the ASR, the
+  VAD, or the reconciler.
+- Diarization is optional. Unknown and overlap attribution are valid outcomes.
 
-## Current production gaps
+## Configuration — **Implemented**
 
-The following are intentionally still future milestones rather than hidden behavior:
+| Variable | Where | Purpose |
+|---|---|---|
+| `MEETING_API_TOKEN` | API (`.env.secrets`) | Admin credential (≥ 32 chars). Unset = admin routes return 503 |
+| `MEETING_TICKET_SECRET` | API (`.env.secrets`) | Signs meeting tickets (≥ 32 chars). Unset = tickets unavailable |
+| `MEETING_TICKET_TTL_S` | API | Ticket lifetime in seconds (default 43200) |
+| `SPEECH_DATABASE_PATH` | API | SQLite file (default `./data/speech.sqlite`; compose: `/data/speech.sqlite`) |
+| `MEETING_API_URL` | Sidecar | Server origin, e.g. `http://127.0.0.1:3103`. Must not include `/api/v1` |
+| `LIVE_OUTBOX_DIR` | Sidecar | Durable outbox directory (default `audio/outbox/`, gitignored) |
+| `LIVE_RECORDINGS_DIR` | Sidecar | Opt-in WAV recordings. Unset = never written |
 
-- persistent meeting, transcript, speaker, and intelligence repositories
-- authenticated meeting and speech APIs
-- reconnect/resume protocol with idempotency keys
-- bounded queues and backpressure policy
-- rolling intelligence connected to the live transport
-- separate final-intelligence job and validated report schema
-- structured metrics and correlation IDs across Python and Node
-- retention, deletion, export, and access-control policies
-- comprehensive integration, failure, and performance suites
+The sidecar's systemd unit reads `.env` and `.env.secrets` through `EnvironmentFile`, so setting
+`MEETING_API_URL` in `.env` and `LIVE_OUTBOX_DIR` there is enough.
 
-The next vertical slice should add persistent meeting/session ownership without introducing a second transcript format.
+## Resource findings — **measured** on this host (swap-saturated, 7.7 GB RAM)
+
+- `torch`, `torchaudio` and `silero-vad` were installed for the sidecar but were not used. Nothing in
+  the project imports them. ctranslate2 imports torch only when it is present (guarded), so removing it
+  is safe. Confirmed by running all 37 Python tests with those modules blocked. Peak RSS at sidecar
+  import drops from 248 MB to 73 MB. They were removed from `audio/requirements.txt` and from the venv.
+- `onnxruntime` stays: it is a hard dependency of faster-whisper, which runs the bundled Silero VAD on it.
+- Torch is still needed only by the optional pyannote diarization extra (`requirements.diarization.txt`).
+- Measured production speech performance requires a realistically provisioned machine. Latencies
+  observed here (2–3 s per clip, occasional long decodes) reflect host memory pressure as well as the code.
+
+## Current gaps
+
+**Partially implemented:**
+
+- Live segment timestamps come from the streaming ASR and are known to anchor incorrectly after the
+  first utterance (see the review findings). The meeting timeline inherits that error. It is monotonic,
+  but not yet accurate to the second.
+- The outbox is per sidecar host and file-based. It is not replicated.
+- The voice assistant's hold-to-talk and conversation path does not create speech sessions. It uses the
+  batch `/api/v1/assistant/stt` endpoint.
+
+**Planned:**
+
+- User authentication. Meetings are created by an operator today.
+- Reconnect protocol with explicit idempotency keys. Idempotency currently rests on deterministic ids.
+- Bounded queues and backpressure. Persistence calls are synchronous with short timeouts inside the
+  WebSocket handler.
+- Automatic outbox replay. Replay happens when a session for the same meeting starts or stops.
+- Structured metrics and correlation ids across Python and Node.
+- Retention, deletion, export, and access-control policy.
+- A separate final-intelligence job and validated report schema.
