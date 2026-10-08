@@ -12,6 +12,8 @@
     "lecture:notes": "node scripts/lecture-notes.js",
     "speech:process": "node scripts/run-speech-process.js",
     "speech:notes": "node scripts/speech-notes.js",
+    "outbox:status": "node scripts/run-outbox.js status",
+    "outbox:replay": "node scripts/run-outbox.js replay",
     "test": "node --test server/meetings/*.test.js server/persistence/*.test.js server/auth/*.test.js server/api/*.test.js",
     "build": "vite build",
     "start": "cross-env NODE_ENV=production node server/server.js",
