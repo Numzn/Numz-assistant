@@ -54,7 +54,10 @@ incompatible change bumps the version.
 - Live segment ids are `seg_` + 32 hex characters: `uuid5(speechSessionId, "segment:<n>")`. They are
   unique across sessions and meetings, and a retried event re-derives the same id. See
   [meeting-lifecycle.md](meeting-lifecycle.md#segment-identity).
-- Only `(meeting_id, segment_id)` is unique in storage. Order is never derived from the id.
+- Only `(meeting_id, segment_id)` is unique in storage. Order is never derived from the id: stored
+  segments are returned by `start`, then `end`, with the id only as a stable tie-break.
+- Every stored segment names its speech session (`speechSessionId`). A write that does not name one is
+  refused with 400; the API never guesses which session a segment belongs to.
 
 ## Meeting-stored segments — **Implemented** [`persistenceOutcomes.test.js`]
 
@@ -98,9 +101,12 @@ commit the provisional hypothesis is cleared.
   or `null`. `language` is a string or `null`.
 - The whole JSON object is at most 64 KiB.
 
-The speech sidecar mirrors the Node rules before it sends anything (non-empty text, boolean
-`uncertain`, ordered timestamps). A segment that fails them is quarantined in the outbox with its
-reason and is never sent. Nothing is dropped silently.
+The speech sidecar mirrors the structural rules before it sends anything: a keyed segment, numeric
+ordered timestamps, non-empty text, boolean `uncertain`. A segment that fails them is quarantined in the
+outbox with its reason and is never sent. The length and id-format limits are enforced only by the API,
+which answers 400; the sidecar then reports the segment as `REJECTED` and quarantines it. Either way
+nothing is dropped silently, and the meeting cannot be ended as complete while the segment is missing
+(see [meeting-lifecycle.md](meeting-lifecycle.md)).
 
 ## Compatibility — **Implemented**
 

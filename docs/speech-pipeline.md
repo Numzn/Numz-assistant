@@ -149,8 +149,8 @@ existing AI provider (`generateResponse`, unmodified) to merge them into a
 running `{ currentTopics, decisions, openQuestions, actionItems,
 importantPoints }` view, each item citing real segment IDs/timestamps.
 It's a merge (carries forward + updates), not a restart each time. Not
-wired to a live transport yet (no browser mic streaming exists) — this is
-the backend seam, verified directly with fabricated finalized segments.
+connected to the live transport (Planned) — this is the backend seam,
+verified directly with fabricated finalized segments.
 
 **Latency vs. accuracy are genuinely different configurations**, not one
 setting: live ticks use fast/greedy decoding and loose energy-based VAD;
@@ -210,32 +210,21 @@ page (Start/Stop/Pause/Resume + a live transcript dump) for real-microphone
 validation. Dev-only (`npm run dev`) — imports `/src/...` directly, which
 only Vite's dev server resolves, not a production build.
 
-**Wire protocol:**
+**Wire protocol, session lifecycle and persistence:** the authoritative description is in
+[speech-architecture.md](speech-architecture.md) (persistence path, per-segment outcomes) and
+[meeting-lifecycle.md](meeting-lifecycle.md) (meeting and session states, completion integrity). In
+short: the client sends `start` (optionally with `meetingId` and `meetingTicket`), binary PCM frames,
+then `stop`. The server answers `ready`, `PARTIAL`/`STABILIZING` text, `FINAL` segments with their
+`persisted` outcome, `error`, and `stopped`. Without a meeting the session is standalone and a final
+segment reports `NOT_PERSISTED`. With one, every committed segment goes to the durable outbox and then
+to the meeting API, and `stopped` carries the persistence summary.
 
-```
-Client -> server:
-  {"type":"start","sampleRate":16000,"channels":1,"format":"f32le",
-   "language":"en","saveRecording":false,"reprocessOnStop":false}
-  <binary frame>  (repeated)
-  {"type":"pause"} / {"type":"resume"}
-  {"type":"stop"}
-
-Server -> client:
-  {"type":"ready","sessionId":"..."}
-  {"type":"transcript","state":"PARTIAL"|"STABILIZING","text":"..."}
-  {"type":"transcript","state":"FINAL","segment":{"start","end","speaker","text"}}
-  {"type":"paused"} / {"type":"resumed"}
-  {"type":"error","code":"...","message":"..."}
-  {"type":"stopped","transcript":{...canonical transcript...}}
-```
-
-**Session lifecycle:** `start` creates a `LiveSpeechSession`; `pause`/
-`resume` are handled entirely at the transport layer (a flag gating
-whether incoming frames reach the session) — `LiveSpeechSession` itself is
-unchanged. `stop` (or a client disconnect, or an idle timeout) always
-calls `session.finalize()` exactly once, from one `finally` block covering
-every exit path — so a dropped connection can only fail to add a *new*
-segment, never corrupt segments already committed.
+**Session lifecycle:** `start` creates a `LiveSpeechSession`; `pause`/`resume` are handled entirely at
+the transport layer (a flag gating whether incoming frames reach the session). `stop`, a client
+disconnect, or an idle timeout all end through one `finish()` path, exactly once: flush the last
+utterance, persist every committed segment, retry what is waiting, report the session's committed count
+to the meeting API, then build the summary transcript. A failure in a later step can never discard a
+segment that was already committed.
 
 **Recording:** raw audio only ever lives in memory for the connection's
 lifetime by default. Passing `saveRecording: true` in `start` opts in to
@@ -255,23 +244,14 @@ synchronous faster-whisper call mid-decode without process-level
 machinery, which is out of scope for this pass) — a 30s idle-timeout
 bounds an abandoned connection instead.
 
-**Tested:** an automated transport test connects as a real WebSocket
-client (Node's `ws`, already a project dependency) against an isolated
-temporary sidecar instance and verifies: a correctly-formatted `start` is
-accepted; malformed audio and an unsupported format are both rejected
-without crashing the server; no PARTIAL/STABILIZING event ever carries a
-finalized `segment`; endpointing firing on the loud→silence transition
-and `stop` firing a flush on mid-utterance audio both trigger real decode
-attempts (verified via the server's own log, since synthetic noise
-honestly produces no text — see below — so no wire event fires either
-way, correctly); and an abrupt disconnect (no clean `stop`) leaves the
-server process healthy and able to serve a fresh connection normally
-afterward. **Not tested automatically:** real speech content and real
-conversational timing (natural pause lengths, whether `end_silence_ms`
-"feels right") — no microphone can be exercised in this environment.
-**Requires manual validation**: open `public/live-speech-test.html` via
-`npm run dev`, speak into a real microphone, and confirm partial/
-stabilizing/final text actually reflects what was said.
+**Tested:** `audio/tests/test_live_ws_integration.py` drives the real WebSocket handler as a real
+client against the real Node meeting API and a real SQLite file, with only the speech model replaced by a
+deterministic stand-in. It covers two sessions of one meeting, an API outage and recovery, a segment the API
+refuses, and misconfigured starts. `test_live_transport_unit.py` covers finalization and decoder failures.
+**Not tested automatically:** real speech content and real conversational timing (natural pause lengths,
+whether `end_silence_ms` "feels right"), and the real Whisper model on this transport. No microphone can
+be exercised in this environment. **Requires manual validation**: open `public/live-speech-test.html` via
+`npm run dev`, speak into a real microphone, and confirm partial/stabilizing/final text reflects what was said.
 
 ## Known limitations (by design, not oversights)
 
@@ -284,12 +264,10 @@ stabilizing/final text actually reflects what was said.
   real recording.
 - `PyannoteDiarizer` is implemented against pyannote.audio's documented
   3.x API but not exercised live (no HF token in this environment).
-- Live mode has a real transport now (`audio/live_speech_ws.py` +
-  `liveSpeechClient.js`), verified end-to-end at the protocol level with
-  synthetic audio (see "Connecting real audio" above), but real
-  microphone content and real conversational timing (natural pause
-  lengths, whether `end_silence_ms` "feels right") have not been
-  exercised — that requires the manual test page and a human, not
-  something this pass could automate.
+- Live mode has a real transport (`audio/live_speech_ws.py` +
+  `liveSpeechClient.js`), verified end-to-end with a deterministic speech
+  model (see "Connecting real audio" above). Real microphone content and
+  real conversational timing have not been exercised; that requires the
+  manual test page and a human.
 - No per-connection decode timeout/cancellation on the live transport —
   documented as a known gap, not solved (see "Connecting real audio").

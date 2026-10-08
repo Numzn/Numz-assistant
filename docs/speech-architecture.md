@@ -54,8 +54,19 @@ stored. Generated intelligence is derived and must keep evidence references.
 | Meeting persistence (SQLite) | `server/persistence/*` (repositories, migrations) | Implemented |
 | Meeting authentication | `server/auth/meetingAuth.js` | Implemented (shared secrets) |
 | Meeting API | `server/routes/meetings.js`, `server/http/errorHandler.js` | Implemented |
+| Persistence readiness (health, startup log) | `server/meetings/meetingHealth.js`, `audio/speech/live/health.py` | Implemented |
+| Outbox operator tool | `audio/outbox_cli.py` (`npm run outbox:status`, `npm run outbox:replay`) | Implemented |
 | Grounded notes | `server/services/speechNotesService.js` | Implemented |
 | Rolling intelligence | `server/services/rollingIntelligenceService.js` | Seam only; not connected to the live transport |
+
+## Naming note: `reconcile.py` and `reconciler.py`
+
+Two modules, two jobs. Neither is obsolete, and neither imports the other.
+
+| File | Used by | Job |
+|---|---|---|
+| `audio/speech/reconcile.py` | Batch pipeline (`pipeline.py`) | Merges a finished ASR result with diarization turns into per-speaker canonical segments. Offline, whole file at once |
+| `audio/speech/reconciler.py` | Live session (`live/session.py`) | Holds the live hypothesis state: PARTIAL and STABILIZING events replace the current guess, and only a FINAL event is committed as a canonical segment with a stable id. Streaming, one event at a time |
 
 ## Persistence path — **Implemented** [`test_live_ws_integration.py`, `meetingE2E.test.js`]
 
@@ -64,13 +75,20 @@ client  --start {meetingId, meetingTicket}-->  live_speech_ws.py
           POST /api/v1/meetings/:id/sessions   (Bearer ticket)  -> speechSessionId, timelineOffsetMs
 client  --audio frames-->  LiveSpeechSession  --FINAL-->  drain_committed()
           Outbox.enqueue (fsync)  ->  POST .../transcript/final  (Bearer ticket)
-              201 INSERTED | 200 ALREADY_EXISTS  -> DELIVERED  (acknowledged)
-              409 / 400 / 404                     -> REJECTED   (quarantined)
-              401 / 403 / 503 / 5xx / timeout     -> PENDING    (retained, retried)
-          client  <-- FINAL frame with "persisted": DELIVERED | PENDING | REJECTED
-client  --stop-->  end session, drain, flush pending, POST .../sessions/:sid/end
-          <-- stopped {transcript, persistence: {delivered, pending, rejected, durable}}
+              201 + INSERTED                       -> INSERTED        (stored now)
+              200 + ALREADY_EXISTS                 -> ALREADY_EXISTS  (identical segment already stored)
+              400 / 404 / 409                      -> REJECTED        (quarantined, never retried)
+              401 / 403 / 503 / 5xx / timeout,
+              or any 2xx without an explicit status -> FAILED          (kept in the outbox, retried)
+          client  <-- FINAL frame with "persisted": INSERTED | ALREADY_EXISTS | REJECTED | FAILED
+client  --stop-->  drain, flush the outbox, POST .../sessions/:sid/end {reason, committedSegments}
+          <-- stopped {transcript, persistence: {committed, inserted, alreadyExists, rejected, failed, durable}}
+operator --end-->  POST .../meetings/:id/end   refused with 409 while committed segments are missing
 ```
+
+A bare HTTP 200 or 201 never counts as saved. A segment is persisted only when the API says so
+explicitly, and the API refuses to end a meeting whose stored segments are fewer than the sessions
+say they committed (see [meeting-lifecycle.md](meeting-lifecycle.md)).
 
 The transport never holds the admin token. It holds a meeting-scoped ticket, which is issued by an
 operator and cannot read or change anything beyond its meeting.
@@ -95,7 +113,8 @@ operator and cannot read or change anything beyond its meeting.
 | `MEETING_TICKET_SECRET` | API (`.env.secrets`) | Signs meeting tickets (≥ 32 chars). Unset = tickets unavailable |
 | `MEETING_TICKET_TTL_S` | API | Ticket lifetime in seconds (default 43200) |
 | `SPEECH_DATABASE_PATH` | API | SQLite file (default `./data/speech.sqlite`; compose: `/data/speech.sqlite`) |
-| `MEETING_API_URL` | Sidecar | Server origin, e.g. `http://127.0.0.1:3103`. Must not include `/api/v1` |
+| `MEETING_API_URL` | Sidecar | Server origin, e.g. `http://127.0.0.1:3103`. Must not include `/api/v1`. Unset: meeting-bound sessions are refused and `/health` reports `persistence.state: disabled` |
+| `MEETING_TICKET` | Outbox tool only | A meeting ticket for `npm run outbox:replay`. Read from the environment, never the command line |
 | `LIVE_OUTBOX_DIR` | Sidecar | Durable outbox directory (default `audio/outbox/`, gitignored) |
 | `LIVE_RECORDINGS_DIR` | Sidecar | Opt-in WAV recordings. Unset = never written |
 
@@ -106,10 +125,12 @@ The sidecar's systemd unit reads `.env` and `.env.secrets` through `EnvironmentF
 
 - `torch`, `torchaudio` and `silero-vad` were installed for the sidecar but were not used. Nothing in
   the project imports them. ctranslate2 imports torch only when it is present (guarded), so removing it
-  is safe. Confirmed by running all 37 Python tests with those modules blocked. Peak RSS at sidecar
+  is safe. Confirmed by running the Python test suite (37 tests at the time) with those modules blocked. Peak RSS at sidecar
   import drops from 248 MB to 73 MB. They were removed from `audio/requirements.txt` and from the venv.
 - `onnxruntime` stays: it is a hard dependency of faster-whisper, which runs the bundled Silero VAD on it.
 - Torch is still needed only by the optional pyannote diarization extra (`requirements.diarization.txt`).
+- Measured 2026-10-08: the `small` int8 Whisper model costs about 450 MB (14 MB resident plus 437 MB swapped
+  out on a host whose swap was full). The first request after a long idle has to page it back in.
 - Measured production speech performance requires a realistically provisioned machine. Latencies
   observed here (2–3 s per clip, occasional long decodes) reflect host memory pressure as well as the code.
 
@@ -130,7 +151,9 @@ The sidecar's systemd unit reads `.env` and `.env.secrets` through `EnvironmentF
 - Reconnect protocol with explicit idempotency keys. Idempotency currently rests on deterministic ids.
 - Bounded queues and backpressure. Persistence calls are synchronous with short timeouts inside the
   WebSocket handler.
-- Automatic outbox replay. Replay happens when a session for the same meeting starts or stops.
+- A background outbox replay daemon. Waiting segments are retried when a session for the same meeting
+  starts or stops, or by hand with `npm run outbox:replay`.
 - Structured metrics and correlation ids across Python and Node.
+- A production WSGI server for the sidecar. It runs under Flask's development server today (`npm run dev:audio`).
 - Retention, deletion, export, and access-control policy.
 - A separate final-intelligence job and validated report schema.
