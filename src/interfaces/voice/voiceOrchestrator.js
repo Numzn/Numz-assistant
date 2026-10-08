@@ -1,6 +1,7 @@
 import { STATES } from '../../assistant/stateMachine.js'
 import { describeMicError } from './voiceDeviceManager.js'
 import { createVoiceDebug } from './voiceDebug.js'
+import { matchWakePhrase, normalizeText } from './wakePhrase.js'
 
 /**
  * Orchestrates STT + assistant request + TTS, mapped onto the state machine.
@@ -13,7 +14,8 @@ export function createVoiceOrchestrator({
   voiceOutput,
   deviceManager,
   ui,
-  config
+  config,
+  eventBus
 }) {
   let pressed = false
   let busy = false
@@ -21,20 +23,111 @@ export function createVoiceOrchestrator({
   let wakeMode = false
   let awaitingWakeCommand = false
 
+  // Continuous (ChatGPT-Voice-style) conversation loop.
+  let conversationActive = false
+  let streamingText = ''
+  let markedFirstToken = false
+
+  // Sentence-level streaming TTS: speak each sentence as soon as it's
+  // complete instead of waiting for the whole reply to finish generating
+  // (previously the single biggest source of perceived response latency —
+  // the model could finish thinking in 1s but a long reply still delayed
+  // first audio by however long the rest took to generate).
+  let speechBuffer = ''
+  let speakingStarted = false
+
   const audioMode = String(config?.audioMode ?? 'legacy').toLowerCase()
   const isLocalMode = audioMode === 'local'
-  const voiceDebug = createVoiceDebug({ enabled: Boolean(config?.debugTiming) })
+  const conversationMode = Boolean(config?.conversationMode) && isLocalMode
+  const hideHoldToTalk = Boolean(config?.hideHoldToTalkButton)
+  const autoStartOnLoad = Boolean(config?.autoStartOnLoad)
+  const supportsContinuous = typeof voiceInput?.startContinuous === 'function'
+  const voiceDebug = createVoiceDebug({
+    enabled: Boolean(config?.debugTiming) || Boolean(config?.latencyAuditEnabled)
+  })
+
+  // Extracts one speakable chunk (up to the first sentence boundary) from a
+  // growing token buffer, leaving the remainder for more context. Falls
+  // back to a soft break at the last space once the buffer grows too long
+  // without punctuation, so long unpunctuated text still speaks
+  // progressively rather than piling up silently.
+  const SENTENCE_BOUNDARY_RE = /[.!?]+[)\]"']*(?:\s+|$)/
+  const MIN_CHUNK_CHARS = 12
+  const MAX_BUFFER_CHARS = 220
+
+  function extractSpeakableChunk(buffer) {
+    if (buffer.length >= MAX_BUFFER_CHARS) {
+      const lastSpace = buffer.lastIndexOf(' ', MAX_BUFFER_CHARS)
+      const cut = lastSpace > MIN_CHUNK_CHARS ? lastSpace : MAX_BUFFER_CHARS
+      return { chunk: buffer.slice(0, cut).trim(), rest: buffer.slice(cut) }
+    }
+
+    const match = SENTENCE_BOUNDARY_RE.exec(buffer)
+    if (!match) return null
+    const cut = match.index + match[0].length
+    const chunk = buffer.slice(0, cut).trim()
+    if (chunk.length < MIN_CHUNK_CHARS) return null
+    return { chunk, rest: buffer.slice(cut) }
+  }
+
+  function ttsOptions() {
+    return {
+      voiceName: config?.ttsVoiceName,
+      lang: config?.lang,
+      rate: config?.ttsRate,
+      pitch: config?.ttsPitch,
+      volume: config?.ttsVolume
+    }
+  }
+
+  // Chunks are queued and drained one at a time (not fired concurrently
+  // with .then()) so submission order is guaranteed even though
+  // ensureSpeakingStarted() and enqueueChunk() are both async — otherwise a
+  // later sentence's setup could resolve before an earlier one's, playing
+  // them out of order.
+  let pendingSpeechChunks = []
+  let drainingSpeechQueue = false
+
+  async function drainSpeechQueue() {
+    if (drainingSpeechQueue) return
+    drainingSpeechQueue = true
+    try {
+      while (pendingSpeechChunks.length > 0) {
+        const text = pendingSpeechChunks.shift()
+        await ensureSpeakingStarted()
+        try {
+          await voiceOutput.enqueueChunk(text, ttsOptions())
+        } catch (err) {
+          console.error('[voice] streaming speech chunk failed', err)
+        }
+      }
+    } finally {
+      drainingSpeechQueue = false
+    }
+  }
+
+  function queueSpeechChunk(text) {
+    pendingSpeechChunks.push(text)
+    drainSpeechQueue()
+  }
+
+  async function ensureSpeakingStarted() {
+    if (speakingStarted) return
+    speakingStarted = true
+    voiceOutput.beginStream()
+    await assistantController.setSpeaking()
+    if (wakeMode) voiceInput.stop()
+    if (isLocalVoiceInput() && typeof voiceInput.pauseWake === 'function') {
+      await voiceInput.pauseWake()
+    }
+    if (conversationActive && typeof voiceInput.setSpeakingPhase === 'function') {
+      // Keep the mic + analyser running so the VAD loop can detect barge-in.
+      voiceInput.setSpeakingPhase(true)
+    }
+  }
 
   function isLocalVoiceInput() {
     return isLocalMode && typeof voiceInput?.armWake === 'function'
-  }
-
-  function normalizeText(text) {
-    return String(text ?? '')
-      .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
   }
 
   function getWakePhrases() {
@@ -58,18 +151,7 @@ export function createVoiceOrchestrator({
   }
 
   function extractWakeCommand(text) {
-    const normalized = normalizeText(text)
-    if (!normalized) return null
-
-    for (const phrase of getWakePhrases()) {
-      const index = normalized.indexOf(phrase)
-      if (index === -1) continue
-      const before = normalized.slice(0, index).trim()
-      if (before) continue
-      return normalized.slice(index + phrase.length).trim()
-    }
-
-    return null
+    return matchWakePhrase(text, getWakePhrases())
   }
 
   function setUiStatus(text) {
@@ -80,6 +162,23 @@ export function createVoiceOrchestrator({
   function setUiTranscript(text) {
     if (!ui?.transcriptEl) return
     ui.transcriptEl.textContent = text ?? ''
+  }
+
+  function setUiResponse(text) {
+    if (!ui?.responseEl) return
+    ui.responseEl.textContent = text ?? ''
+  }
+
+  function renderLatency() {
+    if (!ui?.latencyEl || !voiceDebug.enabled) return
+    const wanted = ['stt', 'ttft', 'llm_total', 'tts', 'turn_total']
+    const recent = voiceDebug.getLastMeasures(12)
+    const byName = new Map()
+    for (const m of recent) {
+      if (!byName.has(m.name)) byName.set(m.name, m.durationMs)
+    }
+    const parts = wanted.filter((n) => byName.has(n)).map((n) => `${n} ${byName.get(n)}ms`)
+    ui.latencyEl.textContent = parts.join('  ·  ')
   }
 
   function setUiSupported(supported) {
@@ -113,21 +212,39 @@ export function createVoiceOrchestrator({
   }
 
   async function speakReply(replyText) {
-    if (!replyText) return
-    await assistantController.setSpeaking()
-    if (wakeMode) voiceInput.stop()
-    if (isLocalVoiceInput() && typeof voiceInput.pauseWake === 'function') {
-      await voiceInput.pauseWake()
+    // Most of the reply was very likely already spoken incrementally, chunk
+    // by chunk, as it streamed in (see bindStreaming's token handler) —
+    // ensureSpeakingStarted() is a no-op if that already happened. This
+    // only does the full one-shot speak() setup+call when streaming never
+    // produced a single chunk (e.g. the non-streaming JSON fallback path in
+    // controller.js, which emits no token events at all).
+    if (!speakingStarted) {
+      if (!replyText) return
+      await ensureSpeakingStarted()
+      await voiceOutput.enqueueChunk(replyText, ttsOptions())
+    } else if (speechBuffer.trim()) {
+      // Flush whatever's left in the buffer past the last sentence boundary.
+      await voiceOutput.enqueueChunk(speechBuffer, ttsOptions())
+      speechBuffer = ''
     }
-    await voiceOutput.speak(replyText, {
-      voiceName: config?.ttsVoiceName,
-      lang: config?.lang,
-      rate: config?.ttsRate,
-      pitch: config?.ttsPitch,
-      volume: config?.ttsVolume
-    })
-    await safeSetIdle()
-    if (wakeMode) await startWakeListening()
+
+    try {
+      await voiceOutput.endStream()
+    } catch (err) {
+      const reason = String(err?.error ?? err?.name ?? '')
+      // Barge-in / manual stop cancels speech synthesis — not a real failure.
+      if (reason !== 'interrupted' && reason !== 'canceled') throw err
+    } finally {
+      if (typeof voiceInput.setSpeakingPhase === 'function') {
+        voiceInput.setSpeakingPhase(false)
+      }
+      speakingStarted = false
+    }
+
+    if (!conversationActive) {
+      await safeSetIdle()
+      if (wakeMode) await startWakeListening()
+    }
   }
 
   async function handleAssistantPrompt(text) {
@@ -140,20 +257,43 @@ export function createVoiceOrchestrator({
 
     busy = true
     setBusyUi(true)
+    if (typeof voiceInput.setDetectionEnabled === 'function') {
+      voiceInput.setDetectionEnabled(false)
+    }
     lastTranscript = cleaned
     setUiTranscript(cleaned)
+    streamingText = ''
+    markedFirstToken = false
+    speechBuffer = ''
+    setUiResponse('')
     voiceDebug.mark('llm_start')
     voiceDebug.setPhase('thinking')
     setUiStatus('Thinking…')
 
     const reply = await assistantController.requestReply(cleaned)
-    voiceDebug.measure('llm', 'llm_start')
+    voiceDebug.mark('llm_end')
+    voiceDebug.measure('llm_total', 'llm_start', 'llm_end')
     if (!reply) {
+      if (speakingStarted) {
+        // Streaming produced some chunks (already spoken or in flight) but
+        // the turn ended without a final reply (e.g. aborted mid-stream) —
+        // still need to close out speaking state cleanly.
+        try {
+          await voiceOutput.endStream()
+        } catch {
+          /* ignore */
+        }
+        if (typeof voiceInput.setSpeakingPhase === 'function') voiceInput.setSpeakingPhase(false)
+        speakingStarted = false
+      }
       busy = false
       setBusyUi(false)
       voiceDebug.setPhase('idle')
+      if (conversationActive) await afterTurnComplete()
       return
     }
+
+    setUiResponse(reply)
 
     try {
       await speakReply(reply)
@@ -161,11 +301,94 @@ export function createVoiceOrchestrator({
       console.error('[voice] speak failed', err)
       await assistantController.setError()
       await safeSetIdle()
+      if (conversationActive) await stopConversation()
     } finally {
       busy = false
       setBusyUi(false)
       voiceDebug.setPhase('idle')
     }
+
+    if (conversationActive) await afterTurnComplete()
+  }
+
+  async function startConversation() {
+    if (!conversationMode || !supportsContinuous) return
+    conversationActive = true
+    streamingText = ''
+    setUiResponse('')
+    setUiTranscript('')
+    setUiStatus('Listening…')
+    try {
+      await assistantController.setListening()
+      voiceInput.setSpeakingPhase(false)
+      await voiceInput.startContinuous()
+    } catch (err) {
+      console.error('[voice] startConversation failed', err)
+      const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : ''
+      const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : ''
+      if (name === 'NotAllowedError') {
+        setUiStatus('Mic blocked — allow microphone in browser settings')
+        conversationActive = false
+      } else if (code === 'audio-context-suspended') {
+        // Needs a real user gesture to resume — bindUi()'s mic tap handler
+        // retries startConversation() directly when it sees this state.
+        // The button may be hidden (hideHoldToTalkButton) since conversation
+        // mode normally owns the mic hands-free; reveal it so there's an
+        // actual affordance to tap.
+        if (ui?.buttonEl) {
+          ui.buttonEl.removeAttribute('hidden')
+          ui.buttonEl.classList.remove('is-hidden')
+        }
+        setUiStatus('Tap Mic to start listening')
+        conversationActive = false
+      } else {
+        await assistantController.setError()
+        await safeSetIdle()
+        conversationActive = false
+      }
+    }
+  }
+
+  async function stopConversation() {
+    conversationActive = false
+    try {
+      if (typeof voiceInput.stopContinuous === 'function') {
+        await voiceInput.stopContinuous()
+      }
+      voiceOutput.cancel()
+      speechBuffer = ''
+      speakingStarted = false
+      pendingSpeechChunks = []
+      await safeSetIdle()
+      setUiStatus('')
+    } catch (err) {
+      console.error('[voice] stopConversation failed', err)
+    }
+  }
+
+  async function afterTurnComplete() {
+    // Conversation-mode only: loop straight back into listening.
+    // Legacy wake / hold-to-talk paths handle their own idle + wake restart.
+    if (!conversationActive) return
+    await startConversation()
+  }
+
+  async function handleBargeIn() {
+    if (!conversationActive) return
+    voiceOutput.cancel()
+    if (typeof voiceInput.setSpeakingPhase === 'function') voiceInput.setSpeakingPhase(false)
+    streamingText = ''
+    speechBuffer = ''
+    speakingStarted = false
+    pendingSpeechChunks = []
+    setUiResponse('')
+    setUiTranscript('')
+    try {
+      await assistantController.interrupt()
+    } catch (err) {
+      console.warn('[voice] interrupt failed', err)
+    }
+    await startConversation()
   }
 
   async function handleFinalTranscript(text) {
@@ -216,7 +439,7 @@ export function createVoiceOrchestrator({
     try {
       if (isLocalVoiceInput()) {
         if (typeof voiceInput.isWakeSupported === 'function' && !voiceInput.isWakeSupported()) {
-          setUiStatus('Wake needs Picovoice key + keyword files')
+          setUiStatus('Wake unavailable — check mic permissions')
           wakeMode = false
           ui?.wakeButtonEl?.setAttribute('aria-pressed', 'false')
           return
@@ -261,12 +484,25 @@ export function createVoiceOrchestrator({
 
   function bindUi() {
     const btn = ui?.buttonEl
-    if (!btn) return () => {}
+
+    // When conversation mode owns the mic, hide the legacy hold-to-talk button.
+    if (hideHoldToTalk && btn) {
+      btn.classList.add('is-hidden')
+      btn.setAttribute('hidden', '')
+    }
 
     const onDown = async (ev) => {
       ev.preventDefault?.()
       if (busy) {
         setUiStatus('Busy — wait…')
+        return
+      }
+      if (conversationMode && !conversationActive) {
+        // A tap is a real user gesture — recovers conversation mode when
+        // autoStartOnLoad's AudioContext came up suspended (see
+        // voiceInputLocal.js's 'audio-context-suspended') or otherwise
+        // failed to start. Don't fall through to hold-to-talk below.
+        await startConversation()
         return
       }
       if (wakeMode) await stopWakeListening()
@@ -300,13 +536,21 @@ export function createVoiceOrchestrator({
       }
     }
 
-    btn.addEventListener('pointerdown', onDown)
-    btn.addEventListener('pointerup', onUp)
-    btn.addEventListener('pointercancel', onUp)
-    btn.addEventListener('pointerleave', (ev) => {
-      if (!pressed) return
-      onUp(ev)
-    })
+    // Attached regardless of hideHoldToTalk: onDown also handles recovering
+    // a stuck conversation-mode AudioContext (see startConversation's
+    // 'audio-context-suspended' branch above), which reveals this button
+    // on demand — a hidden element can't receive taps anyway, so this is a
+    // no-op for hold-to-talk itself while conversation mode is healthy.
+    const wireHoldToTalk = Boolean(btn)
+    if (wireHoldToTalk) {
+      btn.addEventListener('pointerdown', onDown)
+      btn.addEventListener('pointerup', onUp)
+      btn.addEventListener('pointercancel', onUp)
+      btn.addEventListener('pointerleave', (ev) => {
+        if (!pressed) return
+        onUp(ev)
+      })
+    }
 
     const onWakeToggle = async (ev) => {
       ev.preventDefault?.()
@@ -329,11 +573,13 @@ export function createVoiceOrchestrator({
     ui?.wakeButtonEl?.addEventListener('click', onWakeToggle)
 
     return () => {
-      btn.removeEventListener('pointerdown', onDown)
-      btn.removeEventListener('pointerup', onUp)
-      btn.removeEventListener('pointercancel', onUp)
+      if (wireHoldToTalk) {
+        btn.removeEventListener('pointerdown', onDown)
+        btn.removeEventListener('pointerup', onUp)
+        btn.removeEventListener('pointercancel', onUp)
+        // pointerleave listener is anonymous; keep it simple for v1 (page refresh clears).
+      }
       ui?.wakeButtonEl?.removeEventListener('click', onWakeToggle)
-      // pointerleave listener is anonymous; keep it simple for v1 (page refresh clears).
     }
   }
 
@@ -462,9 +708,21 @@ export function createVoiceOrchestrator({
         if (phase === 'transcribing') {
           voiceDebug.mark('stt_start')
           setUiStatus('Transcribing…')
-        } else if (phase === 'recording') {
+          if (typeof voiceInput.setDetectionEnabled === 'function') {
+            voiceInput.setDetectionEnabled(false)
+          }
+          if (conversationActive) {
+            assistantController.setTranscribing().catch(() => {})
+          }
+        } else if (phase === 'recording' || phase === 'listening') {
           setUiStatus('Listening…')
         }
+      })
+    }
+
+    if (typeof voiceInput.setOnBargeIn === 'function') {
+      voiceInput.setOnBargeIn(() => {
+        handleBargeIn().catch((err) => console.error('[voice] barge-in failed', err))
       })
     }
 
@@ -485,6 +743,7 @@ export function createVoiceOrchestrator({
     voiceInput.setOnFinal((text) => {
       voiceDebug.measure('stt', 'stt_start')
       voiceDebug.mark('transcript_ready')
+      voiceDebug.mark('utterance_end')
       handleFinalTranscript(text)
     })
 
@@ -499,6 +758,28 @@ export function createVoiceOrchestrator({
       const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : ''
       const code =
         err && typeof err === 'object' && 'error' in err ? String(err.error) : ''
+
+      // Conversation mode: a stray VAD trigger that yields no speech should
+      // quietly loop back to listening rather than dropping out of the loop.
+      if (conversationActive) {
+        if (code === 'no-speech') {
+          setUiStatus('Listening…')
+          busy = false
+          setBusyUi(false)
+          await afterTurnComplete()
+          return
+        }
+        if (name === 'NotAllowedError' || code === 'not-allowed') {
+          setUiStatus('Mic blocked — allow microphone in browser settings')
+        } else if (code === 'audio-service-offline') {
+          setUiStatus('Audio service offline — run npm run dev:audio')
+        } else {
+          setUiStatus('Voice error — conversation stopped')
+        }
+        await stopConversation()
+        return
+      }
+
       if (name === 'NotAllowedError' || code === 'not-allowed' || code === 'service-not-allowed') {
         setUiStatus('Mic blocked — allow microphone in browser settings')
         wakeMode = false
@@ -556,12 +837,38 @@ export function createVoiceOrchestrator({
     })
 
     voiceOutput.setOnEnd(() => {
-      voiceDebug.measure('tts', 'tts_start')
+      voiceDebug.mark('tts_end')
+      voiceDebug.measure('tts', 'tts_start', 'tts_end')
+      voiceDebug.measure('turn_total', 'utterance_end', 'tts_end')
+      renderLatency()
       setUiStatus('')
     })
 
     voiceOutput.setOnError((err) => {
       console.error('[voice] tts error', err)
+    })
+  }
+
+  function bindStreaming() {
+    if (!eventBus || typeof eventBus.on !== 'function') return () => {}
+    return eventBus.on('assistant:token', (event) => {
+      const token = event?.payload?.token ?? ''
+      if (!token) return
+      if (!markedFirstToken) {
+        markedFirstToken = true
+        voiceDebug.mark('first_token')
+        voiceDebug.measure('ttft', 'llm_start', 'first_token')
+      }
+      streamingText += token
+      setUiResponse(streamingText)
+
+      speechBuffer += token
+      let extracted = extractSpeakableChunk(speechBuffer)
+      while (extracted) {
+        speechBuffer = extracted.rest
+        queueSpeechChunk(extracted.chunk)
+        extracted = extractSpeakableChunk(speechBuffer)
+      }
     })
   }
 
@@ -579,14 +886,19 @@ export function createVoiceOrchestrator({
       if (isLocalMode) {
         const wakeOk =
           typeof voiceInput.isWakeSupported !== 'function' || voiceInput.isWakeSupported()
+        const wakeModeLabel =
+          typeof voiceInput.getWakeMode === 'function' && voiceInput.getWakeMode() === 'porcupine'
+            ? 'Porcupine'
+            : 'speech'
         setMicHint(
           wakeOk
-            ? 'Local audio — hold mic or enable wake (NUMZ)'
-            : 'Local STT ready; add Picovoice key for wake'
+            ? `Local audio — hold mic or enable wake (NUMZ via ${wakeModeLabel})`
+            : 'Local STT ready; enable mic permissions for wake'
         )
       }
 
       bindVoiceCallbacks()
+      const destroyStreaming = bindStreaming()
       const destroyUi = bindUi()
       const destroyMicSettings = bindMicSettings()
 
@@ -598,9 +910,21 @@ export function createVoiceOrchestrator({
             })
           : () => {}
 
+      if (conversationMode && autoStartOnLoad && supportsContinuous) {
+        // Hands-free: enter the listening loop as soon as the page is ready.
+        startConversation().catch((err) =>
+          console.error('[voice] auto-start conversation failed', err)
+        )
+      } else if (conversationMode && !supportsContinuous) {
+        console.warn('[voice] conversationMode requires the local audio pipeline')
+      }
+
       return {
         voiceDebug,
+        startConversation,
+        stopConversation,
         destroy() {
+          destroyStreaming?.()
           destroyUi?.()
           destroyMicSettings?.()
           unsubscribe?.()

@@ -50,6 +50,32 @@ assistantStateMachine.subscribe((next, prev) => {
   console.log('[assistant:visual]', prev, '->', next)
 })
 
+const STATE_LABELS = {
+  IDLE: 'Ready',
+  LISTENING: 'Listening',
+  TRANSCRIBING: 'Transcribing',
+  PROCESSING: 'Thinking',
+  THINKING: 'Thinking',
+  RETRIEVING_MEMORY: 'Thinking',
+  TOOL_EXECUTION: 'Working',
+  GENERATING: 'Thinking',
+  SPEAKING: 'Speaking',
+  INTERRUPTED: 'Listening',
+  ERROR_RECOVERY: 'Recovering',
+  ERROR: 'Error'
+}
+
+const stateBadgeEl = document.querySelector('#assistantStateBadge')
+const stateLabelEl = document.querySelector('#assistantStateLabel')
+if (stateBadgeEl) {
+  const updateBadge = (state) => {
+    stateBadgeEl.dataset.state = state
+    if (stateLabelEl) stateLabelEl.textContent = STATE_LABELS[state] ?? state
+  }
+  updateBadge(assistantStateMachine.getState())
+  assistantStateMachine.subscribe((next) => updateBadge(next))
+}
+
 assistantController.init().catch((err) => {
   console.error('[assistant] init failed', err)
 })
@@ -65,6 +91,13 @@ if (settings.voice?.enabled) {
   const micHintEl = document.querySelector('#micDeviceHint')
   const statusEl = document.querySelector('#voiceStatus')
   const transcriptEl = document.querySelector('#voiceTranscript')
+  const responseEl = document.querySelector('#assistantResponse')
+  const latencyEl = document.querySelector('#latencyFooter')
+
+  if (latencyEl && settings.voice?.latencyAuditEnabled) {
+    latencyEl.hidden = false
+    latencyEl.removeAttribute('aria-hidden')
+  }
 
   const voiceOutput = createVoiceOutputSpeechSynthesis()
   const deviceManager = createVoiceDeviceManager()
@@ -80,15 +113,26 @@ if (settings.voice?.enabled) {
     audioMode === 'local'
       ? createVoiceInputLocal({
           lang: settings.voice.lang,
-          prompt: settings.voice?.sttPrompt ?? '',
+          prompt: settings.voice?.sttPrompt,
           sttBackend,
-          maxUtteranceMs: settings.voice?.maxUtteranceMs ?? 8000,
-          maxUtteranceMsWake: settings.voice?.maxUtteranceMsWake ?? 6000,
-          wakeDebounceMs: settings.voice?.wakeDebounceMs ?? 1500,
-          accessKey: settings.voice?.porcupineAccessKey ?? '',
-          keywordPublicPath: settings.voice?.porcupineKeywordPublicPath ?? '',
-          modelPublicPath: settings.voice?.porcupineModelPublicPath ?? '/porcupine/porcupine_params_en.pv',
-          keywordLabel: settings.voice?.porcupineKeyword ?? 'numz',
+          maxUtteranceMs: settings.voice?.maxUtteranceMs,
+          maxUtteranceMsWake: settings.voice?.maxUtteranceMsWake,
+          wakeDebounceMs: settings.voice?.wakeDebounceMs,
+          accessKey: settings.voice?.porcupineAccessKey,
+          keywordPublicPath: settings.voice?.porcupineKeywordPublicPath,
+          modelPublicPath: settings.voice?.porcupineModelPublicPath,
+          keywordLabel: settings.voice?.porcupineKeyword,
+          wakePhrases: settings.voice?.wakePhrases,
+          vadSilenceMs: settings.voice?.vadSilenceMs,
+          vadEnergyThreshold: settings.voice?.vadEnergyThreshold,
+          vadMinSpeechMs: settings.voice?.vadMinSpeechMs,
+          minRecordingMs: settings.voice?.minRecordingMs,
+          vadSpeechRatio: settings.voice?.vadSpeechRatio,
+          vadSpeechMinDelta: settings.voice?.vadSpeechMinDelta,
+          vadSilenceRatio: settings.voice?.vadSilenceRatio,
+          vadCooldownMs: settings.voice?.vadCooldownMs,
+          vadBargeInMinMs: settings.voice?.vadBargeInMinMs,
+          vadBargeInThreshold: settings.voice?.vadBargeInThreshold,
           getDeviceId: () => deviceManager.getPreferredDeviceId?.() ?? ''
         })
       : sttMode === 'server'
@@ -120,9 +164,12 @@ if (settings.voice?.enabled) {
       micTestButtonEl,
       micHintEl,
       statusEl,
-      transcriptEl
+      transcriptEl,
+      responseEl,
+      latencyEl
     },
-    config: settings.voice
+    config: settings.voice,
+    eventBus
   })
 
   const voiceApi = voice.init()

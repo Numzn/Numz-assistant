@@ -1,0 +1,38 @@
+# Production build of the assistant — real `vite build` output + the
+# Express server (server/server.js) serving both /dist and /api from one
+# port, instead of the raw `vite` dev process. Added 2026-07-17 as part of
+# migrating Assistant off the legacy numz-assistant-https dependency.
+#
+# Voice transcription: points at the host's systemd-managed audio sidecar
+# (numz-assistant-audio.service) via host.docker.internal, rather than
+# running a second Whisper process in this container — reuses the
+# already-warm model instead of doubling RAM/CPU for a duplicate. Requires
+# the sidecar to be bound to 0.0.0.0 (AUDIO_HOST in .env) and a host
+# firewall rule scoping :8765 to the docker bridge range (see
+# scripts/*, ufw). Fixed 2026-09-22 — this container previously had no
+# reachable STT backend at all (see git history for that era's comment).
+services:
+  assistant-production:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: numz-assistant-production
+    restart: unless-stopped
+    env_file:
+      - .env
+      - .env.secrets
+    environment:
+      NODE_ENV: production
+      PORT: "3103"
+      AUDIO_SERVICE_URL: http://host.docker.internal:8765
+      SPEECH_DATABASE_PATH: /data/speech.sqlite
+    volumes:
+      - speech-database:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:3103:3103"
+      - "172.17.0.1:3103:3103"
+
+volumes:
+  speech-database:

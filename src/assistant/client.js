@@ -121,20 +121,35 @@ export function createAssistantClient() {
     },
 
     async streamMessage(message, { signal, onEvent } = {}) {
-      // Prefer WebSocket streaming when available; fall back to SSE.
-      // This preserves current behavior while enabling lower-latency duplex transport.
+      // Prefer WebSocket streaming when available; fall back to SSE — but
+      // only when the WS attempt never produced any output. Once it has
+      // relayed even one token, the voice UI may already be speaking it
+      // incrementally as it streams in; silently retrying via a fresh SSE
+      // request at that point would regenerate and re-speak the whole
+      // reply from scratch (sounds like the same sentence twice).
+      let wsTokenSeen = false
+      const wrappedOnEvent = (parsed) => {
+        if (parsed?.event === 'token') wsTokenSeen = true
+        onEvent?.(parsed)
+      }
+
       try {
         if (sessionId) {
           const wsResult = await realtime.chatStream({
             sessionId,
             message,
-            onEvent,
+            onEvent: wrappedOnEvent,
             signal
           })
           if (wsResult) return wsResult
+          if (wsTokenSeen) {
+            throw new Error('WebSocket stream ended without a final reply after producing partial output')
+          }
         }
-      } catch {
-        // Ignore and fall back to SSE.
+      } catch (err) {
+        if (wsTokenSeen) throw err
+        // Otherwise the WS attempt never produced any output — a clean,
+        // single fallback attempt via SSE is safe.
       }
 
       const res = await fetch(sessionPath('/chat/stream'), {

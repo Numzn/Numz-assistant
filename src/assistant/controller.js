@@ -26,42 +26,70 @@ export function createAssistantController({ stateMachine, client, eventBus }) {
     activeAbort?.abort()
     activeAbort = new AbortController()
     let finalReply = ''
+    let tokenSeen = false
 
     try {
-      const message = await client.streamMessage(text, {
-        signal: activeAbort.signal,
-        onEvent({ event, data }) {
-          eventBus?.emit?.('assistant:stream-event', { event, data })
+      let message
+      try {
+        message = await client.streamMessage(text, {
+          signal: activeAbort.signal,
+          onEvent({ event, data }) {
+            eventBus?.emit?.('assistant:stream-event', { event, data })
 
-          if (event === 'state' && isLocalGenerationState(data?.state)) {
-            // Stream transports can deliver duplicate / out-of-order state events.
-            // Never let an invalid transition crash streaming; force-sync as needed.
-            try {
-              if (stateMachine.canTransition(data.state)) {
-                stateMachine.setState(data.state)
-              } else {
-                stateMachine.setState(data.state, { force: true, source: 'stream' })
+            if (event === 'token') tokenSeen = true
+
+            if (event === 'state' && isLocalGenerationState(data?.state)) {
+              // Stream transports can deliver duplicate / out-of-order state events.
+              // Never let an invalid transition crash streaming; force-sync as needed.
+              try {
+                if (stateMachine.canTransition(data.state)) {
+                  stateMachine.setState(data.state)
+                } else {
+                  stateMachine.setState(data.state, { force: true, source: 'stream' })
+                }
+              } catch (err) {
+                console.warn('[assistant] ignoring invalid stream state', {
+                  from: stateMachine.getState?.(),
+                  to: data?.state,
+                  err
+                })
               }
-            } catch (err) {
-              console.warn('[assistant] ignoring invalid stream state', {
-                from: stateMachine.getState?.(),
-                to: data?.state,
-                err
-              })
+            }
+
+            if (event === 'token') {
+              eventBus?.emit?.('assistant:token', data)
+            }
+
+            if (event === 'message' && typeof data?.reply === 'string') {
+              finalReply = data.reply
             }
           }
-
-          if (event === 'token') {
-            eventBus?.emit?.('assistant:token', data)
-          }
-
-          if (event === 'message' && typeof data?.reply === 'string') {
-            finalReply = data.reply
-          }
+        })
+      } catch (err) {
+        // A deliberate interrupt() abort is a normal, expected cancellation
+        // — let the outer catch's existing AbortError handling deal with it
+        // unchanged. Anything else that fails after tokens already streamed
+        // (and were likely already spoken) must not look like "no reply
+        // yet, safe to retry" to the caller below.
+        if (err?.name !== 'AbortError' && tokenSeen) {
+          const wrapped = new Error('Stream failed after producing partial output')
+          wrapped.code = 'partial-stream-no-final'
+          throw wrapped
         }
-      })
+        throw err
+      }
 
-      return typeof message?.reply === 'string' ? message.reply : finalReply
+      const resolved = typeof message?.reply === 'string' ? message.reply : finalReply
+      if (!resolved && tokenSeen) {
+        // Tokens streamed (and were likely already spoken incrementally by
+        // the voice UI) but no final reply text ever arrived — don't let
+        // the caller retry via a fresh request: that would regenerate and
+        // re-speak the same turn from scratch.
+        const err = new Error('Stream ended without a final reply after producing partial output')
+        err.code = 'partial-stream-no-final'
+        throw err
+      }
+      return resolved
     } finally {
       activeAbort = null
     }
@@ -102,6 +130,16 @@ export function createAssistantController({ stateMachine, client, eventBus }) {
     async setListening() {
       stateMachine.setState(STATES.LISTENING)
       await syncServerState(STATES.LISTENING)
+    },
+
+    async setTranscribing() {
+      stateMachine.setState(STATES.TRANSCRIBING)
+      await syncServerState(STATES.TRANSCRIBING)
+    },
+
+    async setThinking() {
+      stateMachine.setState(STATES.THINKING)
+      await syncServerState(STATES.THINKING)
     },
 
     async setProcessing() {
@@ -164,6 +202,7 @@ export function createAssistantController({ stateMachine, client, eventBus }) {
           sessionId: client.getSessionId?.() ?? null
         })
         let reply = null
+        let skipFallback = false
         try {
           reply = await requestReplyWithStream(trimmed)
         } catch (err) {
@@ -172,10 +211,15 @@ export function createAssistantController({ stateMachine, client, eventBus }) {
             return null
           }
 
-          console.warn('[assistant] stream failed; falling back to JSON chat', err)
+          if (err?.code === 'partial-stream-no-final') {
+            console.warn('[assistant] stream produced partial output but no final reply; not retrying to avoid duplicate speech', err)
+            skipFallback = true
+          } else {
+            console.warn('[assistant] stream failed; falling back to JSON chat', err)
+          }
         }
 
-        if (!reply) {
+        if (!reply && !skipFallback) {
           const data = await client.sendMessage(trimmed)
           reply = data.reply
         }

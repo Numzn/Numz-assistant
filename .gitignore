@@ -1,9 +1,28 @@
 node_modules/
 dist/
-.env
-*.log
 .DS_Store
+*.log
+logs/
+
+# Secrets and local environment. Templates stay tracked.
+.env
+.env.*
+!.env.example
+!.env.secrets.example
+docker/certs/
+
+# Runtime data: meeting database, durable outbox, opt-in recordings
+data/
+audio/outbox/
+lectures/
+
+# Python
 audio/.venv/
 audio/models/
 audio/__pycache__/
+__pycache__/
 *.pyc
+
+# Local backups of infrastructure configuration
+*.bak*
+docker/*.bak*

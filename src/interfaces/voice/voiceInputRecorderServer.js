@@ -1,32 +1,8 @@
+import { getMediaDevices, pickMimeType, stopTracks } from './micUtils.js'
+import { parseJsonBody } from '../../utils/json.js'
+
 function createUnsupportedError() {
   return new Error('MediaRecorder/getUserMedia is not supported in this browser')
-}
-
-function getMediaDevices() {
-  return globalThis?.navigator?.mediaDevices ?? null
-}
-
-function pickMimeType() {
-  const w = globalThis?.window
-  const MR = w?.MediaRecorder
-  if (!MR?.isTypeSupported) return ''
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/ogg'
-  ]
-  return candidates.find((t) => MR.isTypeSupported(t)) ?? ''
-}
-
-async function parseJson(res) {
-  const text = await res.text().catch(() => '')
-  if (!text) return {}
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { raw: text }
-  }
 }
 
 /**
@@ -54,10 +30,6 @@ export function createVoiceInputRecorderServer({
   let active = false
   let chunks = []
 
-  function stopTracks(s) {
-    for (const t of s?.getTracks?.() ?? []) t.stop()
-  }
-
   async function ensureStream() {
     const mediaDevices = getMediaDevices()
     if (!mediaDevices?.getUserMedia) throw createUnsupportedError()
@@ -83,7 +55,7 @@ export function createVoiceInputRecorderServer({
       body: buf
     })
 
-    const data = await parseJson(res)
+    const data = await parseJsonBody(res)
     if (!res.ok) {
       throw new Error(data.error ?? `STT failed: ${res.status}`)
     }

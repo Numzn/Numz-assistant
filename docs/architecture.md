@@ -29,7 +29,7 @@ Each layer has **one responsibility only**.
 | **State** | Truth only (assistant lifecycle; no HTTP, no Three.js) |
 | **Controller** | Orchestration (input flow, transitions, calling the API client) |
 | **API client** | Communication (`fetch`, serialization, errors) |
-| **Backend** | Intelligence boundary (validation, AI service, tools, persistence later) |
+| **Backend** | Intelligence boundary (validation, AI service, tools, meeting and transcript persistence) |
 
 ### 2. State is the single source of truth
 
@@ -63,7 +63,8 @@ Each layer has **one responsibility only**.
 |------|------|
 | `server/server.js` | Express bootstrap, middleware, route mounting, static `dist` in production |
 | `server/routes/` | HTTP endpoints |
-| `server/services/` | AI generation (`generateResponse`), future persistence |
+| `server/services/` | AI generation (`generateResponse`), meeting session service (lifecycle, speech sessions, canonical transcript), speech notes |
+| `server/meetings/`, `server/persistence/`, `server/auth/`, `server/http/` | Meeting domain and state machine, SQLite repositories and migrations, meeting authentication, error mapping. See [meeting-lifecycle.md](meeting-lifecycle.md) |
 | `server/tools/` | Executable tool functions for future tool-calling |
 
 ---
@@ -353,6 +354,7 @@ Use this section to avoid confusing **aspirational** architecture with **what is
 | Assistant routes | `server/routes/assistant.js` — `GET/PATCH /state`, `POST /chat` |
 | AI placeholder | `server/services/aiService.js` — `generateResponse(messages)` |
 | Tools stub | `server/tools/tools.js` |
+| Speech and meeting intelligence | `audio/speech/`, `audio/live_speech_ws.py`, `server/meetings/`, `server/persistence/`. See [speech-architecture.md](speech-architecture.md) and [meeting-lifecycle.md](meeting-lifecycle.md) |
 
 ### Not implemented yet (blueprint targets)
 

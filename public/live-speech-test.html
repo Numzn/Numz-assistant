@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Live Speech Transport — Manual Test Harness</title>
+  <meta name="robots" content="noindex" />
+  <style>
+    body { font-family: monospace; max-width: 720px; margin: 2rem auto; padding: 0 1rem; background: #0b0f14; color: #d8e2ea; }
+    h1 { font-size: 1rem; color: #7cc6ff; }
+    button { padding: 0.5rem 1rem; margin-right: 0.5rem; }
+    #status { margin: 1rem 0; padding: 0.5rem; border: 1px solid #2a3644; }
+    #partial { min-height: 1.5em; color: #9fe; }
+    #finals { border-top: 1px solid #2a3644; margin-top: 1rem; padding-top: 1rem; }
+    #finals div { margin-bottom: 0.5rem; }
+    .speaker { color: #7cc6ff; }
+    pre { white-space: pre-wrap; background: #111820; padding: 0.75rem; border: 1px solid #2a3644; }
+    input { width: 22rem; }
+  </style>
+</head>
+<body>
+  <h1>Live Speech Transport — manual mic test (not a product UI, dev-only)</h1>
+  <p>
+    Exercises <code>src/interfaces/voice/liveSpeechClient.js</code> against a real microphone,
+    end to end through <code>audio/live_speech_ws.py</code>. Only works via <code>npm run dev</code>
+    (imports <code>/src/...</code> directly) — not a production build target.
+  </p>
+
+  <div>
+    WS URL: <input id="wsUrl" value="" />
+  </div>
+  <div style="margin-top: 0.5rem">
+    Meeting ID (optional): <input id="meetingId" value="" />
+    Meeting ticket (optional): <input id="meetingTicket" value="" />
+  </div>
+  <div style="margin-top: 0.5rem">
+    <button id="startBtn">Start</button>
+    <button id="pauseBtn" disabled>Pause</button>
+    <button id="resumeBtn" disabled>Resume</button>
+    <button id="stopBtn" disabled>Stop</button>
+  </div>
+
+  <div id="status">idle</div>
+  <div id="partial"></div>
+  <div id="finals"></div>
+  <pre id="stoppedOutput" hidden></pre>
+
+  <script type="module">
+    import { createLiveSpeechClient } from '/src/interfaces/voice/liveSpeechClient.js'
+
+    // Default to the same host this page was loaded from (not a hardcoded
+    // 127.0.0.1) — this page is commonly opened from a different machine
+    // than the one running the audio sidecar (e.g. over Tailscale), where
+    // "localhost" would silently mean the wrong box.
+    document.getElementById('wsUrl').value = `ws://${window.location.hostname}:8765/live-speech`
+
+    const statusEl = document.getElementById('status')
+    const partialEl = document.getElementById('partial')
+    const finalsEl = document.getElementById('finals')
+    const stoppedEl = document.getElementById('stoppedOutput')
+    const startBtn = document.getElementById('startBtn')
+    const pauseBtn = document.getElementById('pauseBtn')
+    const resumeBtn = document.getElementById('resumeBtn')
+    const stopBtn = document.getElementById('stopBtn')
+
+    let client = null
+
+    function setButtons({ started }) {
+      startBtn.disabled = started
+      pauseBtn.disabled = !started
+      resumeBtn.disabled = !started
+      stopBtn.disabled = !started
+    }
+
+    startBtn.onclick = async () => {
+      statusEl.textContent = 'requesting microphone…'
+      stoppedEl.hidden = true
+      finalsEl.innerHTML = ''
+      partialEl.textContent = ''
+
+      client = createLiveSpeechClient({
+        wsUrl: document.getElementById('wsUrl').value,
+        meetingId: document.getElementById('meetingId').value.trim(),
+        meetingTicket: document.getElementById('meetingTicket').value.trim()
+      })
+
+      client.setOnReady(({ sessionId }) => {
+        statusEl.textContent = `listening — session ${sessionId}`
+      })
+      client.setOnPartial((text) => {
+        partialEl.textContent = `PARTIAL: ${text}`
+      })
+      client.setOnStabilizing((text) => {
+        partialEl.textContent = `STABILIZING: ${text}`
+      })
+      client.setOnFinalSegment((segment, persisted) => {
+        partialEl.textContent = ''
+        // Text from speech recognition is never parsed as HTML.
+        const div = document.createElement('div')
+        const label = document.createElement('span')
+        label.className = 'speaker'
+        label.textContent = `[${segment.start.toFixed(1)}–${segment.end.toFixed(1)}] ${segment.speaker ?? 'unknown'}`
+        const state = document.createElement('em')
+        state.textContent = ` (${persisted ?? 'unknown'})`
+        div.append(label, ': ', document.createTextNode(segment.text), state)
+        finalsEl.appendChild(div)
+      })
+      client.setOnError((err) => {
+        statusEl.textContent = `error: ${err.message}`
+      })
+      client.setOnStopped((transcript) => {
+        statusEl.textContent = 'stopped'
+        stoppedEl.hidden = false
+        stoppedEl.textContent = JSON.stringify(transcript, null, 2)
+        setButtons({ started: false })
+      })
+
+      try {
+        await client.start()
+        setButtons({ started: true })
+      } catch (err) {
+        statusEl.textContent = `failed to start: ${err.message}`
+        setButtons({ started: false })
+      }
+    }
+
+    pauseBtn.onclick = () => client?.pause()
+    resumeBtn.onclick = () => client?.resume()
+    stopBtn.onclick = async () => {
+      statusEl.textContent = 'stopping…'
+      await client?.stop()
+    }
+  </script>
+</body>
+</html>

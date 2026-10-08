@@ -1,12 +1,12 @@
 # Local audio sidecar (Phase 1)
 
-Silero VAD + faster-whisper for offline STT. Node proxies `POST /api/v1/assistant/stt` here when `STT_BACKEND=local`.
+faster-whisper (with its bundled Silero VAD) for speech to text. Node proxies `POST /api/v1/assistant/stt` here when `STT_BACKEND=local`. The same process hosts the live speech WebSocket and its meeting persistence (see below).
 
 ## Prerequisites
 
 - Python 3.10+
 - **ffmpeg** on PATH (`ffmpeg -version`)
-- ~1–1.5 GB RAM for `small` int8 model (first run downloads weights)
+- About 0.5 GB RAM for the `small` int8 model (measured about 450 MB; first run downloads weights). It is paged out first on a host that is short of memory, so the first request after a long idle is slow
 
 ## Setup
 
@@ -34,8 +34,9 @@ cd audio && python server.py
 
 Default URL: `http://127.0.0.1:8765`
 
-- `GET /health` — service and model info
+- `GET /health` — service and model info, plus a `persistence` block: `disabled`, `misconfigured`, `degraded` or `ok` (no secrets)
 - `POST /transcribe` — raw audio body (`audio/webm`), headers `X-Stt-Lang`, `X-Stt-Prompt`
+- `WS /live-speech` — live transcription; optionally persisted to a meeting (see below)
 
 ## Environment
 
@@ -49,6 +50,33 @@ Default URL: `http://127.0.0.1:8765`
 | `VAD_SPEECH_PAD_MS` | `80` | Padding around speech |
 | `WHISPER_MODEL` | `small` | faster-whisper model name |
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU quantization |
+| `MEETING_API_URL` | unset | Server origin of the meeting API, e.g. `http://127.0.0.1:3103` (no `/api/v1`). Unset: meeting-bound live sessions are refused |
+| `LIVE_OUTBOX_DIR` | `audio/outbox` | Durable outbox for segments not yet stored (gitignored) |
+| `LIVE_RECORDINGS_DIR` | unset | Opt-in WAV recordings. Unset: audio is never written to disk |
+
+## Meeting persistence
+
+A client that starts a live session with a `meetingId` and a `meetingTicket` has every final segment
+written to the durable outbox and then to the meeting API. Each segment is reported as `INSERTED`,
+`ALREADY_EXISTS`, `REJECTED` or `FAILED`; only the first two mean it is saved. Check the state with
+`GET /health` (`persistence.state`). If segments are waiting:
+
+```bash
+npm run outbox:status
+MEETING_TICKET=<ticket> npm run outbox:replay -- <meeting-id>
+```
+
+See [`docs/meeting-lifecycle.md`](../docs/meeting-lifecycle.md) and [`docs/speech-architecture.md`](../docs/speech-architecture.md).
+
+## Tests
+
+```bash
+npm test                                                        # Node: domain, persistence, auth, API, end to end
+cd audio && .venv/bin/python -m unittest discover -s tests -t .  # Python: speech core, live transport, outbox, health
+```
+
+The Python integration tests start the real Node server and a real SQLite file, so they need Node on `PATH`. On a
+memory-starved host the server can take a minute to start; the tests wait up to 3 minutes.
 
 ## Dev stack
 

@@ -9,6 +9,10 @@
   <body>
     <canvas id="canvas"></canvas>
     <div id="voiceUi" aria-label="Voice controls">
+      <div id="assistantStateBadge" data-state="IDLE">
+        <span id="assistantStateDot" aria-hidden="true"></span>
+        <span id="assistantStateLabel">Ready</span>
+      </div>
       <div id="voiceControls">
         <button id="micButton" type="button" aria-label="Hold to talk">
           Hold to talk
@@ -31,7 +35,9 @@
       </div>
       <div id="voiceStatus" aria-live="polite"></div>
       <div id="voiceTranscript" aria-live="polite"></div>
+      <div id="assistantResponse" aria-live="polite"></div>
     </div>
+    <div id="latencyFooter" hidden aria-hidden="true"></div>
     <pre id="voiceDebugPanel" hidden aria-label="Voice debug"></pre>
     <script type="module" src="/src/main.js"></script>
   </body>

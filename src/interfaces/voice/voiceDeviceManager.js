@@ -1,14 +1,6 @@
+import { getMediaDevices, stopTracks } from './micUtils.js'
+
 const STORAGE_KEY = 'ai-assistant.preferredMicDeviceId'
-
-function getMediaDevices() {
-  return globalThis?.navigator?.mediaDevices ?? null
-}
-
-function stopStream(stream) {
-  for (const track of stream?.getTracks?.() ?? []) {
-    track.stop()
-  }
-}
 
 export function describeMicError(err) {
   const name = err?.name ?? ''
@@ -55,7 +47,7 @@ export function createVoiceDeviceManager({ storage = globalThis?.localStorage } 
 
     const audio = deviceId ? { deviceId: { exact: deviceId } } : true
     const stream = await mediaDevices.getUserMedia({ audio, video: false })
-    stopStream(stream)
+    stopTracks(stream)
   }
 
   async function listInputDevices({ requestPermission = false } = {}) {

@@ -1,6 +1,13 @@
+# Live + batch speech sidecar (host venv). Matches requirements.runtime.txt (used by the Docker image).
+#
+# Deliberately NOT here:
+#   torch / torchaudio - not imported by the sidecar. ctranslate2 imports torch only if it is present
+#                        (guarded), so the runtime works without it: 248 MB -> 73 MB peak at import.
+#                        Only the optional pyannote diarization extra needs it (requirements.diarization.txt).
+#   silero-vad         - not imported anywhere; VAD uses the Silero model bundled with faster-whisper.
 faster-whisper>=1.0.0
-torch>=2.0.0
 flask>=3.0.0
+flask-sock>=0.7.0
 numpy>=1.24.0
-silero-vad>=5.0.0
+# Hard dependency of faster-whisper (runs its bundled Silero VAD); pinned here for clarity.
 onnxruntime>=1.16.0

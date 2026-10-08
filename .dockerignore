@@ -1,0 +1,17 @@
+node_modules
+audio/.venv
+.git
+logs
+dist
+data
+audio/outbox
+audio/models
+.env
+.env.*
+docker/certs
+docker/*.bak*
+*.log
+.cursor
+**/__pycache__
+**/*.pyc
+.pytest_cache

@@ -1,19 +1,11 @@
+import { parseError } from '../../utils/http.js'
+
 function getChoiceText(data) {
   return data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? ''
 }
 
 function getDeltaText(data) {
   return data?.choices?.[0]?.delta?.content ?? data?.choices?.[0]?.text ?? ''
-}
-
-async function parseError(res) {
-  const text = await res.text().catch(() => '')
-  try {
-    const data = JSON.parse(text)
-    return data?.error?.message ?? data?.error ?? text
-  } catch {
-    return text || `${res.status} ${res.statusText}`
-  }
 }
 
 function normalizeOpenAiCompatibleBaseUrl(baseUrl) {
@@ -38,7 +30,11 @@ export function createOpenAiCompatibleProvider({
   const normalizedBaseUrl = normalizeOpenAiCompatibleBaseUrl(baseUrl)
 
   function assertConfigured() {
-    if (!apiKey) throw new Error(`${name} provider requires AI_API_KEY`)
+    if (!apiKey) {
+      const err = new Error(`${name} provider requires AI_API_KEY in .env.secrets`)
+      err.statusCode = 503
+      throw err
+    }
     if (!normalizedBaseUrl) throw new Error(`${name} provider requires AI_BASE_URL`)
     if (!model) throw new Error(`${name} provider requires AI_MODEL`)
   }
