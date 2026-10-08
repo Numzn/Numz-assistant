@@ -32,4 +32,7 @@ if ! docker ps --format '{{.Names}}' | grep -qx numz-assistant-https; then
 fi
 
 echo "Numz-assistant dev stack starting. Logs in $ROOT/logs/"
-echo "HTTPS: https://numzlab.tail2839ee.ts.net"
+TAILSCALE_HOST="$(grep -E '^TAILSCALE_HOST=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+if [[ -n "$TAILSCALE_HOST" ]]; then
+  echo "HTTPS: https://$TAILSCALE_HOST"
+fi

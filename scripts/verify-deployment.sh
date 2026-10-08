@@ -3,7 +3,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="/home/numz14/.local/node22/node-v22.15.0-linux-x64/bin:/home/numz14/.local/bin:$PATH"
-BASE_URL="${BASE_URL:-https://100.121.79.2}"
+# Default target: this machine's Tailscale address from the private .env, else the local API.
+TAILSCALE_IP="$(grep -E '^TAILSCALE_IP=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+if [[ -n "$TAILSCALE_IP" ]]; then
+  DEFAULT_BASE_URL="https://$TAILSCALE_IP"
+else
+  DEFAULT_BASE_URL="http://127.0.0.1:3002"
+fi
+BASE_URL="${BASE_URL:-$DEFAULT_BASE_URL}"
 
 echo "=== Numz-Assistant Deployment Verification ==="
 echo "Time: $(date -Is)"

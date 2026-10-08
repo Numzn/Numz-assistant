@@ -54,7 +54,10 @@ done
 echo ""
 docker compose ps
 echo ""
-echo "HTTPS:  https://numzlab.tail2839ee.ts.net"
+TAILSCALE_HOST="$(grep -E '^TAILSCALE_HOST=' "$ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+if [[ -n "$TAILSCALE_HOST" ]]; then
+  echo "HTTPS:  https://$TAILSCALE_HOST"
+fi
 echo "Vite:   http://127.0.0.1:5173"
 echo "API:    http://127.0.0.1:3002/api/v1/health"
 echo "Logs:   docker compose logs -f"

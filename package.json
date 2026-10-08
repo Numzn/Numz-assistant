@@ -15,7 +15,7 @@
     "meeting": "node scripts/meeting-admin.js",
     "outbox:status": "node scripts/run-outbox.js status",
     "outbox:replay": "node scripts/run-outbox.js replay",
-    "test": "node --test server/meetings/*.test.js server/persistence/*.test.js server/auth/*.test.js server/api/*.test.js",
+    "test": "node --test server/meetings/*.test.js server/persistence/*.test.js server/auth/*.test.js server/api/*.test.js tests/*.test.js",
     "build": "vite build",
     "start": "cross-env NODE_ENV=production node server/server.js",
     "preview": "vite preview"
