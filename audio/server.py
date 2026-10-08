@@ -27,7 +27,10 @@ register_live_speech_route(app)  # ws://<host>:<port>/live-speech — see live_s
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify(health_info())
+    info = health_info()
+    # Whether meeting persistence can work (disabled, misconfigured, degraded or ok). No secrets.
+    info["persistence"] = app.extensions["live_speech_persistence"].status()
+    return jsonify(info)
 
 
 @app.route("/transcribe", methods=["POST"])
@@ -65,5 +68,6 @@ if __name__ == "__main__":
     if WARMUP_ON_START:
         logger.info("Warming up models (set AUDIO_WARMUP=0 to skip)...")
         warmup()
+    app.extensions["live_speech_persistence"].log_startup(logger)
     logger.info("Audio service listening on http://%s:%s", HOST, PORT)
     app.run(host=HOST, port=PORT, threaded=True)

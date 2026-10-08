@@ -123,5 +123,31 @@ class Outbox:
     def pending(self, meeting_id: str) -> list:
         return self.entries(meeting_id, None)
 
+    def meetings(self) -> list:
+        """Meeting ids that have outbox records."""
+        if self._directory is None:
+            return sorted(self._memory)
+        found = []
+        for name in os.listdir(self._directory):
+            if name.endswith(".jsonl"):
+                try:
+                    found.append(require_uuid(name[: -len(".jsonl")], "meeting_id"))
+                except ValueError:
+                    continue  # not one of ours
+        return sorted(found)
+
+    def backlog(self) -> dict:
+        """What is waiting across every meeting: segments not stored yet (failed), segments the API
+        refused (rejected, kept for inspection), and outbox files that could not be read (unreadable)."""
+        failed = rejected = unreadable = 0
+        meetings = self.meetings()
+        for meeting_id in meetings:
+            try:
+                failed += len(self.pending(meeting_id))
+                rejected += len(self.rejected(meeting_id))
+            except (OutboxError, OSError):
+                unreadable += 1
+        return {"meetings": len(meetings), "failed": failed, "rejected": rejected, "unreadable": unreadable}
+
     def rejected(self, meeting_id: str) -> list:
         return self.entries(meeting_id, "rejected")

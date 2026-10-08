@@ -48,6 +48,7 @@ from simple_websocket import ConnectionClosed
 
 from speech.audio_io import write_wav
 from speech.live.events import TranscriptStage
+from speech.live.health import PersistenceMonitor
 from speech.live.ids import require_uuid
 from speech.live.outbox import Outbox
 from speech.live.persistence import (
@@ -369,6 +370,8 @@ class LiveConnection:
 def register_live_speech_route(app, path: str = "/live-speech", outbox: Outbox = None):
     sock = Sock(app)
     shared_outbox = outbox if outbox is not None else Outbox(OUTBOX_DIR)
+    # /health and the startup log read this, so a misconfigured persistence setup is visible, not silent.
+    app.extensions["live_speech_persistence"] = PersistenceMonitor(lambda: MEETING_API_URL, shared_outbox)
 
     @sock.route(path)
     def live_speech(ws):
