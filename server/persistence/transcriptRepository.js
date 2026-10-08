@@ -1,64 +1,76 @@
-function assertCanonicalSegment(segment) {
-	if (!segment || typeof segment !== 'object') throw new Error('segment must be an object')
-	if (typeof segment.id !== 'string' || !segment.id) throw new Error('segment.id is required')
-	if (!Number.isFinite(segment.start) || !Number.isFinite(segment.end) || segment.start < 0 || segment.end < segment.start) {
-		throw new Error(`invalid timestamps for segment: ${segment.id}`)
-	}
-	if (typeof segment.text !== 'string') throw new Error(`text is required for segment: ${segment.id}`)
-	if (segment.uncertain === undefined) throw new Error(`uncertain is required for segment: ${segment.id}`)
-}
+import { contentHash } from './canonicalJson.js'
 
 function fromRow(row) {
-	if (!row) return null
-	return JSON.parse(row.segment_json)
+  return row ? JSON.parse(row.segment_json) : null
 }
 
+/**
+ * Canonical final segments for meetings.
+ *
+ * Uniqueness is (meeting_id, segment_id). A write has exactly one of three outcomes:
+ *   INSERTED        - new row stored
+ *   ALREADY_EXISTS  - same id with identical canonical content (a safe duplicate delivery)
+ *   CONFLICT        - same id with different content: nothing is written or overwritten
+ * Callers must never treat CONFLICT as success.
+ */
 export function createTranscriptRepository(database) {
-	const insert = database.prepare(`
-		INSERT OR IGNORE INTO transcript_segments
-			(meeting_id, segment_id, speaker_id, start_ms, end_ms, text, confidence,
-			 is_final, schema_version, segment_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
-	const select = database.prepare(`
-		SELECT * FROM transcript_segments WHERE meeting_id = ? AND segment_id = ?
-	`)
+  const insert = database.prepare(`
+    INSERT INTO transcript_segments
+      (meeting_id, segment_id, speaker_id, start_ms, end_ms, text, confidence,
+       is_final, schema_version, segment_json, created_at, updated_at, content_hash, speech_session_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, '1.0', ?, ?, ?, ?, ?)
+  `)
+  const select = database.prepare('SELECT * FROM transcript_segments WHERE meeting_id = ? AND segment_id = ?')
+  const maxEnd = database.prepare('SELECT MAX(end_ms) AS max_end FROM transcript_segments WHERE meeting_id = ?')
+  const chronological = database.prepare(`
+    SELECT segment_json FROM transcript_segments
+    WHERE meeting_id = ?
+    ORDER BY start_ms, end_ms, segment_id
+  `)
 
-	return {
-		appendFinalSegment(meetingId, segment, now = new Date().toISOString()) {
-			assertCanonicalSegment(segment)
-			const result = insert.run(
-				meetingId,
-				segment.id,
-				segment.speaker ?? null,
-				Math.round(segment.start * 1000),
-				Math.round(segment.end * 1000),
-				segment.text,
-				segment.confidence ?? null,
-				1,
-				'1.0',
-				JSON.stringify(segment),
-				now,
-				now
-			)
-			return { segment: this.getById(meetingId, segment.id), inserted: result.changes === 1 }
-		},
+  return {
+    /**
+     * @param {{ meetingId: string, speechSessionId: string, canonical: object, now: string }} input
+     *   canonical: the segment already expressed on the meeting timeline
+     */
+    insertFinalSegment({ meetingId, speechSessionId, canonical, now }) {
+      const hash = contentHash(canonical)
+      const existing = select.get(meetingId, canonical.id)
+      if (existing) {
+        const stored = fromRow(existing)
+        return existing.content_hash === hash
+          ? { status: 'ALREADY_EXISTS', segment: stored }
+          : { status: 'CONFLICT', segment: stored }
+      }
 
-		getById(meetingId, segmentId) {
-			return fromRow(select.get(meetingId, segmentId))
-		},
+      insert.run(
+        meetingId,
+        canonical.id,
+        canonical.speaker ?? null,
+        Math.round(canonical.start * 1000),
+        Math.round(canonical.end * 1000),
+        canonical.text,
+        canonical.confidence ?? null,
+        JSON.stringify(canonical),
+        now,
+        now,
+        hash,
+        speechSessionId
+      )
+      return { status: 'INSERTED', segment: canonical }
+    },
 
-		exists(meetingId, segmentId) {
-			return this.getById(meetingId, segmentId) !== null
-		},
+    /** Latest end of any stored segment for the meeting, in meeting milliseconds (0 when empty). */
+    maxEndMs(meetingId) {
+      return maxEnd.get(meetingId)?.max_end ?? 0
+    },
 
-		getByMeeting(meetingId) {
-			const rows = database.prepare(`
-				SELECT * FROM transcript_segments
-				WHERE meeting_id = ?
-				ORDER BY start_ms, end_ms, segment_id
-			`).all(meetingId)
-			return rows.map(fromRow)
-		}
-	}
+    getById(meetingId, segmentId) {
+      return fromRow(select.get(meetingId, segmentId))
+    },
+
+    getByMeeting(meetingId) {
+      return chronological.all(meetingId).map(fromRow)
+    }
+  }
 }

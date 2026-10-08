@@ -14,6 +14,9 @@ function fromRow(row) {
   }
 }
 
+/** Statuses that represent a meeting still being captured or recovered (listed at startup). */
+export const ACTIVE_MEETING_STATUSES = Object.freeze(['STARTING', 'LIVE', 'PAUSED', 'RECOVERING'])
+
 export function createMeetingRepository(database) {
   const insert = database.prepare(`
     INSERT INTO meetings
@@ -23,11 +26,11 @@ export function createMeetingRepository(database) {
   const select = database.prepare('SELECT * FROM meetings WHERE meeting_id = ?')
   const update = database.prepare(`
     UPDATE meetings
-    SET status = ?, created_at = ?, started_at = ?, paused_at = ?, ended_at = ?, updated_at = ?, metadata_json = ?
+    SET status = ?, started_at = ?, paused_at = ?, ended_at = ?, updated_at = ?, metadata_json = ?
     WHERE meeting_id = ?
   `)
 
-  return {
+  const repository = {
     create(input = {}) {
       const meeting = createMeeting(input)
       insert.run(
@@ -47,10 +50,10 @@ export function createMeetingRepository(database) {
       return fromRow(select.get(meetingId))
     },
 
+    /** Persists lifecycle fields. created_at is immutable and deliberately not written here. */
     save(meeting) {
       update.run(
         meeting.status,
-        meeting.createdAt,
         meeting.startedAt,
         meeting.pausedAt,
         meeting.endedAt,
@@ -61,23 +64,21 @@ export function createMeetingRepository(database) {
       return meeting
     },
 
-    updateMetadata(meetingId, metadata) {
-      const meeting = this.getById(meetingId)
-      if (!meeting) return null
-      return this.save({ ...meeting, metadata, updatedAt: new Date().toISOString() })
+    findByStatus(statuses) {
+      const placeholders = statuses.map(() => '?').join(', ')
+      return database
+        .prepare(`SELECT * FROM meetings WHERE status IN (${placeholders}) ORDER BY created_at, meeting_id`)
+        .all(...statuses)
+        .map(fromRow)
     },
 
     getActiveMeetings() {
-      const rows = database.prepare(`
-        SELECT * FROM meetings
-        WHERE status IN ('STARTING', 'LIVE', 'PAUSED', 'RECOVERING')
-        ORDER BY created_at, meeting_id
-      `).all()
-      return rows.map(fromRow)
+      return repository.findByStatus(ACTIVE_MEETING_STATUSES)
     },
 
     getActiveMeeting() {
-      return this.getActiveMeetings()[0] ?? null
+      return repository.getActiveMeetings()[0] ?? null
     }
   }
+  return repository
 }

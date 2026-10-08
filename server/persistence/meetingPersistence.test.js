@@ -1,25 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
-import { createDatabase } from './sqliteDatabase.js'
+import { createDatabase, applyMigrations } from './sqliteDatabase.js'
 import { createMeetingRepository } from './meetingRepository.js'
 import { createSpeechSessionRepository } from './speechSessionRepository.js'
 import { createTranscriptRepository } from './transcriptRepository.js'
 import { createMeetingSessionService } from '../services/meetingSessionService.js'
 import { MEETING_STATES } from '../meetings/meetingDomain.js'
 
+// The fixture runs the real migrations. It used to hand-copy an older schema,
+// which drifted from the code (missing columns) and hid real failures.
 function makeSystem(database) {
   if (database === undefined) return makeSystem(createDatabase({ filename: ':memory:' }))
-  if (database !== undefined) {
-    database.exec('PRAGMA foreign_keys = ON;')
-    const existing = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meetings'").get()
-    if (!existing) database.exec(`
-      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      CREATE TABLE meetings (meeting_id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, paused_at TEXT, ended_at TEXT, updated_at TEXT NOT NULL, metadata_json TEXT NOT NULL);
-      CREATE TABLE speech_sessions (speech_session_id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id), status TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, updated_at TEXT NOT NULL);
-      CREATE TABLE transcript_segments (meeting_id TEXT NOT NULL REFERENCES meetings(meeting_id), segment_id TEXT NOT NULL, speaker_id TEXT, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, text TEXT NOT NULL, confidence REAL, is_final INTEGER NOT NULL, schema_version TEXT NOT NULL, segment_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (meeting_id, segment_id));
-    `)
-  }
+  applyMigrations(database)
   const meetingRepository = createMeetingRepository(database)
   const speechSessionRepository = createSpeechSessionRepository(database)
   const transcriptRepository = createTranscriptRepository(database)

@@ -17,6 +17,8 @@ import { createMeetingRepository } from './persistence/meetingRepository.js'
 import { createSpeechSessionRepository } from './persistence/speechSessionRepository.js'
 import { createTranscriptRepository } from './persistence/transcriptRepository.js'
 import { createMeetingSessionService } from './services/meetingSessionService.js'
+import { createMeetingAuth } from './auth/meetingAuth.js'
+import { errorHandler, notFoundHandler } from './http/errorHandler.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.join(__dirname, '..')
@@ -37,6 +39,17 @@ const meetingService = createMeetingSessionService({
   transcriptRepository: createTranscriptRepository(speechDatabase),
   eventBus: new EventEmitter()
 })
+const meetingAuth = createMeetingAuth({
+  adminToken: process.env.MEETING_API_TOKEN ?? '',
+  ticketSecret: process.env.MEETING_TICKET_SECRET ?? '',
+  ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200
+})
+// No live connection survives a process restart: interrupted meetings move to RECOVERING.
+const meetingRecovery = meetingService.recoverInterruptedMeetings()
+console.log(
+  `[meetings] startup recovery: ${meetingRecovery.endedSessions} speech session(s) ended, ` +
+    `${meetingRecovery.recoveredMeetings} meeting(s) moved to RECOVERING`
+)
 
 try {
   const provider = createAiProvider()
@@ -89,7 +102,7 @@ function createApp() {
   })
 
   app.use('/api/v1/assistant', assistantRouter)
-  app.use('/api/v1/meetings', createMeetingsRouter({ meetingService }))
+  app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth: meetingAuth }))
 
   if (isProd) {
     const dist = path.join(rootDir, 'dist')
@@ -100,23 +113,8 @@ function createApp() {
     })
   }
 
-  app.use('/api', (req, res) => {
-    res.status(404).json({ error: 'Not Found', requestId: req.id })
-  })
-
-  app.use((err, req, res, _next) => {
-    const status = err.statusCode ?? err.status ?? 500
-    const message = err.message ?? 'Error'
-    const exposeMessage = status < 500 || status === 503
-    if (status >= 500 && !exposeMessage) {
-      console.error(`[api] ${status} ${req.method} ${req.path}`, err)
-      res.status(status).json({ error: 'Internal Server Error', requestId: req.id })
-      return
-    }
-    if (status >= 500) console.error(`[api] ${status} ${req.method} ${req.path}: ${message}`)
-    else console.warn(`[api] ${status} ${req.method} ${req.path}: ${message}`)
-    res.status(status).json({ error: message, requestId: req.id })
-  })
+  app.use('/api', notFoundHandler)
+  app.use(errorHandler())
 
   return app
 }

@@ -12,17 +12,51 @@ export const MEETING_STATES = Object.freeze({
   CANCELLED: 'CANCELLED'
 })
 
+const S = MEETING_STATES
+
 const transitions = {
-  [MEETING_STATES.CREATED]: new Set([MEETING_STATES.STARTING, MEETING_STATES.CANCELLED, MEETING_STATES.FAILED]),
-  [MEETING_STATES.STARTING]: new Set([MEETING_STATES.LIVE, MEETING_STATES.RECOVERING, MEETING_STATES.FAILED, MEETING_STATES.CANCELLED]),
-  [MEETING_STATES.LIVE]: new Set([MEETING_STATES.PAUSED, MEETING_STATES.RECOVERING, MEETING_STATES.FINALIZING, MEETING_STATES.FAILED, MEETING_STATES.CANCELLED]),
-  [MEETING_STATES.PAUSED]: new Set([MEETING_STATES.LIVE, MEETING_STATES.RECOVERING, MEETING_STATES.FINALIZING, MEETING_STATES.FAILED, MEETING_STATES.CANCELLED]),
-  [MEETING_STATES.RECOVERING]: new Set([MEETING_STATES.STARTING, MEETING_STATES.LIVE, MEETING_STATES.FAILED, MEETING_STATES.CANCELLED]),
-  [MEETING_STATES.FINALIZING]: new Set([MEETING_STATES.COMPLETED, MEETING_STATES.FAILED]),
-  [MEETING_STATES.COMPLETED]: new Set(),
-  [MEETING_STATES.FAILED]: new Set(),
-  [MEETING_STATES.CANCELLED]: new Set()
+  [S.CREATED]: new Set([S.STARTING, S.CANCELLED, S.FAILED]),
+  [S.STARTING]: new Set([S.LIVE, S.RECOVERING, S.FAILED, S.CANCELLED]),
+  [S.LIVE]: new Set([S.PAUSED, S.RECOVERING, S.FINALIZING, S.FAILED, S.CANCELLED]),
+  [S.PAUSED]: new Set([S.LIVE, S.RECOVERING, S.FINALIZING, S.FAILED, S.CANCELLED]),
+  // RECOVERING may finalize directly: a meeting interrupted by a restart can be ended without resuming capture.
+  [S.RECOVERING]: new Set([S.STARTING, S.LIVE, S.FINALIZING, S.FAILED, S.CANCELLED]),
+  [S.FINALIZING]: new Set([S.COMPLETED, S.FAILED]),
+  [S.COMPLETED]: new Set(),
+  [S.FAILED]: new Set(),
+  [S.CANCELLED]: new Set()
 }
+
+/**
+ * Domain error carrying an HTTP-facing classification. The API layer maps
+ * statusCode to the response and exposes `message` and `code` (never stacks).
+ */
+export class MeetingDomainError extends Error {
+  constructor(message, { statusCode = 409, code = 'meeting-conflict' } = {}) {
+    super(message)
+    this.name = 'MeetingDomainError'
+    this.statusCode = statusCode
+    this.code = code
+    this.expose = true
+  }
+}
+
+/** Meeting states that accept canonical transcript appends. FINALIZING accepts late, already-produced events. */
+export const TRANSCRIPT_ACCEPTING_STATES = Object.freeze(
+  new Set([S.STARTING, S.LIVE, S.PAUSED, S.RECOVERING, S.FINALIZING])
+)
+
+/** Meeting states in which a new speech session may be attached. */
+export const SESSION_ATTACHABLE_STATES = Object.freeze(new Set([S.STARTING, S.LIVE, S.RECOVERING]))
+
+export const SPEECH_SESSION_END_REASONS = Object.freeze([
+  'stopped',
+  'disconnected',
+  'superseded',
+  'process-restart',
+  'meeting-completed',
+  'error'
+])
 
 export function canTransition(from, to) {
   return from === to || transitions[from]?.has(to) === true
@@ -30,16 +64,17 @@ export function canTransition(from, to) {
 
 export function assertTransition(from, to) {
   if (!canTransition(from, to)) {
-    const error = new Error(`Invalid meeting transition: ${from} -> ${to}`)
-    error.code = 'invalid-meeting-transition'
-    throw error
+    throw new MeetingDomainError(`Invalid meeting transition: ${from} -> ${to}`, {
+      statusCode: 409,
+      code: 'invalid-meeting-transition'
+    })
   }
 }
 
 export function createMeeting({ meetingId = randomUUID(), metadata = {}, now = new Date().toISOString() } = {}) {
   return {
     meetingId,
-    status: MEETING_STATES.CREATED,
+    status: S.CREATED,
     createdAt: now,
     startedAt: null,
     pausedAt: null,
@@ -53,19 +88,14 @@ export function transitionMeeting(meeting, status, now = new Date().toISOString(
   assertTransition(meeting.status, status)
   const next = { ...meeting, status, updatedAt: now }
 
-  if (status === MEETING_STATES.LIVE && meeting.startedAt === null) next.startedAt = now
-  if (status === MEETING_STATES.PAUSED) next.pausedAt = now
-  if ([MEETING_STATES.COMPLETED, MEETING_STATES.FAILED, MEETING_STATES.CANCELLED].includes(status)) {
+  if (status === S.LIVE && meeting.startedAt === null) next.startedAt = now
+  if (status === S.PAUSED) next.pausedAt = now
+  if ([S.COMPLETED, S.FAILED, S.CANCELLED].includes(status)) {
     next.endedAt = now
   }
   return next
 }
 
 export function isRecoverableMeetingStatus(status) {
-  return [
-    MEETING_STATES.STARTING,
-    MEETING_STATES.LIVE,
-    MEETING_STATES.PAUSED,
-    MEETING_STATES.RECOVERING
-  ].includes(status)
+  return [S.STARTING, S.LIVE, S.PAUSED, S.RECOVERING].includes(status)
 }
