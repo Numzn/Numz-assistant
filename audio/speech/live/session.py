@@ -1,14 +1,17 @@
 """
 LiveSpeechSession: the live-mode counterpart to the batch pipeline
-(speech/pipeline.py). Ties frame VAD + endpointing + streaming ASR + live
-speaker handling together, accumulates FINAL events into the exact same
-canonical segment schema (speech/schema.py) that batch processing
-produces, and can optionally reprocess the full recording through the
-batch pipeline once the session ends for higher accuracy.
+(speech/pipeline.py). Ties frame VAD + endpointing + streaming ASR together and
+commits FINAL events into the canonical segment schema (speech/schema.py).
+
+Two guarantees the transport relies on:
+  - Committed segments are never lost by a later step. drain_committed() returns each
+    committed segment exactly once, and the transport drains after every ingest and
+    before any finalization work, so a failure in finalization cannot discard them.
+  - Segment ids are unique across sessions (see speech/live/ids.py), so the same
+    meeting can accept segments from many sessions.
 """
 
 import time
-import uuid
 from enum import Enum
 from typing import Callable, Optional
 
@@ -18,6 +21,7 @@ from speech.live.diarization_live import LiveDiarizer, SingleSpeakerLiveDiarizer
 from speech.live.endpointing import CONVERSATION_PROFILE, Endpointer, EndpointerConfig, EndpointSignal
 from speech.live.events import TranscriptEvent, TranscriptStage, validate_audio_frame
 from speech.live.frame_vad import FrameVad
+from speech.live.ids import new_speech_session_id, require_uuid, segment_id_for
 from speech.live.streaming_asr import LocalAgreementStreamingAsr
 from speech.reconciler import TranscriptReconciler
 from speech.schema import make_transcript, validate_transcript
@@ -31,7 +35,7 @@ class SessionState(str, Enum):
 class LiveSpeechSession:
     def __init__(
         self,
-        session_id: Optional[str] = None,
+        speech_session_id: Optional[str] = None,
         sample_rate: int = 16000,
         language: str = "",
         endpointer_config: Optional[EndpointerConfig] = None,
@@ -40,7 +44,7 @@ class LiveSpeechSession:
         diarizer: Optional[LiveDiarizer] = None,
         keep_audio_for_reprocessing: bool = False,
     ):
-        self.session_id = session_id or uuid.uuid4().hex[:12]
+        self.session_id = require_uuid(speech_session_id or new_speech_session_id())
         self.sample_rate = sample_rate
         self.language = language
         self.started_at = time.time()
@@ -57,26 +61,19 @@ class LiveSpeechSession:
         self._diarizer = diarizer or SingleSpeakerLiveDiarizer()
         self._reconciler = TranscriptReconciler(
             language=self.language,
-            speaker_resolver=lambda event: self._diarizer.current_speaker(
-                (event.start + event.end) / 2
-            ),
+            speaker_resolver=lambda event: self._diarizer.current_speaker((event.start + event.end) / 2),
+            id_factory=lambda sequence: segment_id_for(self.session_id, sequence),
         )
+        self._drained = 0
         self._raw_audio: list = []
         self._on_transcript_event: Optional[Callable[[TranscriptEvent], None]] = None
 
     def on_transcript_event(self, callback: Callable[[TranscriptEvent], None]):
-        """Optional hook: called with every PARTIAL/STABILIZING/FINAL
-        TranscriptEvent. This is the seam a rolling-intelligence layer or a
-        live UI would subscribe to (see server/services/rollingIntelligenceService.js
-        for the Node-side consumer of FINAL events)."""
+        """Optional hook: called with every PARTIAL/STABILIZING/FINAL TranscriptEvent."""
         self._on_transcript_event = callback
 
     def ingest_audio_frame(self, frame: np.ndarray, timestamp_s: float):
-        """The live audio ingestion seam: hand it raw PCM frames and the
-        current stream position (seconds, at the end of `frame`) as they
-        arrive — from a mic, a WebSocket, a file played back in real time,
-        or a test harness. Frame VAD, endpointing, and streaming ASR are
-        all handled internally."""
+        """Hand it raw PCM frames and the stream position (seconds, at the end of `frame`)."""
         if self.state != SessionState.LISTENING:
             return
 
@@ -118,10 +115,14 @@ class LiveSpeechSession:
         self.speakers = set(self._reconciler.speakers)
         self.current_speaker = result.committed.get("speaker")
 
+    def drain_committed(self) -> list:
+        """Committed segments not yet returned by a previous call, each exactly once, in commit order."""
+        pending = self.finalized_segments[self._drained :]
+        self._drained = len(self.finalized_segments)
+        return pending
+
     def snapshot(self) -> dict:
-        """Current state for a live UI/consumer. Not the canonical
-        transcript — partials are provisional by design and never appear
-        in finalized_segments until FINAL."""
+        """Current state for a live UI/consumer. Partials are provisional and never persisted."""
         return {
             "sessionId": self.session_id,
             "state": self.state.value,
@@ -131,40 +132,27 @@ class LiveSpeechSession:
         }
 
     def end(self):
-        """Flush anything buffered and stop accepting audio."""
+        """Flush anything buffered and stop accepting audio. Newly committed segments are drainable afterwards."""
         if self.state == SessionState.ENDED:
             return
         self._flush_utterance()
         self.state = SessionState.ENDED
 
     def get_raw_audio_pcm(self) -> Optional[np.ndarray]:
-        """Concatenated raw PCM for this session if keep_audio_for_reprocessing
-        was set; None otherwise. Used by finalize()'s reprocessing path and
-        available to callers that want to persist the recording separately
-        (e.g. the live transport's optional save-to-disk feature)."""
+        """Concatenated raw PCM when keep_audio_for_reprocessing was set; None otherwise."""
         if not self._raw_audio:
             return None
         return np.concatenate(self._raw_audio)
 
-    def finalize(self, reprocess: bool = True, diarizer=None) -> dict:
+    def transcript(self, reprocess: bool = False, diarizer=None) -> dict:
         """
-        Produce the canonical transcript (speech/schema.py) for this
-        session — the "post-meeting processing" step.
-
-        If `reprocess` is True and raw audio was retained
-        (keep_audio_for_reprocessing=True), re-runs the batch pipeline
-        (full-quality ASR + optional real diarization + reconciliation) on
-        the complete recording — the "optional final alignment/diarization
-        pass" that may supersede the live-provisional result. Falls back
-        to the live-accumulated segments otherwise (still valid canonical
-        output, just without a real diarization pass).
+        Canonical transcript for this session. Does not end the session and does not
+        change committed segments. With reprocess=True and retained audio, the batch
+        pipeline re-runs over the full recording; otherwise the live segments are used.
         """
-        if self.state != SessionState.ENDED:
-            self.end()
-
         pcm = self.get_raw_audio_pcm()
         if reprocess and pcm is not None:
-            from speech.pipeline import process_pcm  # local import: batch pipeline stays optional for pure-live use
+            from speech.pipeline import process_pcm  # local import: the batch pipeline stays optional for live use
 
             transcript = process_pcm(
                 pcm,
@@ -192,6 +180,11 @@ class LiveSpeechSession:
             },
         )
         return validate_transcript(transcript)
+
+    def finalize(self, reprocess: bool = True, diarizer=None) -> dict:
+        """End the session, then build its transcript (kept for callers that want both steps)."""
+        self.end()
+        return self.transcript(reprocess=reprocess, diarizer=diarizer)
 
 
 def _event_to_dict(event: TranscriptEvent) -> dict:

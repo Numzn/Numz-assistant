@@ -29,9 +29,12 @@ class TranscriptReconciler:
     events from a real streaming decoder with identical results.
     """
 
-    def __init__(self, language: str = "", speaker_resolver=None):
+    def __init__(self, language: str = "", speaker_resolver=None, id_factory=None):
         self.language = language
         self._speaker_resolver = speaker_resolver or (lambda event: (None, True))
+        # Default numbering (seg_0001, seg_0002, ...) is only unique within one reconciler.
+        # Live sessions inject an id_factory that is unique across sessions and meetings.
+        self._id_factory = id_factory or segment_id
         self._partial: Optional[TranscriptEvent] = None
         self._segments: list[dict] = []
         self._speakers: set[str] = set()
@@ -66,7 +69,7 @@ class TranscriptReconciler:
         else:
             speaker, uncertain = self._speaker_resolver(event)
         segment = make_segment(
-            segment_id(len(self._segments) + 1),
+            self._id_factory(len(self._segments) + 1),
             event.start,
             event.end,
             event.text.strip(),
