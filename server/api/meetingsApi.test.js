@@ -35,7 +35,7 @@ function buildApp({ clock = { now: () => Date.now() }, adminToken = ADMIN, ticke
   app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth }))
   app.use('/api', notFoundHandler)
   app.use(errorHandler({ logger }))
-  return { app, meetingService }
+  return { app, meetingService, database }
 }
 
 async function serve(app) {
@@ -388,6 +388,36 @@ test('two speech sessions writing concurrently never collide, and a genuine id c
       assert.equal(segment.speechSessionId, owner.speechSessionId, `${segment.text} is linked to the session that wrote it`)
     }
     for (let i = 1; i < stored.length; i++) assert.ok(stored[i].start >= stored[i - 1].start, 'ordered on the meeting timeline')
+  } finally {
+    await close()
+  }
+})
+
+test('a database failure is an explicit 500, never a false success', async () => {
+  const logged = []
+  const logger = { error: (...args) => logged.push(args), warn() {}, info() {}, log() {} }
+  const { app, database } = buildApp({ logger })
+  const { base, close } = await serve(app)
+  try {
+    const admin = (method, path, extra) => call(base, method, path, { token: ADMIN, ...extra })
+    const created = (await admin('POST', '', { body: {} })).json
+    await admin('POST', `/${created.meetingId}/start`)
+    const session = (await call(base, 'POST', `/${created.meetingId}/sessions`, { token: created.ticket.token, body: {} })).json
+
+    database.close() // the database goes away underneath the API
+
+    const write = await call(base, 'POST', `/${created.meetingId}/transcript/final`, {
+      token: created.ticket.token,
+      body: { speechSessionId: session.speechSessionId, segment: seg('seg-lost', 1, 'must never be reported as saved') }
+    })
+    assert.equal(write.status, 500, 'the caller is told the write failed')
+    assert.equal(write.json.code, 'internal-error')
+    assert.equal(write.json.status, undefined, 'no INSERTED or ALREADY_EXISTS claim')
+    assert.doesNotMatch(write.text, /sqlite|not open|database|\n\s+at /i, 'no internal detail leaks')
+    assert.ok(logged.length > 0, 'the real error is logged for the operator')
+
+    const read = await admin('GET', `/${created.meetingId}/transcript`)
+    assert.equal(read.status, 500, 'reads fail loudly too, rather than returning an empty transcript')
   } finally {
     await close()
   }
