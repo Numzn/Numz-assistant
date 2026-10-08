@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -196,7 +197,7 @@ class LiveMeetingPathTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.api = NodeApi(os.path.join(self._tmp.name, "speech.sqlite")).start()
-        self.sidecar = SidecarServer(os.path.join(self._tmp.name, "outbox"), ["session A", "session B", "session C", "standalone"])
+        self.sidecar = SidecarServer(os.path.join(self._tmp.name, "outbox"), ["session A", "session B", "session C", "session D", "session E"])
         self._saved_api_url = live_speech_ws.MEETING_API_URL
         live_speech_ws.MEETING_API_URL = f"http://127.0.0.1:{self.api.port}"  # the origin, not /api/v1
         self.streams = []
@@ -307,6 +308,92 @@ class LiveMeetingPathTests(unittest.TestCase):
         self.assertEqual(ended["integrity"]["unverifiedSessions"], 1)
         _, transcript = self.api.call("GET", f"/meetings/{meeting_id}/transcript")
         self.assertEqual([s["text"] for s in transcript["segments"]], ["session A 1", "session A 2", "session B 1"])
+
+    def database(self):
+        """The meeting database, opened read-only and independently of the API under test."""
+        connection = sqlite3.connect(f"file:{os.path.join(self._tmp.name, 'speech.sqlite')}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def test_reconnect_and_restart_leave_the_database_exactly_right(self):
+        """The scenario from the acceptance checklist, verified in the database itself, not through the API."""
+        # --- Meeting 1: speech in session A, a reconnect, speech in session B, finalize.
+        m1, ticket1 = self.new_meeting()
+        a = self.connect()
+        a.start(meetingId=m1, meetingTicket=ticket1)
+        a.utterance()
+        a.utterance()
+        a.wait_finals(2)
+        a.stop()
+        b = self.connect()  # the reconnect: a new connection, therefore a new speech session
+        b.start(meetingId=m1, meetingTicket=ticket1)
+        b.utterance()
+        b.wait_finals(1)
+        b.stop()
+        self.assertEqual(self.api.call("POST", f"/meetings/{m1}/end")[0], 200)
+
+        # --- Meeting 2: the API process restarts while a client is connected, then the client carries on.
+        m2, ticket2 = self.new_meeting()
+        c = self.connect()
+        c.start(meetingId=m2, meetingTicket=ticket2)
+        c.utterance()
+        c.wait_finals(1)
+        self.api.stop()
+        self.api.start()  # same database file: startup recovery runs
+        self.assertEqual(self.api.call("GET", f"/meetings/{m2}")[1]["status"], "RECOVERING")
+        c.stop()  # the transport files its count even though the API restarted underneath it
+        d = self.connect()
+        d.start(meetingId=m2, meetingTicket=ticket2)
+        d.utterance()
+        d.wait_finals(1)
+        d.stop()
+        self.assertEqual(self.api.call("POST", f"/meetings/{m2}/end")[0], 200)
+        self.api.stop()  # nothing is writing while the file is inspected
+
+        # --- Inspect the database directly.
+        db = self.database()
+        try:
+            meetings = {r["meeting_id"]: r["status"] for r in db.execute("SELECT meeting_id, status FROM meetings")}
+            sessions = [dict(r) for r in db.execute(
+                "SELECT speech_session_id, meeting_id, status, end_reason, committed_segments, timeline_offset_ms "
+                "FROM speech_sessions ORDER BY started_at")]
+            segments = [dict(r) for r in db.execute(
+                "SELECT meeting_id, segment_id, speech_session_id, start_ms, end_ms, text "
+                "FROM transcript_segments ORDER BY meeting_id, start_ms, end_ms, segment_id")]
+        finally:
+            db.close()
+
+        print("\n  database report")
+        print(f"  meetings: {len(meetings)}  sessions: {len(sessions)}  segments: {len(segments)}")
+        for session in sessions:
+            print(f"  session {session['speech_session_id'][:8]} meeting {session['meeting_id'][:8]} "
+                  f"{session['status']}/{session['end_reason']} committed={session['committed_segments']} "
+                  f"offset={session['timeline_offset_ms']}ms")
+        for segment in segments:
+            print(f"  segment {segment['segment_id'][:12]} meeting {segment['meeting_id'][:8]} "
+                  f"session {segment['speech_session_id'][:8]} {segment['start_ms']:>6}-{segment['end_ms']:<6} {segment['text']}")
+
+        self.assertEqual(meetings, {m1: "COMPLETED", m2: "COMPLETED"})
+        by_meeting = lambda mid: [s for s in sessions if s["meeting_id"] == mid]  # noqa: E731
+        self.assertEqual(len(by_meeting(m1)), 2, "meeting 1: one session per connection, A and B")
+        self.assertEqual(len(by_meeting(m2)), 2, "meeting 2: C and D")
+        self.assertEqual(sorted(s["end_reason"] for s in by_meeting(m1)), ["stopped", "stopped"])
+        self.assertEqual(sorted(s["end_reason"] for s in by_meeting(m2)), ["process-restart", "stopped"])
+        self.assertTrue(all(s["status"] == "ENDED" for s in sessions))
+        self.assertEqual(sorted(s["committed_segments"] for s in sessions), [1, 1, 1, 2], "every transport filed its count")
+
+        self.assertEqual(len(segments), 5, "3 utterances in meeting 1 and 2 in meeting 2: none missing")
+        self.assertEqual(len({s["segment_id"] for s in segments}), 5, "no duplicate segment ids")
+        session_ids = {s["speech_session_id"] for s in sessions}
+        self.assertTrue(all(s["speech_session_id"] in session_ids for s in segments), "every segment links to a real session")
+        for mid, expected in ((m1, ["session A 1", "session A 2", "session B 1"]), (m2, ["session C 1", "session D 1"])):
+            ordered = [s for s in segments if s["meeting_id"] == mid]
+            self.assertEqual([s["text"] for s in ordered], expected, "chronological order, nothing missing")
+            for previous, current in zip(ordered, ordered[1:]):
+                self.assertGreaterEqual(current["start_ms"], previous["end_ms"], "time never goes backwards across the reconnect")
+            for segment in ordered:
+                owner = next(x for x in sessions if x["speech_session_id"] == segment["speech_session_id"])
+                self.assertEqual(owner["meeting_id"], mid, "a segment is never linked to another meeting's session")
 
     def test_a_segment_the_api_rejects_stops_the_meeting_from_ending_as_if_nothing_was_lost(self):
         meeting_id, ticket = self.new_meeting()
