@@ -38,6 +38,7 @@ async function startServer(dbFile) {
     cwd: ROOT,
     env: {
       ...process.env,
+      NUMZ_SKIP_ENV_FILES: '1', // use the configuration below, never the developer's real .env.secrets
       PORT: String(port),
       NODE_ENV: 'development',
       AI_PROVIDER: 'placeholder',

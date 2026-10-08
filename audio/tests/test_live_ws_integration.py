@@ -57,6 +57,7 @@ class NodeApi:
     def start(self):
         env = {
             **os.environ,
+            "NUMZ_SKIP_ENV_FILES": "1",  # use the configuration below, never the developer's real .env.secrets
             "PORT": str(self.port),
             "NODE_ENV": "development",
             "AI_PROVIDER": "placeholder",
