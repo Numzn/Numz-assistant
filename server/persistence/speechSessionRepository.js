@@ -28,14 +28,14 @@ export function createSpeechSessionRepository(database) {
   `)
   const select = database.prepare('SELECT * FROM speech_sessions WHERE speech_session_id = ?')
   const byMeeting = database.prepare(
-    'SELECT * FROM speech_sessions WHERE meeting_id = ? ORDER BY started_at, speech_session_id'
+    'SELECT * FROM speech_sessions WHERE meeting_id = ? ORDER BY started_at, rowid'
   )
   const activeByMeeting = database.prepare(`
     SELECT * FROM speech_sessions WHERE meeting_id = ? AND status = 'ACTIVE'
-    ORDER BY started_at, speech_session_id
+    ORDER BY started_at, rowid
   `)
   const activeAll = database.prepare(`
-    SELECT * FROM speech_sessions WHERE status = 'ACTIVE' ORDER BY started_at, speech_session_id
+    SELECT * FROM speech_sessions WHERE status = 'ACTIVE' ORDER BY started_at, rowid
   `)
   const endOne = database.prepare(`
     UPDATE speech_sessions

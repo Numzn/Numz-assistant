@@ -192,7 +192,7 @@ test('starting a meeting creates no speech session; each connection attaches its
   assert.equal(service.startMeeting(meeting.meetingId).status, S.LIVE)
   assert.deepEqual(service.listSpeechSessions(meeting.meetingId), [])
   const a = service.attachSpeechSession(meeting.meetingId)
-  const b = service.attachSpeechSession(meeting.meetingId)
+  const b = service.attachSpeechSession(meeting.meetingId) // same instant on the fixed clock: attach order must still hold
   assert.deepEqual(service.listSpeechSessions(meeting.meetingId).map((x) => x.speechSessionId), [a.speechSessionId, b.speechSessionId])
 })
 
