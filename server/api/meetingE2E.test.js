@@ -178,7 +178,7 @@ test('end to end: one meeting survives a disconnect, a reconnect, and a process 
     }
     assert.ok(segments[3].start >= segments[2].end, 'session B continues the meeting after session A')
     const sessions = await api(base, 'GET', `/meetings/${meetingId}/sessions`, { token: ADMIN })
-    assert.equal(sessions.body.speechSessions.length, 3, 'start session + A + B, each recorded once')
+    assert.equal(sessions.body.speechSessions.length, 2, 'one session per connection: A and B, each recorded once')
     assert.equal(sessions.body.speechSessions.every((s) => s.status === 'ENDED'), true)
 
     // 5. Second meeting: live, persisted, then the process restarts underneath it.

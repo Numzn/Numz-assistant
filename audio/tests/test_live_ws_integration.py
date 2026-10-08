@@ -256,9 +256,10 @@ class LiveMeetingPathTests(unittest.TestCase):
         self.assertGreaterEqual(segments[2]["start"], segments[1]["end"], "session B sits after session A")
 
         _, sessions = self.api.call("GET", f"/meetings/{meeting_id}/sessions")
-        # The session opened by /start is superseded by A; A and B each end when their stream stops.
-        self.assertEqual(sorted(s["endReason"] for s in sessions["speechSessions"]), ["stopped", "stopped", "superseded"])
-        reported = [(s["committedSegments"], s["storedSegments"]) for s in sessions["speechSessions"] if s["endReason"] == "stopped"]
+        # One session per connection: A and B, each ended when its stream stopped. /start created none.
+        self.assertEqual(len(sessions["speechSessions"]), 2)
+        self.assertEqual(sorted(s["endReason"] for s in sessions["speechSessions"]), ["stopped", "stopped"])
+        reported = [(s["committedSegments"], s["storedSegments"]) for s in sessions["speechSessions"]]
         self.assertEqual(sorted(reported), [(1, 1), (2, 2)], "each transport reported its count and the API stored exactly that many")
 
     def test_an_api_outage_is_visible_and_the_segment_is_delivered_exactly_once_after_recovery(self):

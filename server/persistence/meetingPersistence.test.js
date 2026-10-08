@@ -27,11 +27,12 @@ function segment(id, start, text) {
 test('meeting persistence supports lifecycle and multiple speech sessions', () => {
   const system = makeSystem()
   const meeting = system.service.createMeeting({ title: 'Fixture meeting' })
-  const first = system.service.startMeeting(meeting.meetingId)
+  const live = system.service.startMeeting(meeting.meetingId)
+  const first = system.service.attachSpeechSession(meeting.meetingId)
   const second = system.service.attachSpeechSession(meeting.meetingId)
 
-  assert.equal(first.meeting.status, MEETING_STATES.LIVE)
-  assert.notEqual(first.speechSession.speechSessionId, second.speechSessionId)
+  assert.equal(live.status, MEETING_STATES.LIVE)
+  assert.notEqual(first.speechSessionId, second.speechSessionId)
   assert.equal(system.speechSessionRepository.getByMeeting(meeting.meetingId).length, 2)
 
   system.service.beginFinalization(meeting.meetingId)
@@ -43,10 +44,12 @@ test('final segments are idempotent and chronologically ordered', () => {
   const system = makeSystem()
   const meeting = system.service.createMeeting()
   system.service.startMeeting(meeting.meetingId)
+  const { speechSessionId } = system.service.attachSpeechSession(meeting.meetingId)
+  const append = (item) => system.service.appendFinalSegment(meeting.meetingId, { speechSessionId, segment: item })
 
-  const later = system.service.appendFinalSegment(meeting.meetingId, segment('seg_0002', 2, 'later'))
-  const earlier = system.service.appendFinalSegment(meeting.meetingId, segment('seg_0001', 0, 'earlier'))
-  const duplicate = system.service.appendFinalSegment(meeting.meetingId, segment('seg_0001', 0, 'duplicate'))
+  const later = append(segment('seg_0002', 2, 'later'))
+  const earlier = append(segment('seg_0001', 0, 'earlier'))
+  const duplicate = append(segment('seg_0001', 0, 'duplicate'))
 
   assert.equal(later.inserted, true)
   assert.equal(earlier.inserted, true)
@@ -59,7 +62,8 @@ test('active meetings are recoverable after repository reinitialization', () => 
   const first = makeSystem(database)
   const meeting = first.service.createMeeting()
   first.service.startMeeting(meeting.meetingId)
-  first.service.appendFinalSegment(meeting.meetingId, segment('seg_0001', 0, 'durable'))
+  const { speechSessionId } = first.service.attachSpeechSession(meeting.meetingId)
+  first.service.appendFinalSegment(meeting.meetingId, { speechSessionId, segment: segment('seg_0001', 0, 'durable') })
 
   const recovered = makeSystem(database)
   const active = recovered.meetingRepository.getActiveMeetings()

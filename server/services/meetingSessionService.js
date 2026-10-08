@@ -229,11 +229,10 @@ export function createMeetingSessionService({
 
     getMeeting: getRequired,
 
+    /** Makes the meeting LIVE. It creates no speech session: each transport connection attaches its own. */
     startMeeting(meetingId) {
       move(meetingId, S.STARTING)
-      const meeting = move(meetingId, S.LIVE)
-      const speechSession = openSpeechSession(meeting)
-      return { meeting, speechSession }
+      return move(meetingId, S.LIVE)
     },
 
     pauseMeeting(meetingId) {
@@ -363,29 +362,14 @@ export function createMeetingSessionService({
     },
 
     /**
-     * Persists one FINAL canonical segment. Accepts { speechSessionId, segment }, or a bare
-     * segment for compatibility (routed to the meeting's most recent ACTIVE session).
+     * Persists one FINAL canonical segment for an explicit speech session: { speechSessionId, segment }.
+     * Identity is never guessed: a segment that does not name its session is refused.
      *
      * Returns { status, inserted, segment } where status is INSERTED | ALREADY_EXISTS | CONFLICT.
      * CONFLICT is returned, never converted to success.
      */
-    appendFinalSegment(meetingId, input) {
+    appendFinalSegment(meetingId, { speechSessionId, segment } = {}) {
       const meeting = getRequired(meetingId)
-      let speechSessionId
-      let segment
-      if (input && typeof input === 'object' && 'segment' in input) {
-        ;({ speechSessionId, segment } = input)
-      } else {
-        segment = input
-        const active = speechSessionRepository.getActiveByMeeting(meetingId)
-        if (active.length === 0) {
-          throw new MeetingDomainError('Meeting has no active speech session', {
-            statusCode: 409,
-            code: 'no-active-speech-session'
-          })
-        }
-        speechSessionId = active[active.length - 1].speechSessionId
-      }
 
       if (!TRANSCRIPT_ACCEPTING_STATES.has(meeting.status)) {
         throw new MeetingDomainError(`Meeting is ${meeting.status} and does not accept transcript segments`, {

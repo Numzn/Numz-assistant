@@ -33,6 +33,12 @@ function seg(id, start, end, text, extra = {}) {
 
 /** IDs that are unique across sessions by construction: a session UUID plus a sequence number. */
 const segId = (sessionId, n) => `seg_${sessionId.slice(0, 8)}_${String(n).padStart(4, '0')}`
+/** A LIVE meeting with one speech session attached, as when the speech transport connects. */
+function startLive(service, meetingId) {
+  const meeting = service.startMeeting(meetingId)
+  return { meeting, speechSession: service.attachSpeechSession(meetingId) }
+}
+
 const UUID_A = '11111111-1111-4111-8111-111111111111'
 const UUID_B = '22222222-2222-4222-8222-222222222222'
 
@@ -40,7 +46,7 @@ test('the same final event delivered twice is stored once: INSERTED, then ALREAD
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId)
+  const { speechSession } = startLive(service, meeting.meetingId)
   const event = { speechSessionId: speechSession.speechSessionId, segment: seg(segId(UUID_A, 1), 1, 2, 'hello') }
 
   const first = service.appendFinalSegment(meeting.meetingId, event)
@@ -55,7 +61,7 @@ test('different segments never collide, even when every session numbers from 1',
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession: a } = service.startMeeting(meeting.meetingId)
+  const { speechSession: a } = startLive(service, meeting.meetingId)
   // Session A emits seg 1 and 2; session B emits its own seg 1 and 2 (the old per-session counter case).
   service.appendFinalSegment(meeting.meetingId, { speechSessionId: a.speechSessionId, segment: seg(segId(UUID_A, 1), 0, 1, 'a one') })
   service.appendFinalSegment(meeting.meetingId, { speechSessionId: a.speechSessionId, segment: seg(segId(UUID_A, 2), 2, 3, 'a two') })
@@ -73,7 +79,7 @@ test('same id with different content is a CONFLICT: nothing is overwritten and n
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId)
+  const { speechSession } = startLive(service, meeting.meetingId)
   const id = segId(UUID_A, 1)
   service.appendFinalSegment(meeting.meetingId, { speechSessionId: speechSession.speechSessionId, segment: seg(id, 0, 1, 'original') })
 
@@ -91,7 +97,7 @@ test('meeting timeline: a reconnected session never moves time backwards', () =>
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession: a } = service.startMeeting(meeting.meetingId)
+  const { speechSession: a } = startLive(service, meeting.meetingId)
   for (const [n, start] of [[1, 5], [2, 10], [3, 15]]) {
     service.appendFinalSegment(meeting.meetingId, { speechSessionId: a.speechSessionId, segment: seg(segId(UUID_A, n), start, start + 1, `a${n}`) })
   }
@@ -115,7 +121,7 @@ test('attaching a session supersedes the active one; both remain in the record',
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession: a } = service.startMeeting(meeting.meetingId)
+  const { speechSession: a } = startLive(service, meeting.meetingId)
   clock.advanceSeconds(5)
   const b = service.attachSpeechSession(meeting.meetingId)
 
@@ -131,7 +137,7 @@ test('a completed meeting rejects transcript appends and new sessions with 409',
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId)
+  const { speechSession } = startLive(service, meeting.meetingId)
   service.beginFinalization(meeting.meetingId)
   service.completeMeeting(meeting.meetingId)
 
@@ -154,7 +160,7 @@ test('invalid segments are rejected with a 400 and nothing is stored', () => {
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId)
+  const { speechSession } = startLive(service, meeting.meetingId)
   const bad = [
     seg(segId(UUID_A, 1), 5, 1, 'end before start'),
     seg(segId(UUID_A, 2), 0, 1, '   '),
@@ -170,13 +176,24 @@ test('invalid segments are rejected with a 400 and nothing is stored', () => {
   assert.equal(service.getTranscript(meeting.meetingId).length, 0)
 })
 
-test('the legacy bare-segment call form routes to the active session', () => {
-  const clock = makeClock()
-  const service = makeService(createDatabase({ filename: ':memory:' }), clock)
+test('a segment that does not name its speech session is refused: identity is never guessed', () => {
+  const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
   const meeting = service.createMeeting()
-  service.startMeeting(meeting.meetingId)
-  const result = service.appendFinalSegment(meeting.meetingId, seg(segId(UUID_A, 1), 0, 1, 'legacy'))
-  assert.equal(result.status, 'INSERTED')
+  startLive(service, meeting.meetingId)
+  const refused = (err) => err.statusCode === 400 && err.code === 'invalid-speech-session-id'
+  assert.throws(() => service.appendFinalSegment(meeting.meetingId, { segment: seg(segId(UUID_A, 1), 0, 1, 'orphan') }), refused)
+  assert.throws(() => service.appendFinalSegment(meeting.meetingId, seg(segId(UUID_A, 1), 0, 1, 'bare segment')), refused)
+  assert.equal(service.getTranscript(meeting.meetingId).length, 0)
+})
+
+test('starting a meeting creates no speech session; each connection attaches its own', () => {
+  const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
+  const meeting = service.createMeeting()
+  assert.equal(service.startMeeting(meeting.meetingId).status, S.LIVE)
+  assert.deepEqual(service.listSpeechSessions(meeting.meetingId), [])
+  const a = service.attachSpeechSession(meeting.meetingId)
+  const b = service.attachSpeechSession(meeting.meetingId)
+  assert.deepEqual(service.listSpeechSessions(meeting.meetingId).map((x) => x.speechSessionId), [a.speechSessionId, b.speechSessionId])
 })
 
 test('a RECOVERING meeting can be finalized without resuming capture', () => {
@@ -197,7 +214,7 @@ test('process restart: active sessions end, meetings become RECOVERING, data sur
     const db1 = createDatabase({ filename: file })
     const first = makeService(db1, clock)
     const meeting = first.createMeeting()
-    const { speechSession: a } = first.startMeeting(meeting.meetingId)
+    const { speechSession: a } = startLive(first, meeting.meetingId)
     const kept = seg(segId(UUID_A, 1), 0, 1, 'before the crash')
     first.appendFinalSegment(meeting.meetingId, { speechSessionId: a.speechSessionId, segment: kept })
     db1.close() // the process goes away here
@@ -243,7 +260,7 @@ test('process restart: active sessions end, meetings become RECOVERING, data sur
 test('a meeting cannot end while committed segments are missing; it ends once they arrive, and a refusal changes nothing', () => {
   const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId)
+  const { speechSession } = startLive(service, meeting.meetingId)
   const sid = speechSession.speechSessionId
   const delivered = seg(segId(UUID_A, 1), 0, 1, 'delivered')
   const stuck = seg(segId(UUID_A, 2), 2, 3, 'still in the transport outbox')
@@ -275,7 +292,7 @@ test('a meeting cannot end while committed segments are missing; it ends once th
 test('more stored than reported is INCONSISTENT and blocks completion instead of being trusted', () => {
   const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId)
+  const { speechSession } = startLive(service, meeting.meetingId)
   const sid = speechSession.speechSessionId
   service.appendFinalSegment(meeting.meetingId, { speechSessionId: sid, segment: seg(segId(UUID_A, 1), 0, 1, 'one') })
   service.appendFinalSegment(meeting.meetingId, { speechSessionId: sid, segment: seg(segId(UUID_A, 2), 2, 3, 'two') })
@@ -289,7 +306,7 @@ test('more stored than reported is INCONSISTENT and blocks completion instead of
 test('sessions with nothing to lose are EMPTY, and a session that never reported is UNVERIFIED, not blocking', () => {
   const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId) // never used by any transport
+  const { speechSession } = startLive(service, meeting.meetingId) // never used by any transport
   assert.equal(service.getIntegrity(meeting.meetingId).sessions[0].state, 'EMPTY')
   assert.equal(service.getIntegrity(meeting.meetingId).verified, true, 'nothing was produced, so nothing is unverified')
 
@@ -307,7 +324,7 @@ test('a count reported after the session already ended is recorded once; the fir
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession: a } = service.startMeeting(meeting.meetingId)
+  const { speechSession: a } = startLive(service, meeting.meetingId)
   clock.advanceSeconds(5)
   service.attachSpeechSession(meeting.meetingId) // supersedes A before A's transport could report
   service.appendFinalSegment(meeting.meetingId, { speechSessionId: a.speechSessionId, segment: seg(segId(UUID_A, 1), 0, 1, 'late from A') })
@@ -322,7 +339,7 @@ test('a count reported after the session already ended is recorded once; the fir
 test('a malformed committed count is a 400 and changes nothing', () => {
   const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
   const meeting = service.createMeeting()
-  const { speechSession } = service.startMeeting(meeting.meetingId)
+  const { speechSession } = startLive(service, meeting.meetingId)
   for (const bad of [-1, 1.5, '3', Number.NaN, 1e12, {}]) {
     assert.throws(
       () => service.endSpeechSession(meeting.meetingId, speechSession.speechSessionId, 'stopped', { committedSegments: bad }),
@@ -337,7 +354,7 @@ test('cancel and fail end the meeting on purpose, record why, close the sessions
   const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
 
   const cancelled = service.createMeeting()
-  const { speechSession } = service.startMeeting(cancelled.meetingId)
+  const { speechSession } = startLive(service, cancelled.meetingId)
   service.appendFinalSegment(cancelled.meetingId, { speechSessionId: speechSession.speechSessionId, segment: seg(segId(UUID_A, 1), 0, 1, 'kept') })
   const afterCancel = service.cancelMeeting(cancelled.meetingId, { reason: '  wrong room  ' })
   assert.equal(afterCancel.status, S.CANCELLED)
@@ -456,7 +473,7 @@ test('two sessions writing at the same time, one of them already superseded, nev
   const clock = makeClock()
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
-  const { speechSession: a } = service.startMeeting(meeting.meetingId)
+  const { speechSession: a } = startLive(service, meeting.meetingId)
   clock.advanceSeconds(3)
   const b = service.attachSpeechSession(meeting.meetingId) // A is superseded but its connection is still delivering
 
