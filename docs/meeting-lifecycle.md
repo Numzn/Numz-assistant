@@ -267,6 +267,23 @@ act on it. Stacks are never returned.
 | `POST /:id/transcript/final` | admin or ticket | 201 INSERTED / 200 ALREADY_EXISTS | 409 `segment-id-conflict`, 409 `meeting-not-accepting-transcript`, 400 `invalid-segment`, 400 `invalid-speech-session-id`, 404 `speech-session-not-found` |
 | `GET /:id/transcript` | admin | 200 segments in timeline order + `integrity` | |
 
+## Operator workflow — **Implemented** [`meetingAdminCli.test.js`]
+
+An operator drives the lifecycle with `npm run meeting`. It reads `MEETING_API_TOKEN` and `MEETING_API_URL` from
+`.env.secrets` and `.env`, and never prints the admin token.
+
+```bash
+npm run meeting -- create "Weekly sync"    # prints the meeting id and a ticket for the live client
+npm run meeting -- start <meeting-id>
+# give the meeting id and ticket to the live client, speak, stop it
+npm run meeting -- show <meeting-id>       # sessions with committed vs stored counts, and the integrity report
+npm run meeting -- end <meeting-id>        # refused with the reason while the transcript is incomplete
+```
+
+If `end` is refused with `transcript-incomplete`, run `npm run outbox:replay -- <meeting-id>` on the sidecar host, or
+close the meeting honestly with `npm run meeting -- fail <meeting-id> "reason"`. `cancel`, `ticket` and `transcript`
+are also available.
+
 ## Database — **Implemented** [`persistenceOutcomes.test.js`]
 
 SQLite, numbered additive migrations, each in its own transaction and recorded in `schema_migrations`:
