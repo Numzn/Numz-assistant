@@ -101,6 +101,13 @@ test('end to end: one meeting survives a disconnect, a reconnect, and a process 
     server = await startServer(dbFile)
     const { base } = server
 
+    // 0. Configuration is visible: the health endpoint says persistence is ready, and the log says why.
+    const health = await api(base, 'GET', '/health')
+    assert.equal(health.body.meetings.ready, true)
+    assert.deepEqual(health.body.meetings.auth, { admin: true, tickets: true })
+    assert.doesNotMatch(JSON.stringify(health.body), new RegExp(`${ADMIN}|${TICKET_SECRET}`), 'health never contains a secret')
+    assert.match(server.logs.join(''), /\[meetings\] auth: admin enabled, tickets enabled/)
+
     // 1. Create and start the meeting (admin). The response carries a meeting-scoped ticket.
     const created = await api(base, 'POST', '/meetings', { token: ADMIN, body: { metadata: { title: 'e2e' } } })
     assert.equal(created.status, 201)

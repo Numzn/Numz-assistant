@@ -18,6 +18,7 @@ import { createSpeechSessionRepository } from './persistence/speechSessionReposi
 import { createTranscriptRepository } from './persistence/transcriptRepository.js'
 import { createMeetingSessionService } from './services/meetingSessionService.js'
 import { createMeetingAuth } from './auth/meetingAuth.js'
+import { logMeetingsConfig, meetingsHealth } from './meetings/meetingHealth.js'
 import { errorHandler, notFoundHandler } from './http/errorHandler.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -44,6 +45,7 @@ const meetingAuth = createMeetingAuth({
   ticketSecret: process.env.MEETING_TICKET_SECRET ?? '',
   ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200
 })
+logMeetingsConfig({ auth: meetingAuth })
 // No live connection survives a process restart: interrupted meetings move to RECOVERING.
 const meetingRecovery = meetingService.recoverInterruptedMeetings()
 console.log(
@@ -92,7 +94,8 @@ function createApp() {
       aiProvider: cfg.provider,
       aiConfigured: cfg.configured,
       aiModel: cfg.model || null,
-      aiBaseUrl: cfg.baseUrl || null
+      aiBaseUrl: cfg.baseUrl || null,
+      meetings: meetingsHealth({ auth: meetingAuth })
     })
   })
 
