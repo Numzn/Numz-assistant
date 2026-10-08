@@ -396,6 +396,38 @@ class LiveMeetingPathTests(unittest.TestCase):
                 owner = next(x for x in sessions if x["speech_session_id"] == segment["speech_session_id"])
                 self.assertEqual(owner["meeting_id"], mid, "a segment is never linked to another meeting's session")
 
+    def test_an_outage_for_a_whole_session_is_never_reported_as_verified(self):
+        """The hole: nothing is delivered and nothing is reported, so the session looks empty to the API
+        while its committed segment sits in the transport outbox."""
+        meeting_id, ticket = self.new_meeting()
+        a = self.connect()
+        a.start(meetingId=meeting_id, meetingTicket=ticket)
+        self.api.stop()  # the API is down for the whole session
+        a.utterance()
+        self.assertEqual(a.wait_finals(1)[0]["persisted"], "FAILED")
+        a.stop()  # its end call cannot reach the API either
+        self.api.start()  # restart recovery ends the session as process-restart, still unreported
+
+        outbox = Outbox(os.path.join(self._tmp.name, "outbox"))
+        self.assertEqual(len(outbox.pending(meeting_id)), 1, "the committed segment exists only in the outbox")
+
+        _, transcript = self.api.call("GET", f"/meetings/{meeting_id}/transcript")
+        self.assertEqual(transcript["segments"], [], "the API holds nothing for this session")
+        self.assertFalse(transcript["integrity"]["verified"], "and it must not claim the transcript is verified")
+        self.assertEqual(transcript["integrity"]["unverifiedSessions"], 1)
+
+        # The operator replays the outbox while the meeting is still open, and the segment lands.
+        import outbox_cli
+
+        replayed = outbox_cli.replay(outbox, meeting_id, live_speech_ws.MEETING_API_URL, ticket)
+        self.assertEqual((replayed["inserted"], replayed["stillWaiting"]), (1, 0))
+        _, after = self.api.call("GET", f"/meetings/{meeting_id}/transcript")
+        self.assertEqual([s["text"] for s in after["segments"]], ["session A 1"])
+
+        status, ended = self.api.call("POST", f"/meetings/{meeting_id}/end")
+        self.assertEqual(status, 200)
+        self.assertFalse(ended["integrity"]["verified"], "the session still never reported, so it stays unverified")
+
     def test_a_segment_the_api_rejects_stops_the_meeting_from_ending_as_if_nothing_was_lost(self):
         meeting_id, ticket = self.new_meeting()
         # Session A speaks normally. Session B produces text the API refuses (over the 8000 character limit).

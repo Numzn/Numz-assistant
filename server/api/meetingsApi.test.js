@@ -422,3 +422,27 @@ test('a database failure is an explicit 500, never a false success', async () =>
     await close()
   }
 })
+
+test('REGRESSION: over HTTP, a session that never reported is never verified, even with nothing stored', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const admin = (method, path, extra) => call(base, method, path, { token: ADMIN, ...extra })
+    const created = (await admin('POST', '', { body: {} })).json
+    const id = created.meetingId
+    await admin('POST', `/${id}/start`)
+    const session = (await call(base, 'POST', `/${id}/sessions`, { token: created.ticket.token, body: {} })).json
+    // The transport attached but never delivered or reported anything (for example it could not reach the API).
+
+    const done = await admin('POST', `/${id}/end`)
+    assert.equal(done.status, 200, 'nothing is known to be missing, so ending is allowed')
+    assert.equal(done.json.integrity.verified, false)
+    assert.equal(done.json.integrity.unverifiedSessions, 1)
+    assert.equal(done.json.integrity.sessions.find((s) => s.speechSessionId === session.speechSessionId).state, 'UNVERIFIED')
+
+    const transcript = (await admin('GET', `/${id}/transcript`)).json
+    assert.equal(transcript.integrity.verified, false, 'the stored transcript says so too')
+  } finally {
+    await close()
+  }
+})

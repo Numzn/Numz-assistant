@@ -97,8 +97,9 @@ export function createMeetingSessionService({
    *   INCOMPLETE   reported more than stored: segments are missing (known loss)
    *   INCONSISTENT stored more than reported: the report cannot be trusted
    *   OPEN         the session is still active and has produced transcript
-   *   UNVERIFIED   no report, but segments are stored (for example the transport crashed)
-   *   EMPTY        no report and nothing stored: nothing to lose
+   *   UNVERIFIED   no report. Whether or not anything is stored, the transport may be holding committed
+   *                segments it could not deliver (for example the API was down for the whole session, or
+   *                the transport crashed), and this service cannot see them. Never treated as empty.
    * `complete` means no known loss and nothing still streaming. `verified` additionally means
    * no session is left unverified.
    */
@@ -113,7 +114,7 @@ export function createMeetingSessionService({
       } else if (session.status === 'ACTIVE' && storedSegments > 0) {
         state = 'OPEN'
       } else {
-        state = storedSegments > 0 ? 'UNVERIFIED' : 'EMPTY'
+        state = 'UNVERIFIED'
       }
       return {
         speechSessionId: session.speechSessionId,

@@ -303,13 +303,72 @@ test('more stored than reported is INCONSISTENT and blocks completion instead of
   )
 })
 
-test('sessions with nothing to lose are EMPTY, and a session that never reported is UNVERIFIED, not blocking', () => {
+test('REGRESSION: a session that never reported is never verified, even when nothing is stored for it', () => {
+  // The transport attaches, the API is down for the whole session, so nothing is delivered and nothing is
+  // reported. Then the API restarts. The session now looks exactly like an empty one, but its committed
+  // segments may still be waiting in the transport outbox, where this service cannot see them.
   const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
   const meeting = service.createMeeting()
-  const { speechSession } = startLive(service, meeting.meetingId) // never used by any transport
-  assert.equal(service.getIntegrity(meeting.meetingId).sessions[0].state, 'EMPTY')
-  assert.equal(service.getIntegrity(meeting.meetingId).verified, true, 'nothing was produced, so nothing is unverified')
+  service.startMeeting(meeting.meetingId)
+  const { speechSessionId } = service.attachSpeechSession(meeting.meetingId)
+  service.recoverInterruptedMeetings() // the API restarts: the session ends as process-restart, still unreported
 
+  const report = service.getIntegrity(meeting.meetingId)
+  const entry = report.sessions.find((x) => x.speechSessionId === speechSessionId)
+  assert.equal(entry.storedSegments, 0)
+  assert.equal(entry.endReason, 'process-restart')
+  assert.equal(entry.state, 'UNVERIFIED', 'not "empty": nothing here can see the transport outbox')
+  assert.equal(report.verified, false, 'the meeting must not claim to be verified')
+  assert.equal(report.unverifiedSessions, 1)
+  assert.equal(report.complete, true, 'nothing is known to be missing, so ending is still allowed')
+
+  const done = service.endMeeting(meeting.meetingId)
+  assert.equal(done.integrity.verified, false)
+  assert.equal(done.integrity.unverifiedSessions, 1)
+})
+
+test('REGRESSION: a session still active with no report and nothing stored is not verified either', () => {
+  const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
+  const meeting = service.createMeeting()
+  service.startMeeting(meeting.meetingId)
+  const { speechSessionId } = service.attachSpeechSession(meeting.meetingId)
+
+  const before = service.getIntegrity(meeting.meetingId)
+  assert.equal(before.sessions[0].state, 'UNVERIFIED')
+  assert.equal(before.verified, false)
+
+  const done = service.endMeeting(meeting.meetingId) // ends the still-active session as meeting-completed
+  assert.equal(done.integrity.sessions.find((x) => x.speechSessionId === speechSessionId).state, 'UNVERIFIED')
+  assert.equal(done.integrity.verified, false)
+})
+
+test('only a report makes a session verified; a late report repairs an unverified one', () => {
+  const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
+
+  const clean = service.createMeeting()
+  service.startMeeting(clean.meetingId)
+  const stopped = service.attachSpeechSession(clean.meetingId)
+  service.endSpeechSession(clean.meetingId, stopped.speechSessionId, 'stopped', { committedSegments: 0 })
+  const cleanReport = service.getIntegrity(clean.meetingId)
+  assert.equal(cleanReport.sessions[0].state, 'VERIFIED', 'a transport that stopped cleanly said it committed nothing')
+  assert.equal(cleanReport.verified, true)
+
+  const crashed = service.createMeeting()
+  service.startMeeting(crashed.meetingId)
+  const lost = service.attachSpeechSession(crashed.meetingId)
+  service.recoverInterruptedMeetings()
+  assert.equal(service.getIntegrity(crashed.meetingId).verified, false)
+  // The transport comes back and files its count for the session that ended without one.
+  service.endSpeechSession(crashed.meetingId, lost.speechSessionId, 'disconnected', { committedSegments: 0 })
+  const repaired = service.getIntegrity(crashed.meetingId)
+  assert.equal(repaired.sessions[0].state, 'VERIFIED')
+  assert.equal(repaired.verified, true)
+})
+
+test('a session that stored segments but never reported stays unverified and does not block ending', () => {
+  const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
+  const meeting = service.createMeeting()
+  const { speechSession } = startLive(service, meeting.meetingId)
   service.appendFinalSegment(meeting.meetingId, { speechSessionId: speechSession.speechSessionId, segment: seg(segId(UUID_A, 1), 0, 1, 'x') })
   assert.equal(service.getIntegrity(meeting.meetingId).sessions[0].state, 'OPEN', 'active and producing transcript')
   service.endSpeechSession(meeting.meetingId, speechSession.speechSessionId, 'disconnected') // no count reported

@@ -148,8 +148,7 @@ segments it stored for the session:
 | State | Meaning | Blocks `POST /:id/end`? |
 |---|---|---|
 | `VERIFIED` | Reported count equals stored count | No |
-| `EMPTY` | Nothing reported and nothing stored | No |
-| `UNVERIFIED` | Nothing reported, but segments are stored (for example the transport crashed) | No, but the meeting is not `verified` |
+| `UNVERIFIED` | Nothing reported, whether or not anything is stored: the transport crashed, or could not reach the API when it stopped, and may still hold committed segments in its outbox | No, but the meeting is not `verified` |
 | `INCOMPLETE` | Reported more than stored: segments are missing | **409** `transcript-incomplete` |
 | `INCONSISTENT` | Stored more than reported: the report cannot be trusted | **409** `transcript-incomplete` |
 | `OPEN` | Still `ACTIVE` and has produced transcript | **409** `speech-session-active` |
@@ -162,7 +161,7 @@ segments it stored for the session:
 - To resolve `transcript-incomplete`: deliver the missing segments from the transport outbox
   (`npm run outbox:replay`, below), then end the meeting again. If they can never be delivered, mark the
   meeting failed with `POST /:id/fail`.
-- A session that ended without reporting stays `UNVERIFIED`. The API does not claim more than it knows.
+- A session that ended without reporting stays `UNVERIFIED`, even when nothing is stored for it: a transport that could not reach the API cannot have reported, and its committed segments may be waiting in its outbox. Run `npm run outbox:status` on the sidecar host, and `npm run outbox:replay` while the meeting is still open. The API does not claim more than it knows. Only a report makes a session `VERIFIED`, including a clean stop that committed nothing (`committedSegments: 0`).
   The first count report for a session that already ended is still accepted and recorded.
 
 ## Transport durability — **Partially implemented** [`test_live_outbox.py`, `test_live_outbox_cli.py`, `test_live_ws_integration.py`]
