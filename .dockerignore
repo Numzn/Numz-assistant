@@ -3,7 +3,13 @@ audio/.venv
 .git
 logs
 dist
-.env.secrets
+data
+audio/outbox
+audio/models
+.env
+.env.*
+docker/certs
+docker/*.bak*
 *.log
 .cursor
 **/__pycache__
