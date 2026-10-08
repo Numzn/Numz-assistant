@@ -230,19 +230,21 @@ class LiveMeetingPathTests(unittest.TestCase):
         a.utterance()
         a.utterance()
         finals = a.wait_finals(2)
-        self.assertEqual([f["persisted"] for f in finals], ["DELIVERED", "DELIVERED"])
+        self.assertEqual([f["persisted"] for f in finals], ["INSERTED", "INSERTED"])
         stopped_a = a.stop()
-        self.assertEqual(stopped_a["persistence"]["delivered"], 2)
-        self.assertEqual(stopped_a["persistence"]["pending"], 0)
+        self.assertEqual(stopped_a["persistence"]["committed"], 2)
+        self.assertEqual(stopped_a["persistence"]["inserted"], 2)
+        self.assertEqual(stopped_a["persistence"]["failed"], 0)
 
         b = self.connect()
         self.assertEqual(b.start(meetingId=meeting_id, meetingTicket=ticket)["persistence"], "meeting")
         b.utterance()
         b.wait_finals(1)
-        self.assertEqual(b.stop()["persistence"]["delivered"], 1)
+        self.assertEqual(b.stop()["persistence"]["inserted"], 1)
 
-        status, _ = self.api.call("POST", f"/meetings/{meeting_id}/end")
+        status, ended = self.api.call("POST", f"/meetings/{meeting_id}/end")
         self.assertEqual(status, 200)
+        self.assertTrue(ended["integrity"]["verified"], "every session reported what it committed, and all of it is stored")
         _, transcript = self.api.call("GET", f"/meetings/{meeting_id}/transcript")
         segments = transcript["segments"]
         self.assertEqual([s["text"] for s in segments], ["session A 1", "session A 2", "session B 1"])
@@ -256,24 +258,26 @@ class LiveMeetingPathTests(unittest.TestCase):
         _, sessions = self.api.call("GET", f"/meetings/{meeting_id}/sessions")
         # The session opened by /start is superseded by A; A and B each end when their stream stops.
         self.assertEqual(sorted(s["endReason"] for s in sessions["speechSessions"]), ["stopped", "stopped", "superseded"])
+        reported = [(s["committedSegments"], s["storedSegments"]) for s in sessions["speechSessions"] if s["endReason"] == "stopped"]
+        self.assertEqual(sorted(reported), [(1, 1), (2, 2)], "each transport reported its count and the API stored exactly that many")
 
     def test_an_api_outage_is_visible_and_the_segment_is_delivered_exactly_once_after_recovery(self):
         meeting_id, ticket = self.new_meeting()
         a = self.connect()
         a.start(meetingId=meeting_id, meetingTicket=ticket)
         a.utterance()
-        self.assertEqual(a.wait_finals(1)[0]["persisted"], "DELIVERED")
+        self.assertEqual(a.wait_finals(1)[0]["persisted"], "INSERTED")
 
         self.api.stop()  # the meeting API goes away mid-session
         a.utterance()
         second = a.wait_finals(2)[1]
-        self.assertEqual(second["persisted"], "PENDING", "an undelivered segment must never be reported as saved")
+        self.assertEqual(second["persisted"], "FAILED", "an undelivered segment must never be reported as saved")
         # The FINAL frame goes out first; the explanation follows it. Wait for the explanation too.
         a.read_until(
             lambda m: m.get("type") == "error" and m.get("code") == "persistence-failure" and m.get("segmentId") == second["segment"]["id"]
         )
         stopped = a.stop()
-        self.assertGreaterEqual(stopped["persistence"]["pending"], 1)
+        self.assertGreaterEqual(stopped["persistence"]["failed"], 1)
         self.assertTrue(stopped["persistence"]["durable"], "the outbox is on disk, so the pending segment survives")
 
         self.api.start()  # same database file; interrupted meeting is now RECOVERING
@@ -293,9 +297,53 @@ class LiveMeetingPathTests(unittest.TestCase):
         b.utterance()
         b.wait_finals(1)
         b.stop()
-        self.assertEqual(self.api.call("POST", f"/meetings/{meeting_id}/end")[0], 200)
+        status, ended = self.api.call("POST", f"/meetings/{meeting_id}/end")
+        self.assertEqual(status, 200)
+        # Session A could not report its count (the API was down when it stopped), so it cannot be verified.
+        # Nothing is known to be missing, but the meeting does not claim more than it knows.
+        self.assertTrue(ended["integrity"]["complete"])
+        self.assertFalse(ended["integrity"]["verified"])
+        self.assertEqual(ended["integrity"]["unverifiedSessions"], 1)
         _, transcript = self.api.call("GET", f"/meetings/{meeting_id}/transcript")
         self.assertEqual([s["text"] for s in transcript["segments"]], ["session A 1", "session A 2", "session B 1"])
+
+    def test_a_segment_the_api_rejects_stops_the_meeting_from_ending_as_if_nothing_was_lost(self):
+        meeting_id, ticket = self.new_meeting()
+        # Session A speaks normally. Session B produces text the API refuses (over the 8000 character limit).
+        live_speech_ws.SESSION_FACTORY = fake_session_factory(iter(["good", "x" * 8100]))
+
+        a = self.connect()
+        a.start(meetingId=meeting_id, meetingTicket=ticket)
+        a.utterance()
+        self.assertEqual(a.wait_finals(1)[0]["persisted"], "INSERTED")
+        a.stop()
+
+        b = self.connect()
+        b.start(meetingId=meeting_id, meetingTicket=ticket)
+        b.utterance()
+        rejected = b.wait_finals(1)[0]
+        self.assertEqual(rejected["persisted"], "REJECTED", "a refused segment is never reported as saved")
+        b.read_until(lambda m: m.get("type") == "error" and m.get("code") == "segment-rejected")
+        summary = b.stop()["persistence"]
+        self.assertEqual((summary["committed"], summary["inserted"], summary["rejected"]), (1, 0, 1))
+
+        quarantined = Outbox(os.path.join(self._tmp.name, "outbox")).rejected(meeting_id)
+        self.assertEqual(len(quarantined), 1, "the refused segment is kept for inspection, not dropped")
+        self.assertEqual(quarantined[0]["reason"], "invalid-segment")
+
+        # The API knows a segment is missing, so the meeting cannot be ended as if the transcript were whole.
+        status, refused = self.api.call("POST", f"/meetings/{meeting_id}/end")
+        self.assertEqual(status, 409)
+        self.assertEqual(refused["code"], "transcript-incomplete")
+        self.assertEqual(refused["details"]["missingSegments"], 1)
+        self.assertEqual(self.api.call("GET", f"/meetings/{meeting_id}")[1]["status"], "LIVE")
+
+        # The operator's honest options: mark it failed, with a reason. The stored transcript stays readable.
+        status, failed = self.api.call("POST", f"/meetings/{meeting_id}/fail", body={"reason": "one segment was refused"})
+        self.assertEqual((status, failed["status"]), (200, "FAILED"))
+        _, transcript = self.api.call("GET", f"/meetings/{meeting_id}/transcript")
+        self.assertEqual([s["text"] for s in transcript["segments"]], ["good 1"])
+        self.assertFalse(transcript["integrity"]["complete"])
 
     def test_standalone_and_misconfigured_starts_are_explicit(self):
         standalone = self.connect()

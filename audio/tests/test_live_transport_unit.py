@@ -9,6 +9,7 @@ import unittest
 
 import live_speech_ws
 from speech.live.outbox import Outbox
+from speech.live.persistence import ALREADY_EXISTS, FAILED, INSERTED, REJECTED, PersistOutcome
 from speech.live.session import LiveSpeechSession
 from tests.fakes_live import EnergyVad, ScriptedAsr, silence_frames, speech_frames
 
@@ -100,6 +101,82 @@ class FinalizationFailureTests(unittest.TestCase):
         finals = socket.of_type("transcript", state="FINAL")
         self.assertEqual(len({f["segment"]["id"] for f in finals}), len(finals), "each committed segment is announced once")
         self.assertEqual(len(socket.of_type("stopped")), 1)
+
+
+MEETING = "00000000-0000-4000-8000-000000000001"
+
+
+class ScriptedPersistence:
+    """Stands in for MeetingPersistence: scripted outcomes, a real outbox, and a record of the end-of-session report."""
+
+    def __init__(self, outbox, *outcomes):
+        self.outbox = outbox
+        self.outcomes = list(outcomes)
+        self.ended = []
+
+    def persist(self, speech_session_id, segment):
+        outcome = self.outcomes.pop(0)
+        if outcome.state == FAILED:
+            self.outbox.enqueue(MEETING, speech_session_id, segment)  # a failed segment stays queued
+        return outcome
+
+    def flush(self):
+        return {}
+
+    def end_session(self, speech_session_id, reason, committed_segments=None):
+        self.ended.append((reason, committed_segments))
+        return {"ok": True}
+
+
+class PersistenceReportingTests(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved_factory = live_speech_ws.SESSION_FACTORY
+
+    def tearDown(self):
+        live_speech_ws.SESSION_FACTORY = self._saved_factory
+        self._dir.cleanup()
+
+    def test_every_outcome_is_reported_distinctly_and_counted_once(self):
+        live_speech_ws.SESSION_FACTORY = factory(LiveSpeechSession)
+        socket = FakeSocket()
+        outbox = Outbox(self._dir.name)
+        connection = live_speech_ws.LiveConnection(socket, outbox)
+        connection.start({"sampleRate": 16000, "channels": 1, "format": "f32le"})
+        scripted = ScriptedPersistence(
+            outbox,
+            PersistOutcome(INSERTED, "seg_a", None),
+            PersistOutcome(ALREADY_EXISTS, "seg_b", None),
+            PersistOutcome(FAILED, "seg_c", "http-503"),
+            PersistOutcome(REJECTED, None, "invalid-segment"),  # refused before it had a usable id
+        )
+        connection.persistence = scripted
+        connection.meeting_id = MEETING
+
+        for _ in range(4):
+            speak(connection)
+        connection.finish("stopped")
+
+        self.assertEqual(
+            [f["persisted"] for f in socket.of_type("transcript", state="FINAL")],
+            ["INSERTED", "ALREADY_EXISTS", "FAILED", "REJECTED"],
+        )
+        self.assertTrue(socket.of_type("error", code="persistence-failure"), "a failed segment is explained")
+        self.assertTrue(socket.of_type("error", code="segment-rejected"), "a rejected segment is explained")
+        summary = socket.of_type("stopped")[0]["persistence"]
+        self.assertEqual(
+            summary,
+            {
+                "meetingBound": True,
+                "durable": True,
+                "committed": 4,
+                "inserted": 1,
+                "alreadyExists": 1,
+                "rejected": 1,  # counted once, even though it never had an id
+                "failed": 1,  # the retry backlog: seg_c is still queued
+            },
+        )
+        self.assertEqual(scripted.ended, [("stopped", 4)], "the API is told how many segments were committed")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,19 @@
 """
 Delivers canonical final segments to the meeting API with explicit outcomes.
 
-  DELIVERED - the API answered 201 INSERTED or 200 ALREADY_EXISTS: stored exactly once.
-  REJECTED  - a permanent answer: 400 invalid, 404 unknown session/meeting, 409 segment-id
-              conflict or meeting not accepting transcript. Quarantined in the outbox with
-              the reason; never retried automatically.
-  PENDING   - transient (unreachable, timeout, 5xx), or credentials refused (401/403/503).
-              Kept in the outbox and retried by flush(). Never reported as saved.
+  INSERTED       - the API answered 201 and reported status INSERTED: stored now.
+  ALREADY_EXISTS - the API answered 200 and reported status ALREADY_EXISTS: an identical segment
+                   was already stored (a safe duplicate delivery).
+  REJECTED       - a permanent refusal: 400 invalid, 404 unknown session or meeting, 409 segment-id
+                   conflict or meeting not accepting transcript. Quarantined in the outbox with the
+                   reason; never retried automatically.
+  FAILED         - not stored: unreachable, timeout, 5xx, credentials refused (401/403/503), or an
+                   answer that does not explicitly say INSERTED or ALREADY_EXISTS. The segment stays
+                   in the outbox and flush() retries it. It is never reported as saved.
+
+A bare HTTP 200 or 201 proves nothing. A segment counts as persisted only when the answer names
+INSERTED (with 201) or ALREADY_EXISTS (with 200), so a response such as `inserted: false` without an
+explicit duplicate is FAILED, not success.
 
 Every segment is written to the outbox before the first attempt (write-ahead).
 Credentials: a meeting ticket, sent as a Bearer token. The transport never holds the admin token.
@@ -22,9 +29,13 @@ from typing import NamedTuple, Optional
 from speech.live.ids import require_uuid
 from speech.live.outbox import OutboxError
 
-DELIVERED = "DELIVERED"
-PENDING = "PENDING"
+INSERTED = "INSERTED"
+ALREADY_EXISTS = "ALREADY_EXISTS"
 REJECTED = "REJECTED"
+FAILED = "FAILED"
+
+PERSISTED = (INSERTED, ALREADY_EXISTS)
+OUTCOMES = (INSERTED, ALREADY_EXISTS, REJECTED, FAILED)
 
 
 class PersistenceUnavailable(Exception):
@@ -40,9 +51,13 @@ class PersistenceRejected(Exception):
 
 
 class PersistOutcome(NamedTuple):
-    state: str  # DELIVERED | PENDING | REJECTED
+    state: str  # INSERTED | ALREADY_EXISTS | REJECTED | FAILED
     segment_id: Optional[str]
-    code: Optional[str]
+    code: Optional[str]  # why, for REJECTED and FAILED; None when the segment is persisted
+
+    @property
+    def persisted(self) -> bool:
+        return self.state in PERSISTED
 
 
 def segment_problem(segment) -> Optional[str]:
@@ -60,6 +75,16 @@ def segment_problem(segment) -> Optional[str]:
         return "text must be a non-empty string"
     if not isinstance(segment.get("uncertain"), bool):
         return "uncertain must be a boolean"
+    return None
+
+
+def persisted_state(http_status: int, body) -> Optional[str]:
+    """The persisted state an answer explicitly proves (INSERTED or ALREADY_EXISTS), else None."""
+    reported = body.get("status") if isinstance(body, dict) else None
+    if http_status == 201 and reported == INSERTED:
+        return INSERTED
+    if http_status == 200 and reported == ALREADY_EXISTS:
+        return ALREADY_EXISTS
     return None
 
 
@@ -171,31 +196,40 @@ class MeetingPersistence:
                 self._sleep(self._backoff)
                 continue
             if status in (200, 201):
-                self._outbox.acknowledge(self._meeting_id, key, "delivered")
-                return PersistOutcome(DELIVERED, key, response.get("status"))
+                state = persisted_state(status, response)
+                if state is None:
+                    # A 2xx that does not say INSERTED (201) or ALREADY_EXISTS (200) proves nothing was
+                    # stored. Retrying cannot change a deterministic answer: keep the segment, say so.
+                    return PersistOutcome(FAILED, key, "unexpected-response")
+                self._outbox.acknowledge(self._meeting_id, key, "delivered", reason=state)
+                return PersistOutcome(state, key, None)
             code = response.get("code") or f"http-{status}"
             if status in (400, 404, 409):
                 self._outbox.acknowledge(self._meeting_id, key, "rejected", reason=code)
                 return PersistOutcome(REJECTED, key, code)
             if status in (401, 403):
                 # Retrying cannot fix credentials: stop now and keep the segment pending.
-                return PersistOutcome(PENDING, key, code)
+                return PersistOutcome(FAILED, key, code)
             last_code = code
             self._sleep(self._backoff)
-        return PersistOutcome(PENDING, key, last_code)
+        return PersistOutcome(FAILED, key, last_code)
 
     def flush(self) -> dict:
         """Retries every pending segment for this meeting, including ones from earlier sessions."""
-        counts = {"delivered": 0, "rejected": 0, "pending": 0}
+        counts = {state: 0 for state in OUTCOMES}
         for entry in self._outbox.pending(self._meeting_id):
-            state = self._deliver(entry).state
-            counts[{DELIVERED: "delivered", REJECTED: "rejected", PENDING: "pending"}[state]] += 1
+            counts[self._deliver(entry).state] += 1
         return counts
 
-    def end_session(self, speech_session_id: str, reason: str) -> dict:
+    def end_session(self, speech_session_id: str, reason: str, committed_segments: Optional[int] = None) -> dict:
+        """Ends the speech session. committed_segments is how many final segments this session produced,
+        so the API can tell a complete transcript from one with segments still missing."""
         path = f"/api/v1/meetings/{self._meeting_id}/sessions/{require_uuid(speech_session_id)}/end"
+        body = {"reason": reason}
+        if committed_segments is not None:
+            body["committedSegments"] = int(committed_segments)
         try:
-            status, body = self._request("POST", path, {"reason": reason})
+            status, response = self._request("POST", path, body)
         except OSError:
             return {"ok": False, "code": "unreachable"}
-        return {"ok": status == 200, "status": status, "code": body.get("code")}
+        return {"ok": status == 200, "status": status, "code": response.get("code")}

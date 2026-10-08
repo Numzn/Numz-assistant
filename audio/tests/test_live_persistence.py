@@ -6,8 +6,9 @@ import urllib.error
 
 from speech.live.outbox import Outbox
 from speech.live.persistence import (
-    DELIVERED,
-    PENDING,
+    ALREADY_EXISTS,
+    FAILED,
+    INSERTED,
     REJECTED,
     MeetingPersistence,
     PersistenceRejected,
@@ -72,22 +73,51 @@ class PersistenceOutcomeTests(unittest.TestCase):
     def tearDown(self):
         self._dir.cleanup()
 
+    def setUp_outbox(self):
+        """A fresh outbox, for tests that exercise several independent segments."""
+        self._dir.cleanup()
+        self._dir = tempfile.TemporaryDirectory()
+        self.outbox = Outbox(self._dir.name)
+
     def client(self, api, attempts=2):
         return MeetingPersistence(
             BASE, MEETING, TICKET, self.outbox, inline_attempts=attempts, backoff_s=0.01,
             sleep=self.sleeps.append, opener=api,
         )
 
-    def test_201_is_delivered_and_acknowledged(self):
-        api = FakeApi(("ok", 201, {"status": "INSERTED"}))
+    def test_201_inserted_is_persisted_and_acknowledged(self):
+        api = FakeApi(("ok", 201, {"status": "INSERTED", "inserted": True}))
         outcome = self.client(api).persist(SESSION, segment())
-        self.assertEqual(outcome.state, DELIVERED)
+        self.assertEqual(outcome.state, INSERTED)
+        self.assertTrue(outcome.persisted)
         self.assertEqual(self.outbox.pending(MEETING), [])
         self.assertEqual(api.requests[0]["auth"], f"Bearer {TICKET}", "the ticket is the only credential sent")
 
-    def test_200_already_exists_is_also_delivered(self):
-        api = FakeApi(("ok", 200, {"status": "ALREADY_EXISTS"}))
-        self.assertEqual(self.client(api).persist(SESSION, segment()).state, DELIVERED)
+    def test_200_already_exists_is_persisted_but_reported_as_a_duplicate(self):
+        api = FakeApi(("ok", 200, {"status": "ALREADY_EXISTS", "inserted": False}))
+        outcome = self.client(api).persist(SESSION, segment())
+        self.assertEqual(outcome.state, ALREADY_EXISTS, "a duplicate is not the same as a new insert")
+        self.assertTrue(outcome.persisted)
+        self.assertEqual(self.outbox.pending(MEETING), [])
+
+    def test_a_success_status_without_an_explicit_outcome_is_not_persistence(self):
+        # HTTP 200 with inserted:false (or no status at all) proves nothing was stored.
+        for http_status, body in [
+            (200, {"inserted": False}),
+            (200, {}),
+            (201, {"inserted": True}),
+            (200, {"status": "INSERTED"}),  # an insert must be a 201
+            (201, {"status": "ALREADY_EXISTS"}),  # a duplicate must be a 200
+            (200, {"status": "SOMETHING_ELSE"}),
+        ]:
+            with self.subTest(http_status=http_status, body=body):
+                self.setUp_outbox()
+                api = FakeApi(("ok", http_status, body))
+                outcome = self.client(api, attempts=3).persist(SESSION, segment())
+                self.assertEqual((outcome.state, outcome.code), (FAILED, "unexpected-response"))
+                self.assertFalse(outcome.persisted)
+                self.assertEqual(len(api.requests), 1, "a deterministic answer is not retried")
+                self.assertEqual([e["key"] for e in self.outbox.pending(MEETING)], ["seg_1"], "kept, never acknowledged")
 
     def test_409_conflict_is_rejected_quarantined_and_not_retried(self):
         api = FakeApi(("ok", 409, {"error": "exists", "code": "segment-id-conflict"}))
@@ -99,18 +129,18 @@ class PersistenceOutcomeTests(unittest.TestCase):
     def test_transient_failures_are_retried_then_stay_pending_visibly(self):
         api = FakeApi(("unreachable", 0, {}), ("ok", 503, {"code": "auth-not-configured"}))
         outcome = self.client(api, attempts=2).persist(SESSION, segment())
-        self.assertEqual(outcome.state, PENDING)
+        self.assertEqual(outcome.state, FAILED)
         self.assertEqual(len(api.requests), 2)
         self.assertEqual([e["key"] for e in self.outbox.pending(MEETING)], ["seg_1"], "never dropped")
 
-    def test_a_timeout_then_success_is_delivered_on_the_retry(self):
+    def test_a_timeout_then_success_is_persisted_on_the_retry(self):
         api = FakeApi(("timeout", 0, {}), ("ok", 201, {"status": "INSERTED"}))
-        self.assertEqual(self.client(api).persist(SESSION, segment()).state, DELIVERED)
+        self.assertEqual(self.client(api).persist(SESSION, segment()).state, INSERTED)
 
     def test_refused_credentials_stop_immediately_and_keep_the_segment(self):
         api = FakeApi(("ok", 401, {"code": "auth-required"}))
         outcome = self.client(api, attempts=3).persist(SESSION, segment())
-        self.assertEqual(outcome.state, PENDING)
+        self.assertEqual(outcome.state, FAILED)
         self.assertEqual(len(api.requests), 1, "credentials cannot be fixed by retrying")
         self.assertEqual(len(self.outbox.pending(MEETING)), 1)
 
@@ -125,10 +155,10 @@ class PersistenceOutcomeTests(unittest.TestCase):
     def test_flush_delivers_what_was_pending_once_the_api_is_back(self):
         api = FakeApi(("unreachable", 0, {}), ("unreachable", 0, {}))
         client = self.client(api)
-        self.assertEqual(client.persist(SESSION, segment("seg_1")).state, PENDING)
+        self.assertEqual(client.persist(SESSION, segment("seg_1")).state, FAILED)
         api.script = [("ok", 201, {"status": "INSERTED"})]
-        self.assertEqual(client.flush(), {"delivered": 1, "rejected": 0, "pending": 0})
-        self.assertEqual(client.flush(), {"delivered": 0, "rejected": 0, "pending": 0}, "nothing left to resend")
+        self.assertEqual(client.flush(), {INSERTED: 1, ALREADY_EXISTS: 0, REJECTED: 0, FAILED: 0})
+        self.assertEqual(client.flush(), {INSERTED: 0, ALREADY_EXISTS: 0, REJECTED: 0, FAILED: 0}, "nothing left to resend")
 
     def test_open_session_maps_refusals_to_rejected_and_outages_to_unavailable(self):
         self.assertRaises(PersistenceRejected, self.client(FakeApi(("ok", 404, {"code": "meeting-not-found"}))).open_session)
@@ -144,6 +174,14 @@ class PersistenceOutcomeTests(unittest.TestCase):
         self.assertEqual(
             self.client(FakeApi(("unreachable", 0, {}))).end_session(SESSION, "stopped")["code"], "unreachable"
         )
+
+    def test_end_session_tells_the_api_how_many_segments_were_committed(self):
+        api = FakeApi(("ok", 200, {}), ("ok", 200, {}))
+        client = self.client(api)
+        client.end_session(SESSION, "stopped", committed_segments=7)
+        client.end_session(SESSION, "stopped")
+        self.assertEqual(api.requests[0]["body"], {"reason": "stopped", "committedSegments": 7})
+        self.assertEqual(api.requests[1]["body"], {"reason": "stopped"}, "unknown stays unknown, never 0")
 
 
 if __name__ == "__main__":

@@ -22,15 +22,19 @@ Wire protocol:
     {"type": "ready", "sessionId", "meetingId", "persistence": "meeting" | "standalone", "timelineOffsetMs"}
     {"type": "transcript", "state": "PARTIAL" | "STABILIZING", "text": "..."}
     {"type": "transcript", "state": "FINAL", "segment": {id, start, end, speaker, text},
-                           "persisted": "DELIVERED" | "PENDING" | "REJECTED" | "NOT_PERSISTED"}
+                           "persisted": "INSERTED" | "ALREADY_EXISTS" | "REJECTED" | "FAILED" | "NOT_PERSISTED"}
     {"type": "error", "code", "message", ["segmentId"]}
-    {"type": "stopped", "transcript": {...} | null, "persistence": {...}, "error": null | "transcript-invalid"}
+    {"type": "stopped", "transcript": {...} | null, "error": null | "transcript-invalid",
+                        "persistence": {"meetingBound", "durable", "committed", "inserted", "alreadyExists",
+                                        "rejected", "failed"}}
 
 Persistence rules (see docs/meeting-lifecycle.md):
   - Every committed final segment is written to the durable outbox before delivery.
-  - A segment is reported DELIVERED only after the meeting API stored it (or confirmed it already was).
-  - PENDING segments stay in the outbox and are retried; REJECTED segments are quarantined. Neither is dropped.
+  - A segment is reported INSERTED or ALREADY_EXISTS only when the meeting API explicitly said so.
+  - FAILED segments stay in the outbox and are retried; REJECTED segments are quarantined. Neither is dropped.
   - Committed segments are persisted before any finalization step can fail.
+  - When the session ends, the number of committed segments is reported to the meeting API, which refuses
+    to complete a meeting whose stored segments are fewer than the committed ones.
 """
 
 import json
@@ -46,7 +50,16 @@ from speech.audio_io import write_wav
 from speech.live.events import TranscriptStage
 from speech.live.ids import require_uuid
 from speech.live.outbox import Outbox
-from speech.live.persistence import DELIVERED, PENDING, REJECTED, MeetingPersistence, PersistenceRejected, PersistenceUnavailable
+from speech.live.persistence import (
+    ALREADY_EXISTS,
+    FAILED,
+    INSERTED,
+    OUTCOMES,
+    REJECTED,
+    MeetingPersistence,
+    PersistenceRejected,
+    PersistenceUnavailable,
+)
 from speech.live.session import LiveSpeechSession
 
 logger = logging.getLogger(__name__)
@@ -101,8 +114,9 @@ class LiveConnection:
         self.stream_position_s = 0.0
         self.paused = False
         self.save_recording = False
-        self.counts = {DELIVERED: 0, PENDING: 0, REJECTED: 0}
-        self.unkeyed_rejections = []  # refused before the outbox could key them; kept for the summary
+        self.committed = 0  # final segments this connection produced, whatever happened to them next
+        self.counts = {state: 0 for state in OUTCOMES}
+        self.unkeyed_rejections = []  # refused before the outbox could key them (no id to retry or quarantine)
         self.memory_only = []  # outbox writes that failed; held in memory until the process ends
         self.finished = False
 
@@ -256,6 +270,7 @@ class LiveConnection:
             self._persist_one(seg)
 
     def _persist_one(self, seg: dict):
+        self.committed += 1
         if self.persistence is None:
             self.send_final(seg, "NOT_PERSISTED")
             return
@@ -266,9 +281,9 @@ class LiveConnection:
             # The outbox itself is unavailable (disk). Keep the segment in memory and say so.
             logger.exception("live-speech: outbox write failed")
             self.memory_only.append(seg)
-            self.counts[PENDING] += 1
+            self.counts[FAILED] += 1
             self.error("outbox-unavailable", f"Could not write segment {seg['id']} to the outbox; held in memory only", segmentId=seg["id"])
-            self.send_final(seg, PENDING)
+            self.send_final(seg, FAILED)
             return
 
         if outcome.segment_id is None:
@@ -277,7 +292,7 @@ class LiveConnection:
         self.send_final(seg, outcome.state)
         if outcome.state == REJECTED:
             self.error("segment-rejected", f"The meeting API rejected segment {seg['id']}: {outcome.code}", segmentId=seg["id"])
-        elif outcome.state == PENDING:
+        elif outcome.state == FAILED:
             self.error(
                 "persistence-failure",
                 f"Segment {seg['id']} is not saved yet ({outcome.code}); it is queued and will be retried",
@@ -285,13 +300,17 @@ class LiveConnection:
             )
 
     def _summary(self) -> dict:
-        pending = len(self.outbox.pending(self.meeting_id)) if self.meeting_id else 0
+        """What happened to this connection's segments. `failed` is the retry backlog for the meeting:
+        segments not stored yet (including earlier sessions' leftovers and any held only in memory)."""
+        backlog = (len(self.outbox.pending(self.meeting_id)) if self.meeting_id else 0) + len(self.memory_only)
         return {
             "meetingBound": bool(self.meeting_id),
             "durable": self.outbox.durable,
-            "delivered": self.counts[DELIVERED],
-            "pending": pending + len(self.memory_only),
-            "rejected": self.counts[REJECTED] + len(self.unkeyed_rejections),
+            "committed": self.committed,
+            "inserted": self.counts[INSERTED],
+            "alreadyExists": self.counts[ALREADY_EXISTS],
+            "rejected": self.counts[REJECTED],
+            "failed": backlog,
         }
 
     # ---- finalization ---------------------------------------------------------------
@@ -315,7 +334,7 @@ class LiveConnection:
                 self.persistence.flush()
             except Exception:
                 logger.exception("live-speech: retrying pending segments failed")
-            ended = self.persistence.end_session(self.speech_session_id, reason)
+            ended = self.persistence.end_session(self.speech_session_id, reason, committed_segments=self.committed)
             if not ended.get("ok"):
                 logger.warning("live-speech: could not end speech session %s (%s)", self.speech_session_id, ended.get("code"))
 
