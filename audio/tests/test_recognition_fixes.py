@@ -123,6 +123,54 @@ def fake_segment(text, words=None):
     )
 
 
+class PreviewsArePaced(unittest.TestCase):
+    """Each decode costs about 1.7 s on this server whatever the audio length, so previews must be rationed."""
+
+    def test_slow_previews_are_spaced_out_but_the_final_line_is_always_decoded(self):
+        now = [0.0]
+
+        class SlowAsr:
+            calls = []
+
+            def transcribe(self, pcm, sample_rate, language="", prompt=""):
+                SlowAsr.calls.append(len(pcm) / sample_rate)
+                now[0] += 1.7  # what a decode costs here
+                return SimpleNamespace(segments=[SimpleNamespace(text="hello there", words=[])])
+
+        live = LocalAgreementStreamingAsr(fast_asr=SlowAsr(), quality_asr=SlowAsr(), clock=lambda: now[0])
+        position = 0.0
+        for frame in speech_frames(200):  # 20 s of continuous speech
+            position += 0.1
+            live.push_audio(frame, position)
+        previews = list(SlowAsr.calls)
+        self.assertEqual(previews[0], 2.0, "the first preview after 2 s of speech")
+        gaps = [b - a for a, b in zip(previews, previews[1:])]
+        self.assertTrue(all(gap >= 5.0 for gap in gaps), f"then at least 1.7 s / (1/3) = 5.1 s apart: {gaps}")
+        self.assertLessEqual(len(previews) * 1.7, 20 / 3 + 1.7, "previews use about a third of real time")
+
+        final = live.flush()
+        self.assertIsNotNone(final, "the FINAL line is decoded regardless")
+        self.assertEqual(SlowAsr.calls[-1], 20.0)
+
+    def test_fast_previews_still_tick_every_two_seconds(self):
+        now = [0.0]
+
+        class QuickAsr:
+            calls = []
+
+            def transcribe(self, pcm, sample_rate, language="", prompt=""):
+                QuickAsr.calls.append(len(pcm) / sample_rate)
+                now[0] += 0.2
+                return SimpleNamespace(segments=[SimpleNamespace(text="hi", words=[])])
+
+        live = LocalAgreementStreamingAsr(fast_asr=QuickAsr(), quality_asr=QuickAsr(), clock=lambda: now[0])
+        position = 0.0
+        for frame in speech_frames(100):
+            position += 0.1
+            live.push_audio(frame, position)
+        self.assertEqual([round(c, 1) for c in QuickAsr.calls], [2.0, 4.0, 6.0, 8.0, 10.0])
+
+
 class DecodeSettings(unittest.TestCase):
     def test_meetings_never_get_the_assistant_prompt_and_the_safety_net_is_on(self):
         calls = []

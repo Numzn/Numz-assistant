@@ -17,7 +17,8 @@ partial ticks, higher-quality for the FINAL decode — latency and accuracy
 are not forced onto the same configuration (see docs/speech-pipeline.md).
 """
 
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -41,7 +42,9 @@ class LocalAgreementStreamingAsr:
         prompt: str = "",
         fast_asr: Optional[FasterWhisperAsr] = None,
         quality_asr: Optional[FasterWhisperAsr] = None,
-        min_tick_s: float = 1.0,
+        min_tick_s: float = 2.0,
+        preview_share: float = 1 / 3,
+        clock: Callable[[], float] = time.perf_counter,
     ):
         self.sample_rate = sample_rate
         self.language = language
@@ -53,6 +56,13 @@ class LocalAgreementStreamingAsr:
         self._fast_asr = fast_asr or quality_asr
         self._quality_asr = quality_asr or self._fast_asr
         self.min_tick_s = min_tick_s
+        # Partial text is only a preview. A Whisper decode costs about the same however short the audio
+        # (it always encodes a 30 s window: about 1.7 s per decode on this server), so previewing every
+        # second of speech made the live path 1.6-2.4x slower than real time. Previews are paced so they
+        # use at most this share of real time; the FINAL decode at the end of each utterance never waits.
+        self.preview_share = preview_share
+        self._clock = clock
+        self._last_preview_cost_s = 0.0
 
         self._buffer = np.array([], dtype=np.float32)
         self._buffer_start_s: Optional[float] = None
@@ -73,11 +83,15 @@ class LocalAgreementStreamingAsr:
         self._buffer = np.concatenate([self._buffer, frame])
 
         buffered_s = len(self._buffer) / self.sample_rate
-        if buffered_s - self._last_tick_len_s < self.min_tick_s:
+        wait_s = max(self.min_tick_s, self._last_preview_cost_s / self.preview_share)
+        if buffered_s - self._last_tick_len_s < wait_s:
             return None
         self._last_tick_len_s = buffered_s
 
-        return self._decode_tick(fast=True)
+        started = self._clock()
+        event = self._decode_tick(fast=True)
+        self._last_preview_cost_s = self._clock() - started
+        return event
 
     def _decode_tick(self, fast: bool) -> Optional[TranscriptEvent]:
         asr = self._fast_asr if fast else self._quality_asr
