@@ -204,11 +204,13 @@ one-shot file but too slow to run per live chunk).
 not `MediaRecorder` — see above). The worklet batches the Web Audio API's
 fixed 128-sample blocks into 1600-sample (100ms) frames before posting to
 the main thread, which forwards each one as a WebSocket binary message.
-**Not wired into the existing mic button / voice orchestrator** — it's a
-standalone module, plus `public/live-speech-test.html`, a bare manual test
-page (Start/Stop/Pause/Resume + a live transcript dump) for real-microphone
-validation. Dev-only (`npm run dev`) — imports `/src/...` directly, which
-only Vite's dev server resolves, not a production build.
+**Not wired into the existing mic button / voice orchestrator.** The Meeting
+panel (`src/interfaces/meeting/`, see [meeting-lifecycle.md](meeting-lifecycle.md))
+uses it to record and save meetings, connecting through the server's
+authenticated relay so it works from an HTTPS page. `public/live-speech-test.html`
+remains a bare manual test page (Start/Stop/Pause/Resume + a live transcript
+dump) for real-microphone validation. Dev-only (`npm run dev`) — imports
+`/src/...` directly, which only Vite's dev server resolves, not a production build.
 
 **Wire protocol, session lifecycle and persistence:** the authoritative description is in
 [speech-architecture.md](speech-architecture.md) (persistence path, per-segment outcomes) and

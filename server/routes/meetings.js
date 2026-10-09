@@ -3,11 +3,13 @@ import { MeetingDomainError } from '../meetings/meetingDomain.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_METADATA_BYTES = 16 * 1024
+const MAX_TITLE_LENGTH = 120
 
 /**
  * Meeting API. Credentials per route (see server/auth/meetingAuth.js):
- *   admin      - create, lifecycle (start, pause, resume, recover, end, cancel, fail), reads, ticket minting
- *   admin|ticket (bound to the meeting) - speech-session attach/end, canonical segment append
+ *   admin      - create, lifecycle (start, pause, resume, recover, cancel, fail), reads, ticket minting
+ *   admin|ticket (bound to the meeting) - speech-session attach/end, canonical segment append, ending the meeting
+ *   launch code - starting a NEW meeting from the browser (POST /launch), nothing else
  */
 function badRequest(message, code) {
   return new MeetingDomainError(message, { statusCode: 400, code })
@@ -35,6 +37,15 @@ function metadataFrom(body) {
   return metadata
 }
 
+function titleFrom(body) {
+  const title = body?.title
+  if (title === undefined || title === null || title === '') return null
+  if (typeof title !== 'string') throw badRequest('title must be a string', 'invalid-title')
+  const trimmed = title.trim()
+  if (trimmed.length > MAX_TITLE_LENGTH) throw badRequest(`title is longer than ${MAX_TITLE_LENGTH} characters`, 'invalid-title')
+  return trimmed || null
+}
+
 export function createMeetingsRouter({ meetingService, auth }) {
   if (!meetingService || !auth) throw new Error('meetingService and auth are required')
   const router = Router()
@@ -42,6 +53,29 @@ export function createMeetingsRouter({ meetingService, auth }) {
   router.post('/', auth.requireAdmin(), (req, res) => {
     const meeting = meetingService.createMeeting(metadataFrom(req.body))
     res.status(201).json({ ...meeting, ticket: auth.issueTicket(meeting.meetingId) })
+  })
+
+  // The browser's way in: create the meeting, start it and hand back its own ticket in one step.
+  // Nothing is created unless a ticket can be issued, and a meeting that cannot be started is cancelled.
+  router.post('/launch', auth.requireLaunchCode(), (req, res) => {
+    const title = titleFrom(req.body)
+    const meeting = meetingService.createMeeting({ source: 'browser', ...(title ? { title } : {}) })
+    let started
+    try {
+      started = meetingService.startMeeting(meeting.meetingId)
+    } catch (err) {
+      meetingService.cancelMeeting(meeting.meetingId, { reason: 'launch-failed' })
+      throw err
+    }
+    const ticket = auth.issueTicket(meeting.meetingId)
+    if (!ticket) {
+      meetingService.cancelMeeting(meeting.meetingId, { reason: 'launch-failed' })
+      throw new MeetingDomainError('Meeting tickets are not configured on this server', {
+        statusCode: 503,
+        code: 'auth-not-configured'
+      })
+    }
+    res.status(201).json({ ...started, ticket })
   })
 
   router.get('/:meetingId', auth.requireAdmin(), (req, res) => {
@@ -80,7 +114,8 @@ export function createMeetingsRouter({ meetingService, auth }) {
 
   // Refused with 409 (and the meeting left untouched) while committed segments are missing
   // (`transcript-incomplete`) or a speech session that produced transcript is still open (`speech-session-active`).
-  router.post('/:meetingId/end', auth.requireAdmin(), (req, res) => {
+  // The ticket holder may end its own meeting (the browser that launched it); no other lifecycle step.
+  router.post('/:meetingId/end', auth.requireMeetingWriter(), (req, res) => {
     res.json(meetingService.endMeeting(meetingIdFrom(req)))
   })
 

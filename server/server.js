@@ -10,6 +10,8 @@ import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
 import { createMeetingsRouter } from './routes/meetings.js'
 import { attachSocketServer } from './websocket/socketServer.js'
+import { createUpgradeRouter } from './websocket/upgradeRouter.js'
+import { attachLiveSpeechRelay, liveSpeechUpstreamUrl } from './websocket/liveSpeechRelay.js'
 import { getAiConfig, logAiConfig, probeDeepSeek } from './aiConfig.js'
 import { createAiProvider } from './ai/providers/providerFactory.js'
 import { createDatabase } from './persistence/sqliteDatabase.js'
@@ -43,6 +45,7 @@ const meetingService = createMeetingSessionService({
 const meetingAuth = createMeetingAuth({
   adminToken: process.env.MEETING_API_TOKEN ?? '',
   ticketSecret: process.env.MEETING_TICKET_SECRET ?? '',
+  launchCode: process.env.MEETING_LAUNCH_CODE ?? '',
   ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200
 })
 logMeetingsConfig({ auth: meetingAuth })
@@ -125,7 +128,13 @@ function createApp() {
 const listenPort = Number.isFinite(port) ? port : 3001
 const app = createApp()
 const server = http.createServer(app)
-attachSocketServer(server)
+const upgrades = createUpgradeRouter(server)
+attachSocketServer(server, { upgrades })
+attachLiveSpeechRelay({
+  upgrades,
+  auth: meetingAuth,
+  upstreamUrl: liveSpeechUpstreamUrl(process.env.AUDIO_SERVICE_URL || undefined)
+})
 server.listen(listenPort, () => {
   log('INFO', `API http://localhost:${listenPort}`, {
     env: nodeEnv,

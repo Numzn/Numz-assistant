@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws'
 import { createAssistantOrchestrator } from '../orchestrator/assistantOrchestrator.js'
+import { createUpgradeRouter } from './upgradeRouter.js'
 
 function safeJsonParse(text) {
   try {
@@ -25,9 +26,14 @@ function safeSend(ws, payload) {
  * Server -> client:
  * - { type: 'AI_RESPONSE_STARTED' | 'AI_TOKEN' | 'AI_RESPONSE_FINISHED' | 'AI_RESPONSE_ERROR' | 'STATE' | 'token' | 'state' | 'message' | 'done', ...data }
  */
-export function attachSocketServer(httpServer, { path = '/api/v1/assistant/ws' } = {}) {
+export function attachSocketServer(httpServer, { path = '/api/v1/assistant/ws', upgrades } = {}) {
   const orchestrator = createAssistantOrchestrator()
-  const wss = new WebSocketServer({ server: httpServer, path })
+  // Upgrades are routed by path through one dispatcher, so other WebSocket endpoints can share this server.
+  const wss = new WebSocketServer({ noServer: true })
+  const router = upgrades ?? createUpgradeRouter(httpServer)
+  router.add(path, (req, socket, head) => {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+  })
 
   wss.on('connection', (ws) => {
     let active = null

@@ -23,6 +23,16 @@
         <button id="micSettingsButton" type="button" aria-label="Microphone settings" title="Microphone settings">
           Mic
         </button>
+        <button
+          id="meetingButton"
+          type="button"
+          aria-label="Meeting"
+          aria-expanded="false"
+          aria-controls="meetingPanel"
+          title="Record and save a meeting"
+        >
+          Meeting
+        </button>
       </div>
       <div id="micSettingsPanel" hidden>
         <label for="micDeviceSelect">Microphone test device</label>
@@ -37,6 +47,28 @@
       <div id="voiceTranscript" aria-live="polite"></div>
       <div id="assistantResponse" aria-live="polite"></div>
     </div>
+    <section id="meetingPanel" aria-label="Meeting" hidden>
+      <div id="meetingHead">
+        <span id="meetingHeading">Meeting</span>
+        <span id="meetingChip" data-tone="info">Not started</span>
+        <button id="meetingClose" type="button" aria-label="Close the meeting panel">&times;</button>
+      </div>
+      <form id="meetingForm" autocomplete="off">
+        <label for="meetingCode">Launch code</label>
+        <input id="meetingCode" name="launch-code" type="password" autocomplete="new-password" spellcheck="false" />
+        <label for="meetingTitleInput">Title <span class="optional">(optional)</span></label>
+        <input id="meetingTitleInput" name="title" type="text" maxlength="120" autocomplete="off" />
+        <button id="meetingStart" type="submit">Start meeting</button>
+      </form>
+      <div id="meetingLive" hidden>
+        <div id="meetingPartial" aria-hidden="true"></div>
+        <ol id="meetingLines" aria-live="polite" aria-relevant="additions"></ol>
+        <div id="meetingCounts"></div>
+        <button id="meetingStop" type="button" data-primary="true">Stop and save</button>
+      </div>
+      <p id="meetingMessage" role="status" aria-live="polite" data-tone="info"></p>
+      <div id="meetingActions"></div>
+    </section>
     <div id="latencyFooter" hidden aria-hidden="true"></div>
     <pre id="voiceDebugPanel" hidden aria-label="Voice debug"></pre>
     <script type="module" src="/src/main.js"></script>

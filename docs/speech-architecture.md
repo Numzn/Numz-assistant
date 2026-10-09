@@ -57,6 +57,7 @@ stored. Generated intelligence is derived and must keep evidence references.
 | Persistence readiness (health, startup log) | `server/meetings/meetingHealth.js`, `audio/speech/live/health.py` | Implemented |
 | Outbox operator tool | `audio/outbox_cli.py` (`npm run outbox:status`, `npm run outbox:replay`) | Implemented |
 | Meeting operator CLI | `scripts/meeting-admin.js`, `scripts/lib/meetingAdmin.js` (`npm run meeting`) | Implemented |
+| Start a meeting from the browser | `POST /api/v1/meetings/launch`, `server/websocket/liveSpeechRelay.js`, `src/interfaces/meeting/` (see [meeting-lifecycle.md](meeting-lifecycle.md)) | Implemented; real-microphone run needs manual validation |
 | Grounded notes | `server/services/speechNotesService.js` | Implemented |
 | Rolling intelligence | `server/services/rollingIntelligenceService.js` | Seam only; not connected to the live transport |
 
@@ -84,7 +85,8 @@ client  --audio frames-->  LiveSpeechSession  --FINAL-->  drain_committed()
           client  <-- FINAL frame with "persisted": INSERTED | ALREADY_EXISTS | REJECTED | FAILED
 client  --stop-->  drain, flush the outbox, POST .../sessions/:sid/end {reason, committedSegments}
           <-- stopped {transcript, persistence: {committed, inserted, alreadyExists, rejected, failed, durable}}
-operator --end-->  POST .../meetings/:id/end   refused with 409 while committed segments are missing
+operator, or the launching browser with its ticket
+         --end-->  POST .../meetings/:id/end   refused with 409 while committed segments are missing
 ```
 
 A bare HTTP 200 or 201 never counts as saved. A segment is persisted only when the API says so
