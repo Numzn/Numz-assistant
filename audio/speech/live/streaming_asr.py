@@ -45,6 +45,7 @@ class LocalAgreementStreamingAsr:
         min_tick_s: float = 2.0,
         preview_share: float = 1 / 3,
         clock: Callable[[], float] = time.perf_counter,
+        decode_observer: Optional[Callable] = None,
     ):
         self.sample_rate = sample_rate
         self.language = language
@@ -63,15 +64,24 @@ class LocalAgreementStreamingAsr:
         self.preview_share = preview_share
         self._clock = clock
         self._last_preview_cost_s = 0.0
+        # Optional callable(kind, seconds, audio_s, segments) told about every decode: "preview" or "final",
+        # how long Whisper took, how much audio it covered and its raw segments (diagnostics only).
+        self._decode_observer = decode_observer
 
         self._buffer = np.array([], dtype=np.float32)
+        # Where the buffered audio sits on the stream clock: the start of its first frame and the end of
+        # its last. Silence between utterances is never buffered, so the next utterance must take its
+        # start from its own first frame (until 2026-10-09 it inherited the previous utterance's end, which
+        # squeezed every pause out of the timeline).
         self._buffer_start_s: Optional[float] = None
+        self._buffer_end_s: Optional[float] = None
         self._last_decode_text = ""
         self._last_tick_len_s = 0.0
 
-    def reset(self, at_s: Optional[float] = None):
+    def reset(self):
         self._buffer = np.array([], dtype=np.float32)
-        self._buffer_start_s = at_s
+        self._buffer_start_s = None
+        self._buffer_end_s = None
         self._last_decode_text = ""
         self._last_tick_len_s = 0.0
 
@@ -80,6 +90,7 @@ class LocalAgreementStreamingAsr:
         how far the live stream has gotten), not its start."""
         if self._buffer_start_s is None:
             self._buffer_start_s = timestamp_s - (len(frame) / self.sample_rate)
+        self._buffer_end_s = timestamp_s
         self._buffer = np.concatenate([self._buffer, frame])
 
         buffered_s = len(self._buffer) / self.sample_rate
@@ -95,7 +106,15 @@ class LocalAgreementStreamingAsr:
 
     def _decode_tick(self, fast: bool) -> Optional[TranscriptEvent]:
         asr = self._fast_asr if fast else self._quality_asr
+        decode_started = time.perf_counter()
         result = asr.transcribe(self._buffer, self.sample_rate, language=self.language, prompt=self.prompt)
+        if self._decode_observer is not None:
+            self._decode_observer(
+                "preview" if fast else "final",
+                time.perf_counter() - decode_started,
+                len(self._buffer) / self.sample_rate,
+                result.segments,
+            )
         text = " ".join(seg.text for seg in result.segments).strip()
         if not text:
             return None
@@ -105,9 +124,14 @@ class LocalAgreementStreamingAsr:
         self._last_decode_text = text
 
         stage = TranscriptStage.STABILIZING if reconfirmed else TranscriptStage.PARTIAL
-        start = self._buffer_start_s or 0.0
-        end = start + len(self._buffer) / self.sample_rate
-        words = [w for seg in result.segments for w in seg.words]
+        start = self._buffer_start_s if self._buffer_start_s is not None else 0.0
+        end = self._buffer_end_s if self._buffer_end_s is not None else start
+        # Whisper times words from the start of the audio it was given; the transcript wants stream time.
+        words = [
+            {**word, "start": round(word["start"] + start, 3), "end": round(word["end"] + start, 3)}
+            for seg in result.segments
+            for word in seg.words
+        ]
         return TranscriptEvent(stage=stage, text=text, start=start, end=end, words=words)
 
     def flush(self) -> Optional[TranscriptEvent]:
@@ -125,5 +149,5 @@ class LocalAgreementStreamingAsr:
         final_event = TranscriptEvent(
             stage=TranscriptStage.FINAL, text=event.text, start=event.start, end=event.end, words=event.words
         )
-        self.reset(at_s=event.end)
+        self.reset()
         return final_event

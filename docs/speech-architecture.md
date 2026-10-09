@@ -39,9 +39,10 @@ stored. Generated intelligence is derived and must keep evidence references.
 | Diarization contract and backends | `audio/speech/diarization.py` | Implemented; pyannote optional, not installed |
 | Batch reconciliation | `audio/speech/reconcile.py` | Implemented |
 | Batch orchestration | `audio/speech/pipeline.py` | Implemented |
-| Live frame VAD | `audio/speech/live/frame_vad.py` | Implemented (energy gate; decides utterance start and end only, whole utterances reach the recognizer) |
+| Live frame VAD | `audio/speech/live/frame_vad.py` | Implemented (adaptive noise-floor energy gate with hysteresis; decides utterance start and end only, whole utterances reach the recognizer) |
+| Live session diagnostics | `audio/speech/live/diagnostics.py` | Implemented (numbers-only log line per minute and per session) |
 | Live endpointing | `audio/speech/live/endpointing.py` | Implemented |
-| Live streaming ASR | `audio/speech/live/streaming_asr.py` | Implemented; timestamps have known anchoring limits (see gaps) |
+| Live streaming ASR | `audio/speech/live/streaming_asr.py` | Implemented; times are stream-clock times (see gaps) |
 | Live hypothesis events | `audio/speech/live/events.py` | Implemented |
 | Live hypothesis reconciliation | `audio/speech/reconciler.py` | Implemented |
 | Segment identity | `audio/speech/live/ids.py` | Implemented |
@@ -141,9 +142,10 @@ The sidecar's systemd unit reads `.env` and `.env.secrets` through `EnvironmentF
 
 **Partially implemented:**
 
-- Live segment timestamps come from the streaming ASR and are known to anchor incorrectly after the
-  first utterance (see the review findings). The meeting timeline inherits that error. It is monotonic,
-  but not yet accurate to the second.
+- Live segment times are the stream positions of the first and last frame handed to the recognizer, so
+  they include up to 0.3 s of lead-in and the 0.7 s of silence that ends a turn: accurate to about a second,
+  not to the word. (Until 2026-10-09 they also lost every pause: each utterance started where the previous
+  one ended.) Word times are on the same clock.
 - The outbox is per sidecar host and file-based. It is not replicated.
 - The voice assistant's hold-to-talk and conversation path does not create speech sessions. It uses the
   batch `/api/v1/assistant/stt` endpoint.

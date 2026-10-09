@@ -75,6 +75,10 @@ npm test                                                        # Node: domain, 
 cd audio && .venv/bin/python -m unittest discover -s tests -t .  # Python: speech core, live transport, outbox, health
 ```
 
+Real speech through the real Whisper model (quiet levels, noise, timestamps) is opt-in because it loads the model:
+`cd audio && NUMZ_REAL_ASR=1 .venv/bin/python -m unittest tests.test_real_audio_gate -v` (see `docs/speech-pipeline.md`).
+`LIVE_GATE_MIN_DBFS` (default -56) sets the quietest level the live gate opens on.
+
 The Python integration tests start the real Node server and a real SQLite file, so they need Node on `PATH`. On a
 memory-starved host the server can take a minute to start; the tests wait up to 3 minutes.
 
