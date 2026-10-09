@@ -18,6 +18,12 @@ import { createVoiceOutputSpeechSynthesis } from './interfaces/voice/voiceOutput
 import { createVoiceOrchestrator } from './interfaces/voice/voiceOrchestrator.js'
 import { createVoiceDeviceManager } from './interfaces/voice/voiceDeviceManager.js'
 import { createVoiceDebugPanel } from './interfaces/voice/voiceDebugPanel.js'
+import { createLiveSpeechClient } from './interfaces/voice/liveSpeechClient.js'
+import { createMeetingApi } from './interfaces/meeting/meetingApi.js'
+import { createMeetingController, LIVE_SPEECH_PATH } from './interfaces/meeting/meetingController.js'
+import { createMeetingStorage } from './interfaces/meeting/meetingStorage.js'
+import { createMeetingPanel } from './interfaces/meeting/meetingPanel.js'
+import { checkLiveSpeechSupport } from './interfaces/meeting/liveSupport.js'
 
 const canvas = document.querySelector('#canvas')
 if (!canvas) {
@@ -80,6 +86,10 @@ assistantController.init().catch((err) => {
   console.error('[assistant] init failed', err)
 })
 
+// Shared with the meeting panel further down: the assistant steps aside while a meeting is open.
+let voiceApi = null
+let preferredMicId = () => ''
+
 if (settings.voice?.enabled) {
   const buttonEl = document.querySelector('#micButton')
   const wakeButtonEl = document.querySelector('#wakeButton')
@@ -101,6 +111,7 @@ if (settings.voice?.enabled) {
 
   const voiceOutput = createVoiceOutputSpeechSynthesis()
   const deviceManager = createVoiceDeviceManager()
+  preferredMicId = () => deviceManager.getPreferredDeviceId?.() ?? ''
 
   const audioMode = String(settings.voice?.audioMode ?? 'legacy').toLowerCase()
   const sttMode = String(settings.voice?.sttMode ?? 'webspeech').toLowerCase()
@@ -172,7 +183,7 @@ if (settings.voice?.enabled) {
     eventBus
   })
 
-  const voiceApi = voice.init()
+  voiceApi = voice.init()
 
   if (debugOverlay && voiceApi?.voiceDebug) {
     const panelEl = document.querySelector('#voiceDebugPanel')
@@ -182,6 +193,62 @@ if (settings.voice?.enabled) {
       voiceDebug: voiceApi.voiceDebug
     })
   }
+}
+
+// ---- Meetings: record and save a meeting from this screen ----
+// A meeting needs the microphone and must not be answered by the assistant, so while one is open the
+// assistant's buttons, wake word and hands-free loop stand down, and come back afterwards.
+async function setAssistantVoiceAvailable(available) {
+  const controls = ['#micButton', '#wakeButton', '#micSettingsButton', '#micSettingsPanel']
+    .map((selector) => document.querySelector(selector))
+    .filter(Boolean)
+  if (!available) {
+    const wakeButton = document.querySelector('#wakeButton')
+    if (wakeButton?.getAttribute('aria-pressed') === 'true') wakeButton.click() // disarm the wake word
+    for (const element of controls) element.inert = true
+    try {
+      await voiceApi?.stopConversation?.()
+    } catch (err) {
+      console.error('[meeting] could not pause the assistant', err)
+    }
+    return
+  }
+  for (const element of controls) element.inert = false
+  if (settings.voice?.conversationMode && settings.voice?.autoStartOnLoad) {
+    try {
+      await voiceApi?.startConversation?.()
+    } catch (err) {
+      console.error('[meeting] could not resume the assistant', err)
+    }
+  }
+}
+
+function meetingSocketUrl() {
+  const { protocol, host } = window.location
+  return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}${LIVE_SPEECH_PATH}`
+}
+
+try {
+  const meetingApi = createMeetingApi()
+  const meetingController = createMeetingController({
+    api: meetingApi,
+    storage: createMeetingStorage(),
+    checkSupport: checkLiveSpeechSupport,
+    createLiveClient: (options) =>
+      createLiveSpeechClient({ wsUrl: meetingSocketUrl(), getDeviceId: preferredMicId, ...options })
+  })
+  const meetingPanel = createMeetingPanel({
+    controller: meetingController,
+    api: meetingApi,
+    onActiveChange: (active) => {
+      setAssistantVoiceAvailable(!active)
+    }
+  })
+  meetingController.restore()
+  meetingPanel.openIfUnfinished()
+} catch (err) {
+  // The meeting panel must never take the main screen down with it.
+  console.error('[meeting] panel failed to start', err)
 }
 
 const clock = new THREE.Clock()
