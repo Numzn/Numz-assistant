@@ -43,6 +43,7 @@ const meetingService = createMeetingSessionService({
 const meetingAuth = createMeetingAuth({
   adminToken: process.env.MEETING_API_TOKEN ?? '',
   ticketSecret: process.env.MEETING_TICKET_SECRET ?? '',
+  launchCode: process.env.MEETING_LAUNCH_CODE ?? '',
   ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200
 })
 logMeetingsConfig({ auth: meetingAuth })
