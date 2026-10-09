@@ -12,6 +12,7 @@ Two guarantees the transport relies on:
 """
 
 import time
+from collections import deque
 from enum import Enum
 from typing import Callable, Optional
 
@@ -25,6 +26,11 @@ from speech.live.ids import new_speech_session_id, require_uuid, segment_id_for
 from speech.live.streaming_asr import LocalAgreementStreamingAsr
 from speech.reconciler import TranscriptReconciler
 from speech.schema import make_transcript, validate_transcript
+
+
+# Audio kept from just before an utterance starts, so its first syllable (often quieter than the gate)
+# reaches the recognizer instead of being clipped.
+PRE_ROLL_S = 0.3
 
 
 class SessionState(str, Enum):
@@ -66,6 +72,8 @@ class LiveSpeechSession:
         )
         self._drained = 0
         self._raw_audio: list = []
+        self._pre_roll: deque = deque()  # (frame, timestamp_s) from the moments before an utterance
+        self._pre_roll_s = 0.0
         self._on_transcript_event: Optional[Callable[[TranscriptEvent], None]] = None
 
     def on_transcript_event(self, callback: Callable[[TranscriptEvent], None]):
@@ -82,18 +90,42 @@ class LiveSpeechSession:
         if self.keep_audio_for_reprocessing:
             self._raw_audio.append(frame)
 
+        # The gate only decides where an utterance starts and ends. Everything between those points goes to
+        # the recognizer, quiet frames included: soft syllables and the gaps between words are part of the
+        # speech. (Until 2026-10-09 only frames above the gate were passed on, so quiet speech never reached
+        # Whisper and loud speech arrived chopped into 100 ms scraps.)
         if self._frame_vad.is_speech(frame):
+            if not self._endpointer.in_progress():
+                for held_frame, held_at in self._pre_roll:
+                    self._push(held_frame, held_at)
+                self._pre_roll.clear()
+                self._pre_roll_s = 0.0
             signal = self._endpointer.on_speech(timestamp_s)
-            event = self._streaming_asr.push_audio(frame, timestamp_s)
-            if event:
-                self._emit(event)
+            self._push(frame, timestamp_s)
             if signal == EndpointSignal.FORCED_END:
                 self._flush_utterance()
             return
 
-        signal = self._endpointer.on_silence(timestamp_s)
-        if signal in (EndpointSignal.LIKELY_END, EndpointSignal.FORCED_END):
-            self._flush_utterance()
+        if self._endpointer.in_progress():
+            self._push(frame, timestamp_s)
+            signal = self._endpointer.on_silence(timestamp_s)
+            if signal in (EndpointSignal.LIKELY_END, EndpointSignal.FORCED_END):
+                self._flush_utterance()
+            return
+
+        self._hold_pre_roll(frame, timestamp_s)
+
+    def _push(self, frame: np.ndarray, timestamp_s: float):
+        event = self._streaming_asr.push_audio(frame, timestamp_s)
+        if event:
+            self._emit(event)
+
+    def _hold_pre_roll(self, frame: np.ndarray, timestamp_s: float):
+        self._pre_roll.append((frame, timestamp_s))
+        self._pre_roll_s += len(frame) / self.sample_rate
+        while self._pre_roll and self._pre_roll_s - len(self._pre_roll[0][0]) / self.sample_rate >= PRE_ROLL_S:
+            dropped, _ = self._pre_roll.popleft()
+            self._pre_roll_s -= len(dropped) / self.sample_rate
 
     def _flush_utterance(self):
         final_event = self._streaming_asr.flush()

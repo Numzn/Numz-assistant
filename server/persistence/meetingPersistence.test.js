@@ -35,6 +35,9 @@ test('meeting persistence supports lifecycle and multiple speech sessions', () =
   assert.notEqual(first.speechSessionId, second.speechSessionId)
   assert.equal(system.speechSessionRepository.getByMeeting(meeting.meetingId).length, 2)
 
+  assert.throws(() => system.service.endMeeting(meeting.meetingId), (err) => err.code === 'speech-session-active', 'not while sessions are open')
+  system.service.endSpeechSession(meeting.meetingId, first.speechSessionId, 'stopped', { committedSegments: 0 })
+  system.service.endSpeechSession(meeting.meetingId, second.speechSessionId, 'stopped', { committedSegments: 0 })
   system.service.beginFinalization(meeting.meetingId)
   const completed = system.service.completeMeeting(meeting.meetingId)
   assert.equal(completed.status, MEETING_STATES.COMPLETED)

@@ -21,6 +21,9 @@ export function createVoiceOrchestrator({
   let busy = false
   let lastTranscript = ''
   let wakeMode = false
+  // While a meeting records, the assistant must neither listen nor speak — not even a reply that was
+  // already on its way when the meeting started (it would be recorded into the meeting). See suspend().
+  let suspended = false
   let awaitingWakeCommand = false
 
   // Continuous (ChatGPT-Voice-style) conversation loop.
@@ -107,6 +110,7 @@ export function createVoiceOrchestrator({
   }
 
   function queueSpeechChunk(text) {
+    if (suspended) return
     pendingSpeechChunks.push(text)
     drainSpeechQueue()
   }
@@ -212,6 +216,7 @@ export function createVoiceOrchestrator({
   }
 
   async function speakReply(replyText) {
+    if (suspended) return
     // Most of the reply was very likely already spoken incrementally, chunk
     // by chunk, as it streamed in (see bindStreaming's token handler) —
     // ensureSpeakingStarted() is a no-op if that already happened. This
@@ -249,7 +254,7 @@ export function createVoiceOrchestrator({
 
   async function handleAssistantPrompt(text) {
     const cleaned = typeof text === 'string' ? text.trim() : ''
-    if (!cleaned) return
+    if (!cleaned || suspended) return
     if (busy) {
       setUiStatus('Busy — wait…')
       return
@@ -347,6 +352,28 @@ export function createVoiceOrchestrator({
         conversationActive = false
       }
     }
+  }
+
+  /**
+   * Stand down for a meeting: stop listening (hands-free loop and wake word), cut any speech that is
+   * playing, and refuse to speak anything that arrives later, including the rest of a reply that was
+   * already streaming when the meeting started. resume() lifts it; it does not restart listening.
+   */
+  async function suspend() {
+    suspended = true
+    pendingSpeechChunks = []
+    speechBuffer = ''
+    try {
+      voiceOutput.cancel()
+    } catch {
+      /* nothing was playing */
+    }
+    if (wakeMode) await stopWakeListening()
+    await stopConversation()
+  }
+
+  function resume() {
+    suspended = false
   }
 
   async function stopConversation() {
@@ -923,6 +950,8 @@ export function createVoiceOrchestrator({
         voiceDebug,
         startConversation,
         stopConversation,
+        suspend,
+        resume,
         destroy() {
           destroyStreaming?.()
           destroyUi?.()

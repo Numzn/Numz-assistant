@@ -318,7 +318,7 @@ export function createMeetingController({
       if (!client || !['connecting', 'live'].includes(state.phase)) return
       const live = client
       client = null
-      set({ phase: 'stopping', partial: '', message: 'Stopping the recording…', tone: 'info' })
+      set({ phase: 'stopping', partial: '', message: 'Finishing the last lines… this can take a few seconds.', tone: 'info' })
       try {
         await live.stop()
       } catch {

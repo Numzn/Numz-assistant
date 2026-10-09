@@ -148,10 +148,10 @@ segments it stored for the session:
 | State | Meaning | Blocks `POST /:id/end`? |
 |---|---|---|
 | `VERIFIED` | Reported count equals stored count | No |
-| `UNVERIFIED` | Nothing reported, whether or not anything is stored: the transport crashed, or could not reach the API when it stopped, and may still hold committed segments in its outbox | No, but the meeting is not `verified` |
+| `UNVERIFIED` | Ended without a report, whether or not anything is stored: the transport crashed, or could not reach the API when it stopped, and may still hold committed segments in its outbox | No, but the meeting is not `verified` |
 | `INCOMPLETE` | Reported more than stored: segments are missing | **409** `transcript-incomplete` |
 | `INCONSISTENT` | Stored more than reported: the report cannot be trusted | **409** `transcript-incomplete` |
-| `OPEN` | Still `ACTIVE` and has produced transcript | **409** `speech-session-active` |
+| `OPEN` | Still `ACTIVE`, **even if nothing is stored yet**: the recognizer can run behind the speaker, so its lines may still be on their way | **409** `speech-session-active` |
 
 - The check runs before anything changes, so a refusal leaves the meeting exactly as it was and
   capture can continue.
@@ -161,6 +161,12 @@ segments it stored for the session:
 - To resolve `transcript-incomplete`: deliver the missing segments from the transport outbox
   (`npm run outbox:replay`, below), then end the meeting again. If they can never be delivered, mark the
   meeting failed with `POST /:id/fail`.
+- Why `OPEN` covers a session with nothing stored (changed 2026-10-09): Stop was pressed, the browser ended
+  the meeting half a second later while the speech service was still decoding, and the lines that arrived
+  afterwards were refused as `meeting-not-accepting-transcript`. Now ending waits until every session has
+  ended. A transport that died without ending its session (for example the speech service restarted
+  mid-meeting) leaves it `ACTIVE`: an operator ends that session with reason `disconnected`
+  (`POST /:id/sessions/:sid/end`, admin), after which the meeting can end and is `UNVERIFIED`.
 - A session that ended without reporting stays `UNVERIFIED`, even when nothing is stored for it: a transport that could not reach the API cannot have reported, and its committed segments may be waiting in its outbox. Run `npm run outbox:status` on the sidecar host, and `npm run outbox:replay` while the meeting is still open. The API does not claim more than it knows. Only a report makes a session `VERIFIED`, including a clean stop that committed nothing (`committedSegments: 0`).
   The first count report for a session that already ended is still accepted and recorded.
 
@@ -281,12 +287,16 @@ The **Meeting** button on the assistant screen opens a panel. The flow, in order
 1. **Launch.** The user types the launch code (kept for the tab's session only) and an optional title.
    The page checks the browser can record (a secure page with a microphone and AudioWorklet) *before*
    creating anything, then calls `POST /api/v1/meetings/launch` and receives the meeting and its own ticket.
-2. **Stand down.** From launch until the meeting is finished or forgotten, the hands-free assistant
+2. **Stand down.** From launch until the meeting is finished or forgotten, the assistant is suspended: it
+   stops listening, cuts any speech that is playing, and never speaks a reply that was already on its way
+   (on 2026-10-09 such a reply was recorded into a meeting). The hands-free assistant
    stops listening, the wake word is disarmed and its buttons are inert, so it cannot answer meeting
    speech aloud. It comes back afterwards.
 3. **Stream.** The page opens `wss://<app>/api/v1/live-speech` (the **relay**) and streams the
    microphone. Each finished line is shown with whether the server stored it: saved, waiting, or not saved.
-4. **Stop and save.** The page stops recording, then calls `POST /:id/end` with its ticket. The server
+4. **Stop and save.** The page stops the microphone, tells the speech service to stop and **waits until it
+   reports that it has finished** (it may still be decoding queued audio; up to 45 s), then calls
+   `POST /:id/end` with its ticket. The server
    refuses (409) while the recording is still closing or lines are missing, so the page retries for about
    20 seconds, then offers **Try again**. The result is shown plainly: *saved and verified*, *ended but not
    verified* (a recording never confirmed its line count), or *nothing was recorded*.

@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+from speech.repetition import collapse_repetitions
+
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
@@ -19,12 +21,19 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 
-DOMAIN_PROMPT = (
-    "Numz, NUMZ, NUMZFLEET, immobilize, unit, tracker, dashboard, "
-    "fleet, summary, status, show, locate, find, cancel, stop, "
-    "yes, no, one, two, three, four, five, six, seven, eight, nine, ten, "
-    "vehicle, speed, fuel, location, maintenance, alert, warning"
+# Whisper reads its prompt as the text spoken just before the audio, and imitates it. A comma-separated
+# keyword list therefore makes it answer in comma-separated single words and repeat list words
+# ("no, one, NUMZ, NUMZ, NUMZ...", "stop, stop, stop..."), which is what meetings produced on 2026-10-09.
+# So: one plain sentence, and only for the assistant's short spoken commands. Meetings and the batch
+# pipeline get no prompt at all (see use_assistant_prompt below).
+ASSISTANT_PROMPT = (
+    "Numz is a voice assistant. The user asks about the fleet: vehicles, trackers, speed, fuel, "
+    "location, maintenance and alerts."
 )
+
+# A decode that comes out degenerate (a repetition loop: compression ratio above 2.4, or very low
+# confidence) is retried at the next temperature. A single temperature of 0.0 turns that safety net off.
+FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6)
 
 WHISPER_VAD_PARAMETERS = {
     "threshold": 0.3,
@@ -58,13 +67,13 @@ def _load_whisper():
     return _whisper_model
 
 
-def _build_initial_prompt(client_prompt: str = "") -> str:
+def _build_initial_prompt(client_prompt: str = "", use_assistant_prompt: bool = True):
+    """The prompt for one decode: the caller's own sentence if it sent one, else the assistant sentence,
+    or nothing at all for meetings and the batch pipeline."""
     client = (client_prompt or "").strip()
-    if not client:
-        return DOMAIN_PROMPT
-    if DOMAIN_PROMPT in client:
+    if client:
         return client
-    return f"{client} {DOMAIN_PROMPT}"
+    return ASSISTANT_PROMPT if use_assistant_prompt else None
 
 
 def decode_audio_to_pcm(audio_bytes: bytes, mime_type: str = "audio/webm") -> np.ndarray:
@@ -145,26 +154,33 @@ def _transcribe_segments(
     prompt: str = "",
     word_timestamps: bool = False,
     vad_parameters=None,
+    beam_size: int = 5,
+    temperature=FALLBACK_TEMPERATURES,
+    use_assistant_prompt: bool = True,
 ):
     """Run faster-whisper and return its (raw segment iterator, info).
 
     The one place decode parameters live. Shared by transcribe_pcm (live
     sidecar, text only), transcribe_pcm_with_timestamps (Lecture Engine CLI)
     and speech/asr.py (Speech Intelligence pipeline + live streaming ASR), so
-    all of them stay on identical model/decode parameters. Callers only vary
-    word_timestamps and, for the pipeline, its own tuned vad_parameters.
+    all of them stay on identical model/decode parameters. Callers vary
+    word_timestamps, vad_parameters, and for live partial ticks a cheaper
+    greedy decode (beam_size=1, temperature=0.0); meetings and the pipeline
+    pass use_assistant_prompt=False.
     """
     model = _load_whisper()
     lang = language.split("-")[0] if language else None
     lang = lang if lang else None
-    initial_prompt = _build_initial_prompt(prompt)
+    initial_prompt = _build_initial_prompt(prompt, use_assistant_prompt)
 
     return model.transcribe(
         pcm,
         language=lang,
         initial_prompt=initial_prompt,
-        beam_size=5,
-        temperature=0.0,
+        beam_size=beam_size,
+        temperature=temperature,
+        compression_ratio_threshold=2.4,
+        log_prob_threshold=-1.0,
         condition_on_previous_text=False,
         word_timestamps=word_timestamps,
         vad_filter=True,
@@ -185,7 +201,7 @@ def transcribe_pcm(
 
     parts = []
     for seg in segments:
-        t = (seg.text or "").strip()
+        t = collapse_repetitions((seg.text or "").strip())
         if t:
             parts.append(t)
     return " ".join(parts).strip()
@@ -209,7 +225,7 @@ def transcribe_pcm_with_timestamps(
     timestamped = []
     parts = []
     for seg in segments:
-        t = (seg.text or "").strip()
+        t = collapse_repetitions((seg.text or "").strip())
         if t:
             timestamped.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": t})
             parts.append(t)

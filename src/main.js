@@ -203,16 +203,16 @@ async function setAssistantVoiceAvailable(available) {
     .map((selector) => document.querySelector(selector))
     .filter(Boolean)
   if (!available) {
-    const wakeButton = document.querySelector('#wakeButton')
-    if (wakeButton?.getAttribute('aria-pressed') === 'true') wakeButton.click() // disarm the wake word
     for (const element of controls) element.inert = true
     try {
-      await voiceApi?.stopConversation?.()
+      // Stops listening and the wake word, cuts speech, and drops any reply still on its way.
+      await voiceApi?.suspend?.()
     } catch (err) {
       console.error('[meeting] could not pause the assistant', err)
     }
     return
   }
+  voiceApi?.resume?.()
   for (const element of controls) element.inert = false
   if (settings.voice?.conversationMode && settings.voice?.autoStartOnLoad) {
     try {
@@ -235,7 +235,15 @@ try {
     storage: createMeetingStorage(),
     checkSupport: checkLiveSpeechSupport,
     createLiveClient: (options) =>
-      createLiveSpeechClient({ wsUrl: meetingSocketUrl(), getDeviceId: preferredMicId, ...options })
+      createLiveSpeechClient({
+        wsUrl: meetingSocketUrl(),
+        getDeviceId: preferredMicId,
+        // Naming the language spares the recognizer a guess on every decode (it once guessed Portuguese).
+        language: settings.voice?.lang ?? '',
+        // A meeting is room audio at varying distances: let the browser level it.
+        autoGainControl: true,
+        ...options
+      })
   })
   const meetingPanel = createMeetingPanel({
     controller: meetingController,
