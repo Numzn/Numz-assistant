@@ -75,6 +75,12 @@ export function createAssistantRealtimeClient({
     const socket = await connect({ signal })
 
     let finalMessage = null
+    // The server sends every event under two names: the new one (AI_TOKEN, AI_RESPONSE_FINISHED,
+    // AI_RESPONSE_ERROR, STATE) and the old one (token, message, error, state). The new names are bridged to
+    // the old event names below, so once a new name has arrived its old-name copy must be dropped; until
+    // 2026-10-09 both were forwarded and every token of every reply was shown and spoken twice
+    // ("I I'm'm not not quite quite following following"). A server that sends only old names still works.
+    const bridged = new Set()
     const handleMessage = (ev) => {
       const parsed = safeJsonParse(String(ev.data ?? ''))
       if (!parsed.ok) return
@@ -84,6 +90,7 @@ export function createAssistantRealtimeClient({
 
       // Bridge required event types into existing SSE-like event names.
       if (type === 'AI_TOKEN') {
+        bridged.add('token')
         onEvent?.({ event: 'token', data: { token: msg.token ?? '', sessionId: msg.sessionId ?? sessionId } })
         onEvent?.({ event: 'AI_TOKEN', data: msg })
         return
@@ -95,6 +102,7 @@ export function createAssistantRealtimeClient({
       }
 
       if (type === 'AI_RESPONSE_FINISHED') {
+        bridged.add('message')
         finalMessage = { reply: msg.reply ?? '', sessionId: msg.sessionId ?? sessionId }
         onEvent?.({ event: 'message', data: finalMessage })
         onEvent?.({ event: 'AI_RESPONSE_FINISHED', data: msg })
@@ -102,17 +110,20 @@ export function createAssistantRealtimeClient({
       }
 
       if (type === 'AI_RESPONSE_ERROR') {
+        bridged.add('error')
         onEvent?.({ event: 'AI_RESPONSE_ERROR', data: msg })
         return
       }
 
       if (type === 'STATE') {
+        bridged.add('state')
         onEvent?.({ event: 'state', data: { state: msg.state, sessionId: msg.sessionId ?? sessionId } })
         return
       }
 
       // Back-compat (orchestrator also emits these names over WS):
       if (type === 'token' || type === 'state' || type === 'message' || type === 'done' || type === 'error') {
+        if (bridged.has(type)) return // already delivered under its new name
         onEvent?.({ event: type, data: msg })
         if (type === 'message') finalMessage = msg
       }
