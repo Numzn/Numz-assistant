@@ -121,7 +121,7 @@ way around; batch has zero knowledge of live.
 
 | Concern | File | Approach |
 |---|---|---|
-| Frame VAD | `live/frame_vad.py` | Running-noise-floor RMS energy gate (absolute floor about -42 dBFS) that decides only where an utterance **starts and ends**: every frame in between, quiet ones included, plus 0.3 s of lead-in before the start, goes to the recognizer (`live/session.py`). Until 2026-10-09 only frames above the gate (then about -34 dBFS) were passed on, so quiet speech never reached Whisper and loud speech arrived as 100 ms scraps. Not Silero. Silero's state-handling across separate incremental live-frame calls isn't verified by this pass; getting that subtly wrong would be worse than a well-understood energy gate. Swappable — the session only needs a bool per frame. |
+| Frame VAD | `live/frame_vad.py` | Adaptive noise-floor RMS gate with hysteresis that decides only where an utterance **starts and ends**: every frame in between, quiet ones included, plus 0.3 s of lead-in before the start, goes to the recognizer (`live/session.py`). It opens at 2.5x the learned floor and stays open down to 1.6x (hysteresis), never opens below an absolute minimum (`LIVE_GATE_MIN_DBFS`, default -56 dBFS, an **experimental** starting value measured on one recording), seeds the floor from the first second only when that second is steady (speech at the start must not be learned as noise), treats a frame 20 dB under the speaker's recent level as a pause that teaches the floor quickly (otherwise a pause noisier than the first second's floor never ends an utterance), and re-learns the floor when an open run stays within 3.5 dB for 3 s (a fan or hum). Until 2026-10-09 it was an absolute floor (-34, then -42 dBFS): on the JFK clip through real Whisper the word error rate was 4.5% at -40 dBFS, 27% at -44, 73% at -48 and 100% at -52. Not Silero. Silero's state-handling across separate incremental live-frame calls isn't verified by this pass; getting that subtly wrong would be worse than a well-understood energy gate. Swappable — the session only needs a bool per frame. |
 | Endpointing | `live/endpointing.py` | Distinct from VAD: "has this turn probably ended?" not "is this speech?". Configurable tiers (`EndpointerConfig`) rather than one threshold — `CONVERSATION_PROFILE` (tight, turn-taking) and `LECTURE_PROFILE` (loose, continuous speech) presets. Fires `FORCED_END` past `max_utterance_ms` even with zero silence, so unbroken lecture speech still gets endpointed. |
 | Streaming ASR | `live/streaming_asr.py` | `LocalAgreementStreamingAsr`: re-decodes a growing buffer on each tick (reusing `FasterWhisperAsr` — no second model), greedy for ticks (beam 1, one temperature, no word timings), beam 5 with temperature fallback and word timings once on `flush()`. Ticks are **paced**: a decode costs about 1.7 s on this server however short the audio (Whisper always encodes a 30 s window), so the next preview waits until previews use at most a third of real time; FINAL decodes never wait. Measured on real speech (2026-10-09): 0.6-0.7x real time, against 4.4x for the old every-second, beam-5 ticks. Meetings get **no prompt** (Whisper imitates its prompt; the old comma-separated keyword list produced loops like "NUMZ, NUMZ, ..."), and any loop that survives the fallback is collapsed (`speech/repetition.py`). Text that stays an exact prefix match across two consecutive ticks is STABILIZING; new tail text is PARTIAL; `flush()` (endpointing-triggered) emits FINAL. This is the standard whisper_streaming-style approach, not a novel algorithm. |
 | Live speaker handling | `live/diarization_live.py` | `SingleSpeakerLiveDiarizer` (default): one honest anonymous speaker. Real-time diarization needs an incremental embedding+clustering model kept resident for the whole session — a second always-loaded model, which this machine's resource constraints rule out. Running batch pyannote (whole-file global clustering) on tiny live chunks would not produce stable labels either, so it isn't attempted. `LiveDiarizer` stays a real interface for a future streaming-embedding backend. |
@@ -273,3 +273,30 @@ be exercised in this environment. **Requires manual validation**: open `public/l
   manual test page and a human.
 - No per-connection decode timeout/cancellation on the live transport —
   documented as a known gap, not solved (see "Connecting real audio").
+
+## Live diagnostics
+
+Each live session logs `live-speech-diag {json}` once per minute of stream and once when it ends (the audio
+sidecar's log, `logs/numz-assistant-audio.log`). Numbers only: no audio and no transcript text. Fields:
+
+| Field | Meaning |
+|---|---|
+| `frames.received / gateOpen / forwarded` | 100 ms frames received, frames the gate opened on, frames handed to Whisper (lead-in and the quiet frames inside an utterance count as forwarded) |
+| `levelDbfs.p10/p50/p90/p99` | frame levels over everything received, in dBFS (upper edge of 2 dB bins). A microphone whose p90 is below about -50 is very quiet |
+| `noiseFloorDbfs` | the floor the gate has learned |
+| `longestQuietS`, `longestQuietInUtteranceS` | longest run of closed-gate frames overall, and inside an utterance (the one that cuts sentences) |
+| `decodes.preview / final` | Whisper decodes: count, total and longest seconds, audio covered, `secondsPerAudioSecond` (above 1 the recognizer cannot keep up) |
+| `lagS.last / max` | seconds behind real time when a frame finished processing (assumes the browser's real-time pacing) |
+| `confidence.*` | over final decodes: mean/min `avg_logprob`, max `no_speech_prob`, and counts of segments below Whisper's -1.0 log-probability cut-off or above 0.6 no-speech probability. A line like "Bye." or "You" with a high no-speech probability is a hallucination on non-speech |
+
+To read the gate for a meeting: if `levelDbfs.p90` is low and `frames.forwarded` is a small share of
+`received`, the microphone is too quiet for the gate; lower `LIVE_GATE_MIN_DBFS` (restart the audio sidecar
+to apply it) or raise the microphone level.
+
+## Real-audio tests
+
+`audio/tests/test_real_audio_gate.py` runs the JFK clip (`audio/tests/fixtures/jfk.wav`) through the real
+session and Whisper at several levels and alignments, plus noise-only streams, and prints word error rate with
+substitutions/deletions/insertions, dropped speech frames and false detections. It is opt-in because it loads
+the model: `cd audio && NUMZ_REAL_ASR=1 .venv/bin/python -m unittest tests.test_real_audio_gate -v`.
+It is ONE recording of one voice with synthetic noise; it does not prove the gate for other voices or rooms.
