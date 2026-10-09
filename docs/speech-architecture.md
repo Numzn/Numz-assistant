@@ -39,7 +39,7 @@ stored. Generated intelligence is derived and must keep evidence references.
 | Diarization contract and backends | `audio/speech/diarization.py` | Implemented; pyannote optional, not installed |
 | Batch reconciliation | `audio/speech/reconcile.py` | Implemented |
 | Batch orchestration | `audio/speech/pipeline.py` | Implemented |
-| Live frame VAD | `audio/speech/live/frame_vad.py` | Implemented (energy gate) |
+| Live frame VAD | `audio/speech/live/frame_vad.py` | Implemented (energy gate; decides utterance start and end only, whole utterances reach the recognizer) |
 | Live endpointing | `audio/speech/live/endpointing.py` | Implemented |
 | Live streaming ASR | `audio/speech/live/streaming_asr.py` | Implemented; timestamps have known anchoring limits (see gaps) |
 | Live hypothesis events | `audio/speech/live/events.py` | Implemented |
