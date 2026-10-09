@@ -274,6 +274,21 @@ be exercised in this environment. **Requires manual validation**: open `public/l
 - No per-connection decode timeout/cancellation on the live transport —
   documented as a known gap, not solved (see "Connecting real audio").
 
+## Loops and the 20-second cut
+
+**Repetition guard** (`speech/repetition.py`, applied in `speech/asr.py` and `transcribe.py`): Whisper sometimes
+loops ("What's up? What's up? ..."), and emits the loop as many short segments, so the guard looks at the words of
+the WHOLE decode, not one segment. It cuts a run of 4 or more repeats of a word or phrase of up to 8 words down to
+one; three in a row ("no, no, no", "I like that, I like that, I like that") is speech people say and is kept.
+Checked against 800+ real saved lines it changes nothing but genuine loops.
+
+**The cut at the length limit**: continuous talk never gives the endpointer the 0.7 s of quiet it needs, so an
+utterance is cut at 20 s. The cut is made at the quietest 100 ms frame of the last 3 s (`FORCED_CUT_WINDOW_S` in
+`live/session.py`; 0 restores a cut at exactly 20 s). Everything up to it is finalized, everything after it is kept
+as the start of the next utterance (`LocalAgreementStreamingAsr.flush_at`), so no audio is lost or decoded twice and
+the segments stay contiguous. A cut at the clock lands mid-word: in real meetings 28% and 43% of lines ended this way
+and words were lost or doubled at the join.
+
 ## Live diagnostics
 
 Each live session logs `live-speech-diag {json}` once per minute of stream and once when it ends (the audio
@@ -286,6 +301,8 @@ sidecar's log, `logs/numz-assistant-audio.log`). Numbers only: no audio and no t
 | `noiseFloorDbfs` | the floor the gate has learned |
 | `longestQuietS`, `longestQuietInUtteranceS` | longest run of closed-gate frames overall, and inside an utterance (the one that cuts sentences) |
 | `decodes.preview / final` | Whisper decodes: count, total and longest seconds, audio covered, `secondsPerAudioSecond` (above 1 the recognizer cannot keep up) |
+| `decodes.slow`, `decodes.maxTemperature`, `decodes.maxCompressionRatio` | decodes of 10 s or more (each also logged alone as `live-speech-diag slow-decode {json}`), and the highest retry temperature and text compression ratio Whisper reached. A temperature above 0 with a compression ratio above 2.4 means it retried a repetitive decode, the suspected cause of 30-45 s decodes |
+| `forcedCuts` | utterances that reached the 20 s limit with no pause and were cut (in a gap between words if there was one) |
 | `lagS.last / max` | seconds behind real time when a frame finished processing (assumes the browser's real-time pacing) |
 | `confidence.*` | over final decodes: mean/min `avg_logprob`, max `no_speech_prob`, and counts of segments below Whisper's -1.0 log-probability cut-off or above 0.6 no-speech probability. A line like "Bye." or "You" with a high no-speech probability is a hallucination on non-speech |
 

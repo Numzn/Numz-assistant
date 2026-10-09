@@ -33,6 +33,11 @@ from speech.schema import make_transcript, validate_transcript
 # reaches the recognizer instead of being clipped.
 PRE_ROLL_S = 0.3
 
+# When an utterance reaches the length limit with no pause to end it, it is cut at the quietest frame in this
+# many trailing seconds instead of at the instant the clock ran out (which lands mid-word and loses or doubles
+# the words at the join). 0 restores the fixed cut.
+FORCED_CUT_WINDOW_S = 3.0
+
 
 class SessionState(str, Enum):
     LISTENING = "listening"
@@ -50,6 +55,7 @@ class LiveSpeechSession:
         frame_vad: Optional[FrameVad] = None,
         diarizer: Optional[LiveDiarizer] = None,
         keep_audio_for_reprocessing: bool = False,
+        forced_cut_window_s: float = FORCED_CUT_WINDOW_S,
     ):
         self.session_id = require_uuid(speech_session_id or new_speech_session_id())
         self.sample_rate = sample_rate
@@ -78,6 +84,8 @@ class LiveSpeechSession:
         self._raw_audio: list = []
         self._pre_roll: deque = deque()  # (frame, timestamp_s) from the moments before an utterance
         self._pre_roll_s = 0.0
+        self._forced_cut_window_s = forced_cut_window_s
+        self._recent = deque()  # (end_s, rms, duration_s) of the latest frames of the current utterance
         self._on_transcript_event: Optional[Callable[[TranscriptEvent], None]] = None
 
     def on_transcript_event(self, callback: Callable[[TranscriptEvent], None]):
@@ -121,13 +129,15 @@ class LiveSpeechSession:
             signal = self._endpointer.on_speech(timestamp_s)
             self._push(frame, timestamp_s)
             if signal == EndpointSignal.FORCED_END:
-                self._flush_utterance()
+                self._flush_forced(timestamp_s)
             return
 
         if self._endpointer.in_progress():
             self._push(frame, timestamp_s)
             signal = self._endpointer.on_silence(timestamp_s)
-            if signal in (EndpointSignal.LIKELY_END, EndpointSignal.FORCED_END):
+            if signal == EndpointSignal.FORCED_END:
+                self._flush_forced(timestamp_s)
+            elif signal == EndpointSignal.LIKELY_END:
                 self._flush_utterance()
             return
 
@@ -135,6 +145,11 @@ class LiveSpeechSession:
 
     def _push(self, frame: np.ndarray, timestamp_s: float):
         self._diagnostics.on_forwarded()
+        if self._forced_cut_window_s > 0:
+            duration_s = len(frame) / self.sample_rate
+            self._recent.append((timestamp_s, float(np.sqrt(np.mean(np.square(frame)))), duration_s))
+            while self._recent and self._recent[0][0] < timestamp_s - self._forced_cut_window_s - duration_s:
+                self._recent.popleft()
         event = self._streaming_asr.push_audio(frame, timestamp_s)
         if event:
             self._emit(event)
@@ -146,8 +161,27 @@ class LiveSpeechSession:
             dropped, _ = self._pre_roll.popleft()
             self._pre_roll_s -= len(dropped) / self.sample_rate
 
+    def _flush_forced(self, now_s: float):
+        """The utterance hit the length limit with no pause. Cut it in a gap between words if the recognizer can
+        carry the rest over; otherwise (or with no window) at the limit, as before."""
+        flush_at = getattr(self._streaming_asr, "flush_at", None)
+        quietest = min(self._recent, key=lambda f: (f[1], -f[0]), default=None) if self._recent else None
+        if flush_at is None or quietest is None:
+            self._flush_utterance()
+            return
+        end_s, _, duration_s = quietest
+        cut_s = end_s - duration_s / 2  # the middle of the quietest frame
+        final_event = flush_at(cut_s)
+        self._endpointer.continue_from(start_s=cut_s, now_s=now_s)
+        self._recent = deque(frame for frame in self._recent if frame[0] > cut_s)
+        self._diagnostics.on_forced_cut()
+        if final_event:
+            self._emit(final_event)
+            self._commit_final(final_event)
+
     def _flush_utterance(self):
         final_event = self._streaming_asr.flush()
+        self._recent.clear()
         self._endpointer.reset()
         if final_event:
             self._emit(final_event)

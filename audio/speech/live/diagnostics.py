@@ -112,6 +112,7 @@ class SessionDiagnostics:
         self.max_temperature: Optional[float] = None
         self.max_compression_ratio: Optional[float] = None
         self.slow_decodes = 0
+        self.forced_cuts = 0
 
         self._wall_at_first_frame: Optional[float] = None
         self._stream_at_first_frame = 0.0
@@ -153,6 +154,11 @@ class SessionDiagnostics:
                 self.longest_quiet_in_utterance_s = max(self.longest_quiet_in_utterance_s, self._quiet_run_in_utterance_s)
             else:
                 self._quiet_run_in_utterance_s = 0.0
+
+    @_never_raises
+    def on_forced_cut(self):
+        """An utterance reached the length limit and was cut (in a gap between words if there was one)."""
+        self.forced_cuts += 1
 
     @_never_raises
     def on_forwarded(self):
@@ -262,6 +268,7 @@ class SessionDiagnostics:
                 "p99": self._level_percentile(0.99),
             },
             "noiseFloorDbfs": r(self.noise_floor_dbfs, 1),
+            "forcedCuts": self.forced_cuts,
             "longestQuietS": r(self.longest_quiet_s, 1),
             "longestQuietInUtteranceS": r(self.longest_quiet_in_utterance_s, 1),
             "decodes": {

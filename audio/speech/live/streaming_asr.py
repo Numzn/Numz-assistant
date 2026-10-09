@@ -134,6 +134,36 @@ class LocalAgreementStreamingAsr:
         ]
         return TranscriptEvent(stage=stage, text=text, start=start, end=end, words=words)
 
+    def flush_at(self, split_at_s: float) -> Optional[TranscriptEvent]:
+        """Finalize the audio up to `split_at_s` (stream time) and keep everything after it as the start of the
+        next utterance: for a forced cut at the length limit, which should fall in a gap between words rather
+        than wherever the clock ran out. Nothing is lost or repeated: the next utterance starts at the split.
+        Falls back to a full flush() when the split is not inside the buffered audio."""
+        if (
+            self._buffer.size < 2
+            or self._buffer_start_s is None
+            or self._buffer_end_s is None
+            or not (self._buffer_start_s < split_at_s < self._buffer_end_s)
+        ):
+            return self.flush()
+
+        count = int(round((split_at_s - self._buffer_start_s) * self.sample_rate))
+        count = min(max(count, 1), self._buffer.size - 1)
+        head, tail = self._buffer[:count], self._buffer[count:]
+        tail_start_s = self._buffer_start_s + count / self.sample_rate
+        end_s = self._buffer_end_s
+
+        self._buffer, self._buffer_end_s = head, tail_start_s
+        event = self._decode_tick(fast=False)
+        self._buffer, self._buffer_start_s, self._buffer_end_s = tail, tail_start_s, end_s
+        self._last_decode_text = ""
+        self._last_tick_len_s = len(tail) / self.sample_rate
+        if event is None:
+            return None
+        return TranscriptEvent(
+            stage=TranscriptStage.FINAL, text=event.text, start=event.start, end=event.end, words=event.words
+        )
+
     def flush(self) -> Optional[TranscriptEvent]:
         """Call when endpointing fires (LIKELY_END/FORCED_END): decode once
         more at higher quality and emit FINAL. Resets the buffer either way."""

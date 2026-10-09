@@ -29,6 +29,8 @@ import os
 import sys
 import unittest
 
+import numpy as np
+
 from tests import real_audio as ra
 
 REAL = os.environ.get("NUMZ_REAL_ASR") == "1"
@@ -89,7 +91,9 @@ class QuietSpeechThroughTheRealPipeline(unittest.TestCase):
         header = f"{'case':<34}{'WER':>6}{'sub':>5}{'del':>5}{'ins':>5}{'dropped':>10}{'fwd%':>7}{'sec':>6}"
         print(header, file=sys.stderr)
         for m in cls.measurements:
-            if "wer" in m:
+            if "wer" in m and "clip_frames_dropped" not in m:
+                print(f"{m['case']:<60}{m['wer']:>6}{m['substitutions']:>5}{m['deletions']:>5}{m['insertions']:>5}  (cuts: {len(m['lines']) - 1})", file=sys.stderr)
+            elif "wer" in m:
                 print(
                     f"{m['case']:<34}{m['wer']:>6}{m['substitutions']:>5}{m['deletions']:>5}{m['insertions']:>5}"
                     f"{m['clip_frames_dropped']:>6}/{m['clip_frames']:<3}{100 * m['forwarded_share']:>6.0f}%{m['seconds']:>6}",
@@ -163,10 +167,33 @@ class QuietSpeechThroughTheRealPipeline(unittest.TestCase):
                 self.assertLessEqual(result["forwarded_frames"] * ra.FRAME_SAMPLES / ra.SAMPLE_RATE, MAX_NOISE_FORWARDED_S)
                 self.assertLessEqual(max(result["forwarded_at"], default=0.0), NOISE_QUIET_AFTER_S, "no false detections later on")
 
+    def test_cutting_at_the_length_limit_in_a_gap_loses_no_more_words_than_cutting_at_the_clock(self):
+        # Continuous fast speech (no pause ever ends an utterance), cut at a short limit so every cut lands
+        # inside it. Evidence for the change is the 16-case sweep, not this test: there the mean word error
+        # went from 0.117 to 0.093 and deletions (the words lost at a join) from 13 to 2, on ONE synthetic
+        # stimulus. These four cases were picked after seeing that sweep; they are a non-regression guard.
+        from speech.live.endpointing import EndpointerConfig
+
+        speech, reference = ra.continuous_fast_speech()
+        totals = {0: 0, 1.5: 0}
+        for limit_s in (2.5, 4.5):
+            config = EndpointerConfig(end_silence_ms=30000, max_utterance_ms=int(limit_s * 1000))
+            for offset in (0, 800):
+                stream = np.concatenate(
+                    [ra.white_noise(16000 + offset, -63, 1), ra.scale_to_dbfs(speech, -30), ra.white_noise(40000, -63, 2)]
+                )
+                for window in totals:
+                    result = ra.run_stream(stream, endpointer_config=config, forced_cut_window_s=window)
+                    errors = ra.word_errors(" ".join(result["lines"]), reference)
+                    result.update(errors, case=f"fast speech, limit {limit_s} s, offset {offset}, cut window {window}")
+                    self.measurements.append(result)
+                    totals[window] += errors["substitutions"] + errors["deletions"] + errors["insertions"]
+                    if window:
+                        self.assertLessEqual(errors["wer"], MAX_WER, result["case"])
+        self.assertLessEqual(totals[1.5], totals[0], f"word errors with the gap cut {totals[1.5]} vs the clock cut {totals[0]}")
+
     def test_segment_times_on_real_audio_follow_the_stream_clock(self):
         # The clip twice, 8 s of room noise apart, at 5 s and ~24 s into the stream.
-        import numpy as np
-
         clip = ra.scale_to_dbfs(ra.load_clip(), -30)
         gap = ra.white_noise(8 * ra.SAMPLE_RATE, -63, seed=11)
         stream = np.concatenate(
