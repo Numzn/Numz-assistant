@@ -111,7 +111,9 @@ export function createMeetingSessionService({
       let state
       if (committed !== null) {
         state = storedSegments === committed ? 'VERIFIED' : storedSegments < committed ? 'INCOMPLETE' : 'INCONSISTENT'
-      } else if (session.status === 'ACTIVE' && storedSegments > 0) {
+      } else if (session.status === 'ACTIVE') {
+        // Still streaming: its last lines may be on their way even when none is stored yet (the
+        // recognizer can run behind the speaker). Ending now would refuse them, so this blocks /end.
         state = 'OPEN'
       } else {
         state = 'UNVERIFIED'

@@ -20,6 +20,7 @@ class FakeWebSocket {
   static OPEN = 1
   static instances = []
   static autoOpen = true
+  static replyToStop = true // answer 'stop' with 'stopped', as the speech service does when it is done
   constructor(url, protocols) {
     this.url = url
     this.protocols = protocols
@@ -42,6 +43,16 @@ class FakeWebSocket {
   }
   send(data) {
     this.sent.push(data)
+    if (FakeWebSocket.replyToStop && typeof data === 'string' && JSON.parse(data).type === 'stop') {
+      queueMicrotask(() => this.serverSays({ type: 'stopped', transcript: null }))
+    }
+  }
+  serverSays(message) {
+    this.emit('message', { data: JSON.stringify(message) })
+  }
+  serverCloses() {
+    this.readyState = 3
+    this.emit('close')
   }
   close() {
     this.closed = true
@@ -75,6 +86,7 @@ function install({ getUserMedia }) {
   log = { audioContexts: [], tracks: [] }
   FakeWebSocket.instances = []
   FakeWebSocket.autoOpen = true
+  FakeWebSocket.replyToStop = true
   globalThis.window = { AudioContext: FakeAudioContext, AudioWorkletNode: FakeAudioWorkletNode, WebSocket: FakeWebSocket }
   globalThis.WebSocket = FakeWebSocket
   Object.defineProperty(globalThis, 'navigator', { value: { mediaDevices: { getUserMedia } }, configurable: true, writable: true })
@@ -171,4 +183,50 @@ test('support check: needs getUserMedia, AudioContext, AudioWorkletNode and WebS
   assert.equal(isLiveSpeechSupported(), true)
   Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true })
   assert.equal(isLiveSpeechSupported(), false, 'no microphone API (an insecure page)')
+})
+
+test('stop() waits for the speech service to say it is finished before hanging up', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeWebSocket.replyToStop = false
+  let stoppedSummary = null
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  client.setOnStopped((transcript) => (stoppedSummary = transcript ?? 'received'))
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+
+  let finished = false
+  const stopping = client.stop().then(() => (finished = true))
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(JSON.parse(socket.sent.at(-1)).type, 'stop')
+  assert.equal(log.tracks[0].stopped, 1, 'the microphone is released first: no audio follows the stop')
+  assert.equal(finished, false, 'still waiting: the service has not finished its last lines')
+  assert.equal(socket.closed, false, 'the connection stays open while it works')
+
+  socket.serverSays({ type: 'stopped', transcript: { segments: [] } })
+  await stopping
+  assert.equal(finished, true)
+  assert.equal(socket.closed, true)
+  assert.ok(stoppedSummary, 'the summary is delivered, not dropped')
+})
+
+test('stop() also finishes when the server closes the connection', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeWebSocket.replyToStop = false
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  await client.start()
+  const stopping = client.stop()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  FakeWebSocket.instances[0].serverCloses()
+  await stopping
+})
+
+test('stop() gives up after its timeout if the service never answers', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeWebSocket.replyToStop = false
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', stopTimeoutMs: 40 })
+  await client.start()
+  const started = Date.now()
+  await client.stop()
+  assert.ok(Date.now() - started >= 35, 'it waited for the timeout')
+  assert.equal(FakeWebSocket.instances[0].closed, true)
 })

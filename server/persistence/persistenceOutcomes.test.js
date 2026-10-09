@@ -138,6 +138,7 @@ test('a completed meeting rejects transcript appends and new sessions with 409',
   const service = makeService(createDatabase({ filename: ':memory:' }), clock)
   const meeting = service.createMeeting()
   const { speechSession } = startLive(service, meeting.meetingId)
+  service.endSpeechSession(meeting.meetingId, speechSession.speechSessionId, 'stopped', { committedSegments: 0 })
   service.beginFinalization(meeting.meetingId)
   service.completeMeeting(meeting.meetingId)
 
@@ -327,19 +328,48 @@ test('REGRESSION: a session that never reported is never verified, even when not
   assert.equal(done.integrity.unverifiedSessions, 1)
 })
 
-test('REGRESSION: a session still active with no report and nothing stored is not verified either', () => {
+test('REGRESSION: a session still active with no report and nothing stored is not verified, and blocks ending', () => {
   const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
   const meeting = service.createMeeting()
   service.startMeeting(meeting.meetingId)
   const { speechSessionId } = service.attachSpeechSession(meeting.meetingId)
 
   const before = service.getIntegrity(meeting.meetingId)
-  assert.equal(before.sessions[0].state, 'UNVERIFIED')
+  assert.equal(before.sessions[0].state, 'OPEN', 'still streaming, even though nothing is stored yet')
   assert.equal(before.verified, false)
+  assert.equal(before.complete, false)
+  assert.throws(() => service.endMeeting(meeting.meetingId), (err) => err.statusCode === 409 && err.code === 'speech-session-active')
+  assert.equal(service.getMeeting(meeting.meetingId).status, 'LIVE', 'refusing changes nothing')
 
-  const done = service.endMeeting(meeting.meetingId) // ends the still-active session as meeting-completed
+  // A lost transport is closed by the operator without a count: then ending is allowed, and never verified.
+  service.endSpeechSession(meeting.meetingId, speechSessionId, 'disconnected')
+  const done = service.endMeeting(meeting.meetingId)
   assert.equal(done.integrity.sessions.find((x) => x.speechSessionId === speechSessionId).state, 'UNVERIFIED')
   assert.equal(done.integrity.verified, false)
+})
+
+test('REGRESSION (2026-10-09): Stop while the recognizer is behind loses no lines', () => {
+  // Observed: the user pressed Stop, the browser ended the meeting half a second later while the speech
+  // service was still decoding, and the 4 lines that arrived afterwards were refused (409) as "not accepting".
+  const service = makeService(createDatabase({ filename: ':memory:' }), makeClock())
+  const meeting = service.createMeeting()
+  service.startMeeting(meeting.meetingId)
+  const { speechSessionId } = service.attachSpeechSession(meeting.meetingId)
+
+  // Stop pressed: nothing stored yet, the recognizer is still working. Ending must be refused, not allowed.
+  assert.throws(() => service.endMeeting(meeting.meetingId), (err) => err.code === 'speech-session-active')
+
+  // The late lines arrive and the transport reports its count, as the speech service does after its last decode.
+  for (let n = 1; n <= 4; n++) {
+    const outcome = service.appendFinalSegment(meeting.meetingId, { speechSessionId, segment: seg(segId(speechSessionId, n), n, n + 1, `line ${n}`) })
+    assert.equal(outcome.status, 'INSERTED', `line ${n} is accepted, not refused`)
+  }
+  service.endSpeechSession(meeting.meetingId, speechSessionId, 'stopped', { committedSegments: 4 })
+
+  const done = service.endMeeting(meeting.meetingId)
+  assert.equal(done.status, 'COMPLETED')
+  assert.equal(done.integrity.verified, true)
+  assert.equal(service.getTranscript(meeting.meetingId).length, 4)
 })
 
 test('only a report makes a session verified; a late report repairs an unverified one', () => {

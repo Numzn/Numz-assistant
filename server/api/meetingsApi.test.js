@@ -434,8 +434,15 @@ test('REGRESSION: over HTTP, a session that never reported is never verified, ev
     const session = (await call(base, 'POST', `/${id}/sessions`, { token: created.ticket.token, body: {} })).json
     // The transport attached but never delivered or reported anything (for example it could not reach the API).
 
+    // While its session is still open the meeting cannot be ended: its lines may still be on their way.
+    const refused = await admin('POST', `/${id}/end`)
+    assert.equal(refused.status, 409)
+    assert.equal(refused.json.code, 'speech-session-active')
+    // The operator closes the lost session without a count (the transport never reported one)...
+    await admin('POST', `/${id}/sessions/${session.speechSessionId}/end`, { body: { reason: 'disconnected' } })
+
     const done = await admin('POST', `/${id}/end`)
-    assert.equal(done.status, 200, 'nothing is known to be missing, so ending is allowed')
+    assert.equal(done.status, 200, 'nothing is known to be missing once the session is closed, so ending is allowed')
     assert.equal(done.json.integrity.verified, false)
     assert.equal(done.json.integrity.unverifiedSessions, 1)
     assert.equal(done.json.integrity.sessions.find((s) => s.speechSessionId === session.speechSessionId).state, 'UNVERIFIED')

@@ -21,6 +21,9 @@ import { safeJsonParse } from '../../utils/json.js'
 
 const FRAME_SAMPLES = 1600 // 100ms @ 16kHz — matches the worklet's default
 const SAMPLE_RATE = 16000
+// How long stop() waits for the speech service to finish. It may still be decoding audio it has queued,
+// then it saves the last lines and reports how many it produced; closing earlier cuts that off.
+const DEFAULT_STOP_TIMEOUT_MS = 45000
 const WORKLET_URL = '/worklets/pcm-capture-processor.js'
 
 /** Whether this page can capture live audio at all (secure context, AudioWorklet, WebSocket). */
@@ -51,6 +54,7 @@ export function createLiveSpeechClient({
   meetingId = '',
   meetingTicket = '',
   wsProtocols = [],
+  stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
   getDeviceId = () => ''
 } = {}) {
   if (!wsUrl) throw new Error('createLiveSpeechClient requires wsUrl (ws:// or wss:// to the audio sidecar)')
@@ -68,6 +72,7 @@ export function createLiveSpeechClient({
   let sourceNode = null
   let ws = null
   let active = false
+  let stoppedWaiters = [] // resolved when the server confirms the session is finished
 
   const isSupported = isLiveSpeechSupported
 
@@ -93,6 +98,7 @@ export function createLiveSpeechClient({
     }
     if (type === 'stopped') {
       onStopped(msg.transcript ?? null)
+      for (const resolve of stoppedWaiters.splice(0)) resolve()
     }
   }
 
@@ -224,15 +230,27 @@ export function createLiveSpeechClient({
     if (!active) return
     active = false
 
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'stop' }))
-      // Give the server a moment to flush + reply with 'stopped' before closing.
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-
+    // Stop capturing first, so no audio follows the stop message.
     await teardownAudio()
+
+    const socket = ws
+    if (socket?.readyState === WebSocket.OPEN) {
+      // Wait until the speech service says it is finished ('stopped'), the connection closes, or the
+      // timeout passes. Only then are all of this session's lines saved and its count reported.
+      await new Promise((resolve) => {
+        const timer = setTimeout(done, stopTimeoutMs)
+        function done() {
+          clearTimeout(timer)
+          resolve()
+        }
+        stoppedWaiters.push(done)
+        socket.addEventListener('close', done, { once: true })
+        socket.send(JSON.stringify({ type: 'stop' }))
+      })
+    }
+    stoppedWaiters = []
     try {
-      ws?.close()
+      socket?.close()
     } catch {
       /* ignore */
     }
