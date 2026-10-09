@@ -18,6 +18,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from speech.live.diagnostics import SessionDiagnostics
 from speech.live.diarization_live import LiveDiarizer, SingleSpeakerLiveDiarizer
 from speech.live.endpointing import CONVERSATION_PROFILE, Endpointer, EndpointerConfig, EndpointSignal
 from speech.live.events import TranscriptEvent, TranscriptStage, validate_audio_frame
@@ -61,7 +62,10 @@ class LiveSpeechSession:
         self.speakers: set = set()
         self.keep_audio_for_reprocessing = keep_audio_for_reprocessing
 
-        self._streaming_asr = streaming_asr or LocalAgreementStreamingAsr(sample_rate=sample_rate, language=language)
+        self._diagnostics = SessionDiagnostics(self.session_id, sample_rate=sample_rate)
+        self._streaming_asr = streaming_asr or LocalAgreementStreamingAsr(
+            sample_rate=sample_rate, language=language, decode_observer=self._diagnostics.on_decode
+        )
         self._frame_vad = frame_vad or FrameVad()
         self._endpointer = Endpointer(endpointer_config or CONVERSATION_PROFILE)
         self._diarizer = diarizer or SingleSpeakerLiveDiarizer()
@@ -90,11 +94,25 @@ class LiveSpeechSession:
         if self.keep_audio_for_reprocessing:
             self._raw_audio.append(frame)
 
+        speech = self._frame_vad.is_speech(frame)
+        self._diagnostics.on_frame(
+            frame,
+            timestamp_s,
+            gate_open=speech,
+            in_utterance=self._endpointer.in_progress(),
+            vad=self._frame_vad,
+        )
+        try:
+            self._route(frame, timestamp_s, speech)
+        finally:
+            self._diagnostics.on_ingest_done(timestamp_s)
+
+    def _route(self, frame: np.ndarray, timestamp_s: float, speech: bool):
         # The gate only decides where an utterance starts and ends. Everything between those points goes to
         # the recognizer, quiet frames included: soft syllables and the gaps between words are part of the
         # speech. (Until 2026-10-09 only frames above the gate were passed on, so quiet speech never reached
         # Whisper and loud speech arrived chopped into 100 ms scraps.)
-        if self._frame_vad.is_speech(frame):
+        if speech:
             if not self._endpointer.in_progress():
                 for held_frame, held_at in self._pre_roll:
                     self._push(held_frame, held_at)
@@ -116,6 +134,7 @@ class LiveSpeechSession:
         self._hold_pre_roll(frame, timestamp_s)
 
     def _push(self, frame: np.ndarray, timestamp_s: float):
+        self._diagnostics.on_forwarded()
         event = self._streaming_asr.push_audio(frame, timestamp_s)
         if event:
             self._emit(event)
@@ -169,6 +188,7 @@ class LiveSpeechSession:
             return
         self._flush_utterance()
         self.state = SessionState.ENDED
+        self._diagnostics.log_summary(final=True)
 
     def get_raw_audio_pcm(self) -> Optional[np.ndarray]:
         """Concatenated raw PCM when keep_audio_for_reprocessing was set; None otherwise."""
