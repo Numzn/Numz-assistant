@@ -203,16 +203,16 @@ async function setAssistantVoiceAvailable(available) {
     .map((selector) => document.querySelector(selector))
     .filter(Boolean)
   if (!available) {
-    const wakeButton = document.querySelector('#wakeButton')
-    if (wakeButton?.getAttribute('aria-pressed') === 'true') wakeButton.click() // disarm the wake word
     for (const element of controls) element.inert = true
     try {
-      await voiceApi?.stopConversation?.()
+      // Stops listening and the wake word, cuts speech, and drops any reply still on its way.
+      await voiceApi?.suspend?.()
     } catch (err) {
       console.error('[meeting] could not pause the assistant', err)
     }
     return
   }
+  voiceApi?.resume?.()
   for (const element of controls) element.inert = false
   if (settings.voice?.conversationMode && settings.voice?.autoStartOnLoad) {
     try {
