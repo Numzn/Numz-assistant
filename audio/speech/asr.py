@@ -27,6 +27,10 @@ class AsrSegment:
     words: list = field(default_factory=list)  # schema.make_word() dicts
     avg_logprob: float = 0.0
     no_speech_prob: float = 0.0
+    # Whisper's own evidence of a retried (degenerate) decode: the temperature it finally settled on (0.0 =
+    # first attempt) and the text's compression ratio (high = repetitive). Diagnostics only.
+    temperature: Optional[float] = None
+    compression_ratio: Optional[float] = None
 
 
 @dataclass
@@ -100,6 +104,8 @@ class FasterWhisperAsr:
                     words=words,
                     avg_logprob=seg.avg_logprob,
                     no_speech_prob=seg.no_speech_prob,
+                    temperature=getattr(seg, "temperature", None),
+                    compression_ratio=getattr(seg, "compression_ratio", None),
                 )
             )
 
