@@ -207,31 +207,38 @@ the process. Waiting outbox segments are not lost (see above).
 Operator path to continue a recovered meeting: attach a session (ticket), then resume (admin),
 then keep streaming. `RECOVERING` can also be ended directly.
 
-## Authentication — **Implemented** as a shared-secret boundary [`meetingAuth.test.js`, `meetingsApi.test.js`]
+## Authentication — **Implemented** as a shared-secret boundary [`meetingAuth.test.js`, `meetingsApi.test.js`, `meetingLaunch.test.js`]
 
 | Credential | Source | Can do |
 |---|---|---|
 | Admin token | `MEETING_API_TOKEN` (≥ 32 chars) | Everything: create, lifecycle, reads, ticket minting |
-| Meeting ticket | HMAC-SHA256 with `MEETING_TICKET_SECRET` (≥ 32 chars), bound to one meeting, expires after `MEETING_TICKET_TTL_S` (default 43200 s) | Attach/end that meeting's speech sessions; append that meeting's segments. Nothing else |
+| Meeting ticket | HMAC-SHA256 with `MEETING_TICKET_SECRET` (≥ 32 chars), bound to one meeting, expires after `MEETING_TICKET_TTL_S` (default 43200 s) | For that one meeting: attach/end its speech sessions, append its segments, and **end the meeting**. Nothing else |
+| Launch code | `MEETING_LAUNCH_CODE` (≥ 12 chars), sent as `X-Meeting-Launch-Code` | **Start a new meeting** (`POST /launch`) and receive its ticket. Nothing else: it is not an admin token or a ticket, and cannot read, list or end anything |
 
 - Fails closed: when a credential type is not configured, its routes answer **503**
-  `auth-not-configured`. Nothing is allowed by default.
-- A ticket cannot read transcripts, change lifecycle, or touch another meeting (403).
-- The speech transport receives a ticket from its client. It never receives the admin token.
+  (`auth-not-configured`, or `launch-not-configured` for the launch code). Nothing is allowed by default.
+- A ticket cannot read transcripts, pause, cancel or fail a meeting, mint tickets, or touch another meeting (403).
+- The speech transport and the browser each receive a ticket. Neither ever receives the admin token.
+- The launch code is the only thing a browser needs to type. Ten wrong codes in a minute lock the
+  endpoint for everyone for the rest of that minute (429 `too-many-attempts`, with `Retry-After`), even
+  for the right code, so the code cannot be guessed at speed. Correct launches never count.
 - Provider boundary: `server/auth/meetingAuth.js` is the only module that knows the provider.
-  Routes use `requireAdmin`, `requireMeetingWriter` and `issueTicket`.
+  Routes use `requireAdmin`, `requireMeetingWriter`, `requireLaunchCode` and `issueTicket`; the
+  live-speech relay uses `authenticateToken` because a browser WebSocket cannot send headers.
 
-**Not implemented (Planned):** per-user authentication, ticket revocation (only expiry today),
-rate limiting, and an audit log. Tickets are bearer credentials: anyone holding one can write
-within its meeting until it expires.
+**Not implemented (Planned):** per-user authentication (the launch code is one shared secret, so it says
+the caller knows the code, not who they are), ticket revocation (only expiry today), general rate
+limiting (only the launch-code lockout), and an audit log. Tickets are bearer credentials: anyone
+holding one can write within its meeting, and end it, until it expires.
 
 ## Observability — **Implemented** [`meetingHealth.test.js`, `meetingE2E.test.js`, `test_live_health.py`]
 
 A misconfigured persistence setup is reported, not silent.
 
-- `GET /api/v1/health` includes `meetings: { ready, schemaVersion, auth: { admin, tickets }, problem? }`.
-  Booleans only; no secret is ever returned. The startup log states each fact and warns when
-  persistence cannot work.
+- `GET /api/v1/health` includes `meetings: { ready, schemaVersion, auth: { admin, tickets }, launch: { enabled }, problem? }`.
+  Booleans only; no secret is ever returned. `launch.enabled` says whether the browser's Start meeting
+  button can work (a usable launch code and tickets). The startup log states each fact and warns when
+  persistence cannot work or launching is disabled.
 - The sidecar's `GET /health` includes `persistence: { state, configured, apiOrigin, outboxDurable, outbox,
   meetingApi, problem? }`. `state` is one of:
 
@@ -254,17 +261,67 @@ act on it. Stacks are never returned.
 | Method and path | Credential | Success | Notable errors |
 |---|---|---|---|
 | `POST /` | admin | 201 meeting + `ticket` | 400 `invalid-metadata` |
+| `POST /launch` | launch code | 201 LIVE meeting + `ticket` (creates, starts and tickets in one step; body `{ title? }`, metadata gets `source: "browser"`) | 401 `launch-code-required` / `launch-code-invalid`, 429 `too-many-attempts`, 503 `launch-not-configured`, 400 `invalid-title`. Nothing is created on any error; a meeting that cannot be started is cancelled |
 | `GET /:id` | admin | 200 | 400 `invalid-meeting-id`, 404 |
 | `POST /:id/ticket` | admin | 201 `{ticket}` | 503 if tickets unconfigured |
 | `POST /:id/start` | admin | 200 meeting (creates no session) | 409 `invalid-meeting-transition` |
 | `POST /:id/pause`, `/resume`, `/recover` | admin | 200 meeting | 409 `invalid-meeting-transition` |
-| `POST /:id/end` | admin | 200 COMPLETED + `integrity` | 409 `transcript-incomplete`, 409 `speech-session-active`, 409 `invalid-meeting-transition` |
+| `POST /:id/end` | admin, or the meeting's own ticket | 200 COMPLETED + `integrity` | 409 `transcript-incomplete`, 409 `speech-session-active`, 409 `invalid-meeting-transition` |
 | `POST /:id/cancel`, `/fail` | admin | 200 meeting; optional body `{ reason }` | 400 `invalid-close-reason`, 409 `invalid-meeting-transition` |
 | `GET /:id/sessions` | admin | 200 list with `committedSegments` and `storedSegments` | |
 | `POST /:id/sessions` | admin or ticket | 201 session | 409 `meeting-not-attachable` |
 | `POST /:id/sessions/:sid/end` | admin or ticket | 200 session; body `{ reason, committedSegments? }` | 400 `invalid-end-reason`, 400 `invalid-committed-segments` |
 | `POST /:id/transcript/final` | admin or ticket | 201 INSERTED / 200 ALREADY_EXISTS | 409 `segment-id-conflict`, 409 `meeting-not-accepting-transcript`, 400 `invalid-segment`, 400 `invalid-speech-session-id`, 404 `speech-session-not-found` |
 | `GET /:id/transcript` | admin | 200 segments in timeline order + `integrity` | |
+
+## Starting a meeting from the browser — **Implemented** [`meetingLaunch.test.js`, `meetingLaunchE2E.test.js`, `liveSpeechRelay.test.js`, `meetingController.test.js`, `liveSpeechClient.test.js`]
+
+The **Meeting** button on the assistant screen opens a panel. The flow, in order:
+
+1. **Launch.** The user types the launch code (kept for the tab's session only) and an optional title.
+   The page checks the browser can record (a secure page with a microphone and AudioWorklet) *before*
+   creating anything, then calls `POST /api/v1/meetings/launch` and receives the meeting and its own ticket.
+2. **Stand down.** From launch until the meeting is finished or forgotten, the hands-free assistant
+   stops listening, the wake word is disarmed and its buttons are inert, so it cannot answer meeting
+   speech aloud. It comes back afterwards.
+3. **Stream.** The page opens `wss://<app>/api/v1/live-speech` (the **relay**) and streams the
+   microphone. Each finished line is shown with whether the server stored it: saved, waiting, or not saved.
+4. **Stop and save.** The page stops recording, then calls `POST /:id/end` with its ticket. The server
+   refuses (409) while the recording is still closing or lines are missing, so the page retries for about
+   20 seconds, then offers **Try again**. The result is shown plainly: *saved and verified*, *ended but not
+   verified* (a recording never confirmed its line count), or *nothing was recorded*.
+
+**Recovery.** The meeting id and ticket are kept in the browser (`localStorage`) until the meeting is
+finished. A reloaded or reopened page offers **Finish meeting** or **Forget this meeting**; a dropped
+connection or blocked microphone offers **Reconnect** (a new speech session on the same meeting) or
+**End meeting**. A meeting left open with an expired ticket is dropped from the browser with a note, and
+an operator ends it (`npm run meeting -- end <id>`). Leaving the page while recording asks for confirmation.
+
+**The relay** (`server/websocket/liveSpeechRelay.js`, path `/api/v1/live-speech`) exists because a page
+served over HTTPS may only open `wss://`, while the speech service speaks plain `ws://` on a host port.
+
+- Only a holder of a valid meeting ticket gets in. The ticket is offered as a WebSocket subprotocol,
+  `[numz.meeting-ticket.v1, <token>]`, so it is in no URL or log, and it is never echoed back. The admin
+  token, expired tickets and anything else get 401.
+- The first client message must be a `start` for the ticket's own meeting carrying that same ticket
+  (otherwise close 1008), so a ticket cannot open a standalone session or write to another meeting. After
+  that, text and binary frames pass through unchanged in both directions.
+- Limits: 4 concurrent relays (503 beyond), 1 MiB per message, `start` within 10 s, and a backed-up
+  speech service closes the connection (1013) instead of buffering without bound. An unreachable speech
+  service closes the client with 1011.
+- All WebSocket upgrades go through one dispatcher (`server/websocket/upgradeRouter.js`); unknown paths get 404.
+
+**Configuration.** Set `MEETING_LAUNCH_CODE` in `.env.secrets` (see `.env.secrets.example`) and restart
+the server. Without it the button is still there, but the panel says meetings cannot be started from here
+and `meetings.launch.enabled` in `/api/v1/health` is `false`.
+
+**Validated in a real browser (Chrome, against the dev server):** the panel, wrong and right launch codes,
+the assistant standing down and returning, the ticket subprotocol through Vite's proxy and the relay to the
+real speech service, ending with the ticket, and the "Leave site?" guard.
+**Requires manual validation:** a recording with a real microphone, saved end to end. The speech service
+reports to `MEETING_API_URL`; in development that is the production API, which does not know a meeting made
+by the dev server, so the speech service answers `persistence-rejected: meeting-not-found`. Run it from the
+production page, or point `MEETING_API_URL` at the dev API for the duration of the test.
 
 ## Operator workflow — **Implemented** [`meetingAdminCli.test.js`]
 
@@ -295,9 +352,7 @@ A version 2 database upgrades in place and keeps its data (tested).
 
 ## Not implemented — **Planned**
 
-- Browser-initiated meeting creation. The app has no user authentication, so a browser cannot be
-  trusted with an admin or ticket-minting credential. Today an operator creates meetings and hands a
-  ticket to the live client.
+- Per-user login for starting meetings. Starting from the browser is gated by one shared launch code.
 - Connecting the hold-to-talk and conversation voice path to meetings. That path uses the batch
   `/api/v1/assistant/stt` endpoint and does not create speech sessions.
 - Persisting the `reprocessOnStop` result. For meeting sessions the server ignores it, so the stored
