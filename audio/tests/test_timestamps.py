@@ -42,7 +42,10 @@ def tone(rms):
     return (np.sin(2 * np.pi * 220 * t) * rms * np.sqrt(2)).astype(np.float32)
 
 
-SPEECH, QUIET = tone(0.05), tone(0.0005)
+QUIET = tone(0.0005)
+# Speech never holds one level from frame to frame: a constant tone would be (rightly) treated by the gate
+# as steady noise after a few seconds. These levels move the way syllables do, over about 12 dB.
+SPEECH_LEVELS = [tone(rms) for rms in (0.02, 0.06, 0.035, 0.08, 0.025, 0.05, 0.03, 0.07, 0.04, 0.02)]
 
 
 def run(script):
@@ -52,12 +55,14 @@ def run(script):
     events = []
     session.on_transcript_event(events.append)
 
-    position, spans = 0.0, []
+    position, spans, frames_sent = 0.0, [], 0
     for kind, seconds in script:
         start = position
         for _ in range(int(round(seconds / FRAME_S))):
             position += FRAME_S
-            session.ingest_audio_frame(SPEECH if kind == "speech" else QUIET, timestamp_s=position)
+            frame = SPEECH_LEVELS[frames_sent % len(SPEECH_LEVELS)] if kind == "speech" else QUIET
+            frames_sent += 1
+            session.ingest_audio_frame(frame, timestamp_s=position)
         if kind == "speech":
             spans.append((round(start, 3), round(position, 3)))
     session.end()
