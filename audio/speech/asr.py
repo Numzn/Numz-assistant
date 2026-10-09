@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import transcribe as live_transcribe
-from speech.repetition import collapse_repetitions, keep_mask
+from speech.repetition import keep_mask
 from speech.schema import make_word
 from speech.vad import LectureVadOptions
 
@@ -66,19 +66,29 @@ class FasterWhisperAsr:
             use_assistant_prompt=False,
         )
 
-        segments = []
+        # Whisper emits a loop ("What's up? What's up? ...") as many short segments, so the guard has to look at
+        # the words of the WHOLE decode in one pass: judged one segment at a time, a 15-segment loop passes.
+        parts = []
         for seg in raw_segments:
             raw_words = [w for w in (seg.words or []) if (w.word or "").strip()]
+            tokens = [w.word.strip() for w in raw_words] if raw_words else (seg.text or "").split()
+            parts.append((seg, raw_words, tokens))
+        keep = keep_mask([token for _, _, tokens in parts for token in tokens])
+
+        segments = []
+        offset = 0
+        for seg, raw_words, tokens in parts:
+            mask = keep[offset : offset + len(tokens)]
+            offset += len(tokens)
             if raw_words:
                 # Cut repetition loops word by word, so the kept words keep their real timings.
-                mask = keep_mask([w.word.strip() for w in raw_words])
                 if all(mask):
                     text = (seg.text or "").strip()
                 else:
-                    raw_words = [w for w, keep in zip(raw_words, mask) if keep]
+                    raw_words = [w for w, kept in zip(raw_words, mask) if kept]
                     text = "".join(w.word for w in raw_words).strip()
             else:
-                text = collapse_repetitions((seg.text or "").strip())
+                text = (seg.text or "").strip() if all(mask) else " ".join(t for t, kept in zip(tokens, mask) if kept)
             if not text:
                 continue
             words = [make_word(w.word.strip(), w.start, w.end, w.probability) for w in raw_words]

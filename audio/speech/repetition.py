@@ -11,8 +11,8 @@ one occurrence. Legitimate short repeats ("no, no", "very very") are left alone.
 import re
 from typing import List
 
-MAX_REPEATS = 2
-MAX_PHRASE_WORDS = 4
+MAX_REPEATS = 3
+MAX_PHRASE_WORDS = 8
 
 
 def _norm(token: str) -> str:

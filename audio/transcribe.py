@@ -199,12 +199,9 @@ def transcribe_pcm(
 
     segments, _info = _transcribe_segments(pcm, language=language, prompt=prompt)
 
-    parts = []
-    for seg in segments:
-        t = collapse_repetitions((seg.text or "").strip())
-        if t:
-            parts.append(t)
-    return " ".join(parts).strip()
+    # Collapse over the whole text, not segment by segment: a loop arrives as many short segments.
+    parts = [(seg.text or "").strip() for seg in segments]
+    return collapse_repetitions(" ".join(t for t in parts if t)).strip()
 
 
 def transcribe_pcm_with_timestamps(
@@ -229,7 +226,8 @@ def transcribe_pcm_with_timestamps(
         if t:
             timestamped.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": t})
             parts.append(t)
-    return timestamped, " ".join(parts).strip()
+    # Per-segment text above keeps each segment's own timing; the returned whole text is guarded across segments.
+    return timestamped, collapse_repetitions(" ".join(parts)).strip()
 
 
 def transcribe_blob(

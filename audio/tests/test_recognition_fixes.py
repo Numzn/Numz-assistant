@@ -105,11 +105,16 @@ class RepetitionLoopsAreCollapsed(unittest.TestCase):
         self.assertEqual(collapse_repetitions("I don't know, I don't know, I don't know, I don't know."), "I don't know,")
 
     def test_ordinary_repeats_are_kept(self):
-        for text in ["no, no, I said so", "very very good", "it is what it is", "bye bye"]:
+        for text in [
+            "no, no, I said so", "very very good", "it is what it is", "bye bye",
+            "no, no, no is not an answer",  # emphasis: three in a row
+            "Yeah, I like that. I like that. I like that great thing about this one.",  # said so in a real meeting
+        ]:
             self.assertEqual(collapse_repetitions(text), text)
 
     def test_mask_lines_up_with_words(self):
-        self.assertEqual(keep_mask(["a", "b", "b", "b", "c"]), [True, True, False, False, True])
+        self.assertEqual(keep_mask(["a", "b", "b", "b", "b", "c"]), [True, True, False, False, False, True])
+        self.assertEqual(keep_mask(["a", "b", "b", "b", "c"]), [True] * 5, "three in a row is speech, not a loop")
 
 
 def fake_segment(text, words=None):
