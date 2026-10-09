@@ -8,9 +8,9 @@
  * partial/stabilizing/final streaming), and streams it over a dedicated
  * WebSocket connection straight to the audio sidecar.
  *
- * Not wired into the existing voice orchestrator / mic button — this is a
- * standalone module. See public/live-speech-test.html for a bare manual
- * test harness (not a product UI).
+ * Not wired into the existing voice orchestrator / mic button. The meeting
+ * panel (src/interfaces/meeting/) uses it for meetings; public/live-speech-test.html
+ * is a bare manual test harness (not a product UI).
  *
  * Format contract (must match audio/live_speech_ws.py exactly):
  *   16000 Hz, mono, 32-bit float PCM, little-endian, raw frames.
@@ -23,10 +23,25 @@ const FRAME_SAMPLES = 1600 // 100ms @ 16kHz — matches the worklet's default
 const SAMPLE_RATE = 16000
 const WORKLET_URL = '/worklets/pcm-capture-processor.js'
 
+/** Whether this page can capture live audio at all (secure context, AudioWorklet, WebSocket). */
+export function isLiveSpeechSupported() {
+  const w = globalThis?.window
+  return Boolean(
+    globalThis?.navigator?.mediaDevices?.getUserMedia &&
+      w?.AudioContext &&
+      w?.AudioWorkletNode &&
+      w?.WebSocket
+  )
+}
+
 /**
  * meetingId + meetingTicket (both optional, together): persist this session's final segments
- * to a meeting. The ticket is issued by an operator with the admin token and is scoped to that
- * meeting; the browser never holds the admin token. Without them the session is standalone.
+ * to a meeting. The ticket is scoped to that one meeting (it comes from the meeting launch or from
+ * an operator); the browser never holds the admin token. Without them the session is standalone.
+ *
+ * wsProtocols: WebSocket subprotocols to offer. The server's live-speech relay takes the ticket this
+ * way ([numz.meeting-ticket.v1, token]) because a browser WebSocket cannot send headers and a ticket
+ * must not sit in a URL.
  */
 export function createLiveSpeechClient({
   wsUrl,
@@ -35,6 +50,7 @@ export function createLiveSpeechClient({
   reprocessOnStop = false,
   meetingId = '',
   meetingTicket = '',
+  wsProtocols = [],
   getDeviceId = () => ''
 } = {}) {
   if (!wsUrl) throw new Error('createLiveSpeechClient requires wsUrl (ws:// or wss:// to the audio sidecar)')
@@ -53,15 +69,7 @@ export function createLiveSpeechClient({
   let ws = null
   let active = false
 
-  function isSupported() {
-    const w = globalThis?.window
-    return Boolean(
-      globalThis?.navigator?.mediaDevices?.getUserMedia &&
-        w?.AudioContext &&
-        w?.AudioWorkletNode &&
-        w?.WebSocket
-    )
-  }
+  const isSupported = isLiveSpeechSupported
 
   function handleServerMessage(ev) {
     const parsed = safeJsonParse(String(ev.data ?? ''))
@@ -118,6 +126,17 @@ export function createLiveSpeechClient({
     stream = null
   }
 
+  /** stop() ran while start() was still waiting (permission prompt, worklet load, socket open). */
+  async function releaseCancelledStart() {
+    await teardownAudio()
+    try {
+      ws?.close()
+    } catch {
+      /* ignore */
+    }
+    ws = null
+  }
+
   async function start() {
     if (active) return
     if (!isSupported()) throw new Error('Live speech capture is not supported in this browser')
@@ -129,6 +148,9 @@ export function createLiveSpeechClient({
         audio: speechAudioConstraints({ deviceId, channelCount: 1 }),
         video: false
       })
+      // stop() may have been called while the browser's permission prompt was open. Release what was
+      // just granted instead of carrying on and leaving the microphone running.
+      if (!active) return releaseCancelledStart()
 
       audioContext = new window.AudioContext({ sampleRate: SAMPLE_RATE })
       if (audioContext.sampleRate !== SAMPLE_RATE) {
@@ -139,18 +161,20 @@ export function createLiveSpeechClient({
       }
 
       await audioContext.audioWorklet.addModule(WORKLET_URL)
+      if (!active) return releaseCancelledStart()
       sourceNode = audioContext.createMediaStreamSource(stream)
       workletNode = new window.AudioWorkletNode(audioContext, 'pcm-capture-processor', {
         processorOptions: { frameSamples: FRAME_SAMPLES }
       })
 
-      ws = new WebSocket(wsUrl)
+      ws = wsProtocols.length ? new WebSocket(wsUrl, wsProtocols) : new WebSocket(wsUrl)
       ws.binaryType = 'arraybuffer'
 
       await new Promise((resolve, reject) => {
         ws.addEventListener('open', () => resolve(), { once: true })
         ws.addEventListener('error', () => reject(new Error('WebSocket connection error')), { once: true })
       })
+      if (!active) return releaseCancelledStart()
 
       ws.addEventListener('message', handleServerMessage)
       ws.addEventListener('close', () => {
