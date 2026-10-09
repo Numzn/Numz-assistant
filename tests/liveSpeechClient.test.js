@@ -230,3 +230,18 @@ test('stop() gives up after its timeout if the service never answers', async () 
   assert.ok(Date.now() - started >= 35, 'it waited for the timeout')
   assert.equal(FakeWebSocket.instances[0].closed, true)
 })
+
+test('meetings can ask for automatic gain control; by default the shared constraints apply', async () => {
+  const asked = []
+  install({ getUserMedia: async (constraints) => (asked.push(constraints.audio), grantedStream()) })
+  const meeting = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', autoGainControl: true, language: 'en-US' })
+  await meeting.start()
+  assert.equal(asked[0].autoGainControl, true)
+  assert.equal(JSON.parse(FakeWebSocket.instances[0].sent[0]).language, 'en-US', 'the language is sent with start')
+  await meeting.stop()
+
+  const plain = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  await plain.start()
+  assert.equal(asked[1].autoGainControl, false)
+  await plain.stop()
+})

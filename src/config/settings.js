@@ -131,8 +131,10 @@ export const settings = {
     sttMode: 'server',
     sttBackend: 'local',
     maxUtteranceMs: 12000,
+    // One plain sentence. Whisper imitates its prompt, so a comma-separated keyword list made it answer
+    // in comma-separated single words and repeat list words ("NUMZ, NUMZ, NUMZ...").
     sttPrompt:
-      'Numz is a helpful personal voice assistant. NUMZ, NUMZFLEET, immobilize, unit, tracker, dashboard, fleet, summary, status, show, locate, find, cancel, stop, yes, no, vehicle, speed, fuel, location, maintenance, alert, warning, dispatch, alarms, notification.',
+      'Numz is a helpful personal voice assistant. The user may ask about the fleet: vehicles, trackers, speed, fuel, location, maintenance, alerts and notifications.',
     /**
      * Phase 1 continuous conversation (ChatGPT Voice style):
      * - `conversationMode`: enable hands-free listen -> respond -> listen loop

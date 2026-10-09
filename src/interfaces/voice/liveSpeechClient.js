@@ -55,6 +55,9 @@ export function createLiveSpeechClient({
   meetingTicket = '',
   wsProtocols = [],
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
+  // true asks the browser to level the microphone (a soft or distant voice reaches a usable level).
+  // Left undefined, the shared speech constraints apply (off, as the assistant's own VAD expects).
+  autoGainControl = undefined,
   getDeviceId = () => ''
 } = {}) {
   if (!wsUrl) throw new Error('createLiveSpeechClient requires wsUrl (ws:// or wss:// to the audio sidecar)')
@@ -151,7 +154,11 @@ export function createLiveSpeechClient({
     try {
       const deviceId = typeof getDeviceId === 'function' ? getDeviceId() : ''
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: speechAudioConstraints({ deviceId, channelCount: 1 }),
+        audio: speechAudioConstraints({
+          deviceId,
+          channelCount: 1,
+          ...(typeof autoGainControl === 'boolean' ? { autoGainControl } : {})
+        }),
         video: false
       })
       // stop() may have been called while the browser's permission prompt was open. Release what was

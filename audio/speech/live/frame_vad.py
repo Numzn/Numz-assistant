@@ -23,10 +23,13 @@ import numpy as np
 
 @dataclass
 class FrameVadConfig:
-    energy_threshold: float = 0.02
+    # Only decides where utterances start and end (session.py feeds every frame in between to the
+    # recognizer, and Whisper's own speech filter drops noise). It used to be 0.02 (about -34 dBFS), which
+    # normal speech into a laptop microphone often never reached, so meetings saved nothing.
+    energy_threshold: float = 0.008  # about -42 dBFS
     noise_floor_alpha: float = 0.05  # how fast the noise floor adapts during silence
     speech_ratio: float = 2.2        # speech must exceed the noise floor by this ratio...
-    speech_min_delta: float = 0.012  # ...or this absolute delta, whichever is easier to clear
+    speech_min_delta: float = 0.006  # ...or this absolute delta, whichever is easier to clear
 
 
 class FrameVad:

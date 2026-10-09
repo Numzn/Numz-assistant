@@ -46,7 +46,11 @@ class LocalAgreementStreamingAsr:
         self.sample_rate = sample_rate
         self.language = language
         self.prompt = prompt
-        self._fast_asr = fast_asr or FasterWhisperAsr(vad_options=LectureVadOptions())
+        if fast_asr is None and quality_asr is None:
+            # Two real configurations: cheap greedy partial ticks, careful FINAL decode (see speech/asr.py).
+            fast_asr = FasterWhisperAsr(vad_options=LectureVadOptions(), fast=True)
+            quality_asr = FasterWhisperAsr(vad_options=LectureVadOptions())
+        self._fast_asr = fast_asr or quality_asr
         self._quality_asr = quality_asr or self._fast_asr
         self.min_tick_s = min_tick_s
 

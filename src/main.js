@@ -235,7 +235,15 @@ try {
     storage: createMeetingStorage(),
     checkSupport: checkLiveSpeechSupport,
     createLiveClient: (options) =>
-      createLiveSpeechClient({ wsUrl: meetingSocketUrl(), getDeviceId: preferredMicId, ...options })
+      createLiveSpeechClient({
+        wsUrl: meetingSocketUrl(),
+        getDeviceId: preferredMicId,
+        // Naming the language spares the recognizer a guess on every decode (it once guessed Portuguese).
+        language: settings.voice?.lang ?? '',
+        // A meeting is room audio at varying distances: let the browser level it.
+        autoGainControl: true,
+        ...options
+      })
   })
   const meetingPanel = createMeetingPanel({
     controller: meetingController,
