@@ -6,10 +6,18 @@ An adaptive noise-floor energy gate with hysteresis. It only decides where an ut
 so it errs towards opening: a missed quiet utterance is lost for good, a false one costs one decode that
 finds nothing.
 
-  - The noise floor follows the room: it moves towards the level of frames the gate did NOT open on.
+  - The noise floor follows the room. If the first second is steady (the same test as below) it is taken as
+    the room's noise: starting from zero, a room noisier than the minimum would hold the gate open before it
+    had learned anything. A first second that varies is speech or bursts, never seeded (seeding from speech
+    would teach the gate that speech is noise). From then on the floor moves towards the level of frames the
+    gate did not open on.
   - The gate opens when a frame is `open_ratio` times the floor and stays open until frames fall below
     `close_ratio` times the floor (hysteresis), so the soft tail of a word or a quiet syllable between loud
     ones does not close an utterance in the middle of a sentence.
+  - A frame `speech_close_ratio` (20 dB) below the speaker's recent level is a pause whatever the floor says,
+    and teaches the floor quickly. The floor otherwise learns only from closed frames, so a pause noisier
+    than a stale floor (auto-gain raises the noise in pauses; speech leaves a reverb tail) could never end
+    an utterance. This is what the old absolute gate did for loud speech.
   - `min_threshold_dbfs` is the quietest level the gate will ever open on, so digital silence and
     microphone hiss do not open it. The default, -56 dBFS, is an experimental starting point (measured on
     one recording, not proven): set LIVE_GATE_MIN_DBFS to change it without a code change.
@@ -64,7 +72,12 @@ class FrameVadConfig:
     min_threshold_dbfs: float = field(default_factory=_min_threshold_from_env)  # quietest level the gate opens on
     open_ratio: float = 2.5          # open when a frame is this many times the noise floor (+8 dB)...
     close_ratio: float = 1.6         # ...and stay open until frames fall below this many times it (+4 dB)
+    speech_close_ratio: float = 0.1  # a frame below this share of the recent speech level (-20 dB) is a pause
+    level_alpha: float = 0.1         # how fast that speech level follows the frames the gate is open on
+    level_decay: float = 0.95        # per closed frame: the speech level fades, so a quieter voice is heard soon
     noise_floor_alpha: float = 0.05  # how fast the floor follows frames the gate did not open on
+    pause_floor_alpha: float = 0.2   # ...and frames that are pauses relative to the speech (learns the pause noise)
+    seed_frames: int = 10            # a steady first second of this many frames is taken as the room's noise
     stationary_frames: int = 30      # an open run this long (3 s)...
     stationary_ratio: float = 1.5    # ...whose 90th/10th percentile level is within this ratio (3.5 dB) is noise
 
@@ -77,7 +90,9 @@ class FrameVad:
         self._min_open = 10 ** (self.config.min_threshold_dbfs / 20)
         self._min_close = self._min_open * self.config.close_ratio / self.config.open_ratio
         self._floor = 0.0
+        self._level = 0.0  # recent level of the frames the gate is open on; fades while it is closed
         self._open = False
+        self._seed = []  # levels of the first frames, until the floor is seeded
         self._run = deque(maxlen=self.config.stationary_frames)  # frame levels of the current open run
 
     @property
@@ -90,16 +105,25 @@ class FrameVad:
 
         rms = float(np.sqrt(np.mean(np.square(frame))))
         config = self.config
-        if self._open:
+        self._seed_floor(rms)
+
+        pause = rms < self._level * config.speech_close_ratio
+        if pause:
+            is_open = False
+        elif self._open:
             is_open = rms >= max(self._floor * config.close_ratio, self._min_close)
         else:
             is_open = rms >= max(self._floor * config.open_ratio, self._min_open)
 
         if is_open:
+            # Built up gradually from the previous level, so one loud click cannot make quiet speech after
+            # it look like a pause.
+            self._level += config.level_alpha * (rms - self._level)
             self._run.append(rms)
             if len(self._run) == self._run.maxlen and self._run_is_steady():
                 # A fan, a hum: learn it as the new floor and close.
                 self._floor = float(np.median(self._run))
+                self._level = 0.0
                 self._run.clear()
                 self._open = False
                 return False
@@ -108,9 +132,22 @@ class FrameVad:
 
         self._run.clear()
         self._open = False
-        self._floor += config.noise_floor_alpha * (rms - self._floor)
+        self._floor += (config.pause_floor_alpha if pause else config.noise_floor_alpha) * (rms - self._floor)
+        self._level *= config.level_decay
         return False
 
+    def _seed_floor(self, rms: float):
+        if self._seed is None:
+            return
+        self._seed.append(rms)
+        if len(self._seed) >= self.config.seed_frames:
+            if self._is_steady(self._seed):
+                self._floor = max(self._floor, float(np.median(self._seed)))
+            self._seed = None
+
     def _run_is_steady(self) -> bool:
-        low, high = np.percentile(np.fromiter(self._run, dtype=float), [10, 90])
+        return self._is_steady(self._run)
+
+    def _is_steady(self, levels) -> bool:
+        low, high = np.percentile(np.fromiter(levels, dtype=float), [10, 90])
         return low > 0 and high / low <= self.config.stationary_ratio
