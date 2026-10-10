@@ -411,7 +411,7 @@ export function createVoiceOrchestrator({
       try {
         // Speaking goes through the same states as a reply (LISTENING cannot go straight to SPEAKING).
         await assistantController.setProcessing()
-        await speakReply(local.reply)
+        await speakReply(local.speech ?? local.reply)
       } catch (err) {
         if (!current()) return
         console.error('[voice] speaking a command reply failed', err)

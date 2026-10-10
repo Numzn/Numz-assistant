@@ -18,7 +18,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function rig(config = {}) {
+function rig(config = {}, { commands = null } = {}) {
   const callbacks = {}
   const events = []
   const spoken = []
@@ -54,7 +54,8 @@ function rig(config = {}) {
     setSpeaking: async () => {},
     setIdle: async () => {},
     setError: async () => {},
-    setTranscribing: async () => {}
+    setTranscribing: async () => {},
+    setProcessing: async () => {}
   }
   const eventBus = {
     on(type, fn) {
@@ -74,7 +75,8 @@ function rig(config = {}) {
     deviceManager: {},
     ui: {},
     config,
-    eventBus
+    eventBus,
+    commands
   })
   const api = orchestrator.init()
   return {
@@ -843,4 +845,31 @@ test('a reply that was cut off is still remembered, so its tail is not answered 
   await r.hear('the process plants use to turn sunlight', { captureId: 12, startedAt: performance.now() })
   await tick()
   assert.equal(r.counts.requests, requestsBefore)
+})
+
+// ---- a command's plain spoken form -----------------------------------------------------------------------------
+
+test('a command reply is spoken in its plain form, not as the Markdown the chat shows', async () => {
+  const commands = {
+    handle: async () => ({
+      reply: '**Final — the transcript was verified** (9 saved lines).\n\n- Ship on Friday — stated in the transcript',
+      speech: 'This is the final record. The transcript was verified. One decision: ship on Friday.',
+      tone: 'ok'
+    })
+  }
+  const r = rig({}, { commands })
+  await r.hear('what decisions have been made')
+  await tick()
+  await tick()
+  assert.deepEqual(r.spoken, ['This is the final record. The transcript was verified. One decision: ship on Friday.'])
+  assert.equal(r.counts.requests, 0, 'the question never went to the assistant')
+})
+
+test('a command reply without a spoken form is spoken as it is (start, stop and the rest)', async () => {
+  const commands = { handle: async () => ({ reply: 'No meeting is recording right now.', tone: 'info' }) }
+  const r = rig({}, { commands })
+  await r.hear('stop the meeting')
+  await tick()
+  await tick()
+  assert.deepEqual(r.spoken, ['No meeting is recording right now.'])
 })
