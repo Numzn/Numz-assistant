@@ -306,6 +306,8 @@ try {
   })
   meetingController.restore()
   meetingPanel.openIfUnfinished()
+  // Is this browser already unlocked? It decides whether "start the meeting" can start one straight away.
+  meetingController.refreshLaunchSession().catch(() => {})
 } catch (err) {
   // The meeting panel must never take the main screen down with it.
   console.error('[meeting] panel failed to start', err)
@@ -347,7 +349,8 @@ if (meetingController) {
   commandRouter = createCommandRouter({
     meeting: meetingController,
     openPanel: ({ title } = {}) => {
-      // The launch code is typed by a person in the panel; a title only saves a step.
+      // Unless this browser is unlocked (the router starts the meeting itself then), the launch code is typed by
+      // a person in the panel; a title only saves a step.
       const titleInput = document.querySelector('#meetingTitleInput')
       if (title && titleInput) titleInput.value = title
       meetingPanel?.open()

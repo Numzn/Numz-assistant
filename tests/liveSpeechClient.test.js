@@ -61,9 +61,13 @@ class FakeWebSocket {
 }
 
 class FakeAudioContext {
+  static initialState = undefined // undefined: a context with no state at all (as the older fakes were)
+  static resumeBehaviour = 'works' // works | never (the promise stays pending) | stays-suspended
   constructor({ sampleRate }) {
     this.sampleRate = sampleRate
     this.closed = false
+    this.resumeCalls = 0
+    if (FakeAudioContext.initialState) this.state = FakeAudioContext.initialState
     this.audioWorklet = { addModule: async () => {} }
     log.audioContexts.push(this)
   }
@@ -72,6 +76,13 @@ class FakeAudioContext {
   }
   async close() {
     this.closed = true
+  }
+  resume() {
+    this.resumeCalls += 1
+    const behaviour = FakeAudioContext.resumeBehaviour
+    if (behaviour === 'never') return new Promise(() => {})
+    if (behaviour === 'works') this.state = 'running'
+    return Promise.resolve()
   }
 }
 
@@ -87,6 +98,8 @@ function install({ getUserMedia }) {
   FakeWebSocket.instances = []
   FakeWebSocket.autoOpen = true
   FakeWebSocket.replyToStop = true
+  FakeAudioContext.initialState = undefined
+  FakeAudioContext.resumeBehaviour = 'works'
   globalThis.window = { AudioContext: FakeAudioContext, AudioWorkletNode: FakeAudioWorkletNode, WebSocket: FakeWebSocket }
   globalThis.WebSocket = FakeWebSocket
   Object.defineProperty(globalThis, 'navigator', { value: { mediaDevices: { getUserMedia } }, configurable: true, writable: true })
@@ -272,4 +285,48 @@ test('a server error frame reaches the caller with its code, so the caller can t
   assert.equal(seen[0].segmentId, 'seg_9')
   assert.match(seen[0].message, /\[persistence-failure\]/)
   await client.stop()
+})
+
+test('an audio context the browser left suspended is resumed before any audio is relied on', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeAudioContext.initialState = 'suspended'
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  await client.start()
+  assert.equal(log.audioContexts[0].resumeCalls, 1)
+  assert.equal(log.audioContexts[0].state, 'running')
+  assert.equal(FakeWebSocket.instances.length, 1)
+  await client.stop()
+})
+
+test('an audio context that is already running is left alone', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeAudioContext.initialState = 'running'
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  await client.start()
+  assert.equal(log.audioContexts[0].resumeCalls, 0)
+  await client.stop()
+})
+
+test('audio the browser will not start without a user gesture fails loudly instead of recording silence', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeAudioContext.initialState = 'suspended'
+  FakeAudioContext.resumeBehaviour = 'never'
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', resumeTimeoutMs: 20 })
+  const reported = []
+  client.setOnError((err) => reported.push(err))
+  await assert.rejects(() => client.start(), (err) => err.code === 'audio-context-suspended')
+  assert.equal(reported.length, 1)
+  assert.equal(reported[0].code, 'audio-context-suspended')
+  assert.equal(log.tracks[0].stopped, 1, 'the microphone is released')
+  assert.equal(log.audioContexts[0].closed, true)
+  assert.equal(FakeWebSocket.instances.length, 0, 'no connection to the speech service is made for audio that cannot flow')
+})
+
+test('a context that resumes but stays suspended is refused the same way', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeAudioContext.initialState = 'suspended'
+  FakeAudioContext.resumeBehaviour = 'stays-suspended'
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', resumeTimeoutMs: 20 })
+  client.setOnError(() => {})
+  await assert.rejects(() => client.start(), (err) => err.code === 'audio-context-suspended')
 })

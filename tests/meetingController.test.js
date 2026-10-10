@@ -26,15 +26,32 @@ const completed = (stored, { verified = true, unverified = 0 } = {}) => ({
 const conflict = (code, details = null) => new MeetingApiError(code, { status: 409, code, details })
 const seg = (n, text = `line ${n}`) => ({ id: `seg_${n}`, start: n, end: n + 1, text })
 
-function fakeApi({ launch = launched(), end = [completed(0)] } = {}) {
-  const calls = { launch: [], end: [] }
+function fakeApi({ launch = launched(), end = [completed(0)], session = false } = {}) {
+  const calls = { launch: [], end: [], session: 0, forget: 0 }
   const queue = [...end]
+  const launches = Array.isArray(launch) ? [...launch] : null
+  const server = { authenticated: session }
   return {
     calls,
+    server,
+    async launchSession() {
+      calls.session += 1
+      return { available: true, authenticated: server.authenticated }
+    },
+    async forgetLaunchSession() {
+      calls.forget += 1
+      server.authenticated = false
+      return true
+    },
     async launch(args) {
       calls.launch.push(args)
-      if (launch instanceof Error) throw launch
-      return launch
+      const outcome = launches ? (launches.length > 1 ? launches.shift() : launches[0]) : launch
+      if (outcome instanceof Error) {
+        if (outcome.status === 401) server.authenticated = false
+        throw outcome
+      }
+      if (args.code) server.authenticated = true // the server starts the launch session after a correct code
+      return outcome
     },
     async end(args) {
       calls.end.push(args)
@@ -86,11 +103,13 @@ function fakeClients({ startError } = {}) {
 
 function build({ api = fakeApi(), clients = fakeClients(), storage = createMemoryMeetingStorage(), checkSupport } = {}) {
   const sleeps = []
+  let keys = 0
   const controller = createMeetingController({
     api,
     createLiveClient: clients,
     storage,
     checkSupport,
+    newLaunchKey: () => `attempt-${String(++keys).padStart(16, '0')}`,
     sleep: async (ms) => sleeps.push(ms),
     retryDelaysMs: [10, 20, 30],
     now: () => NOW
@@ -135,7 +154,11 @@ test('the happy path: launch, connect with the ticket, show saved lines, stop, e
   const { controller, api, clients, storage, phases } = build({ api: fakeApi({ end: [completed(2)] }) })
 
   await controller.start({ code: ' the-code ', title: '  Weekly sync ' })
-  assert.deepEqual(api.calls.launch, [{ code: 'the-code', title: 'Weekly sync' }], 'code and title are trimmed')
+  assert.deepEqual(
+    api.calls.launch,
+    [{ code: 'the-code', title: 'Weekly sync', idempotencyKey: 'attempt-0000000000000001' }],
+    'code and title are trimmed'
+  )
   assert.equal(controller.getState().phase, 'connecting')
   assert.equal(controller.getState().open, true)
 
@@ -568,4 +591,167 @@ test('lines that were refused are counted as not saved and the meeting is not re
   assert.deepEqual(done.counts, { saved: 1, waiting: 0, notSaved: 1 })
   assert.equal(done.result.verified, false)
   assert.equal(done.tone, 'warn')
+})
+
+// ---- launch session: starting without typing the code again -------------------------------------------------
+
+test('with a launch session the meeting starts without a code, and no code is ever sent', async () => {
+  const { controller, api, clients } = build({ api: fakeApi({ session: true }) })
+  await controller.refreshLaunchSession()
+  assert.equal(controller.getState().launchReady, true)
+  await controller.start({ title: 'Weekly' })
+  assert.deepEqual(api.calls.launch, [{ code: '', title: 'Weekly', idempotencyKey: 'attempt-0000000000000001' }])
+  assert.equal(controller.getState().phase, 'connecting')
+  assert.equal(clients.made.length, 1)
+})
+
+test('with no launch session an empty code is still caught, and the server is asked once', async () => {
+  const { controller, api } = build({ api: fakeApi({ session: false }) })
+  await controller.start({ title: 'x' })
+  assert.equal(api.calls.launch.length, 0)
+  assert.match(controller.getState().message, /Enter the launch code/)
+  assert.equal(controller.getState().launchReady, false)
+  assert.equal(api.calls.session, 1, 'it checked, in case the page was stale')
+})
+
+test('a stale page still starts: start asks the server whether a launch session exists before refusing', async () => {
+  const api = fakeApi({ session: false })
+  const { controller } = build({ api })
+  api.server.authenticated = true // unlocked in another tab since this page loaded
+  await controller.start({})
+  assert.equal(api.calls.launch.length, 1)
+  assert.equal(api.calls.launch[0].code, '')
+})
+
+test('launchReady survives finishing a meeting and starting the form again', async () => {
+  const api = fakeApi({ session: true, end: [completed(1)] })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  controller.getState().phase === 'connecting' && (await controller.stop())
+  assert.equal(controller.getState().phase, 'done')
+  assert.equal(controller.getState().launchReady, true)
+  controller.reset()
+  assert.equal(controller.getState().phase, 'idle')
+  assert.equal(controller.getState().launchReady, true)
+})
+
+test('a correct code typed once unlocks this browser, as the server reports it', async () => {
+  const api = fakeApi({ session: false })
+  const { controller } = build({ api })
+  assert.equal(controller.getState().launchReady, false)
+  await controller.start({ code: 'the-code' })
+  assert.equal(controller.getState().launchReady, true, 'taken from the server, not assumed')
+})
+
+test('when the launch session has lapsed the refusal says so and the code field comes back', async () => {
+  const api = fakeApi({
+    session: true,
+    launch: new MeetingApiError('no', { status: 401, code: 'launch-code-required' })
+  })
+  const { controller, clients } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  const state = controller.getState()
+  assert.equal(state.phase, 'idle')
+  assert.equal(state.launchReady, false)
+  assert.equal(state.open, false)
+  assert.match(state.message, /launch session has ended.*launch code/i)
+  assert.equal(clients.made.length, 0)
+})
+
+test('locking forgets the launch session on the server and on the page', async () => {
+  const api = fakeApi({ session: true })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.lock()
+  assert.equal(api.calls.forget, 1)
+  assert.equal(controller.getState().launchReady, false)
+})
+
+test('locking is refused while a meeting is open', async () => {
+  const api = fakeApi({ session: true })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  await controller.lock()
+  assert.equal(api.calls.forget, 0)
+  assert.equal(controller.getState().launchReady, true)
+})
+
+test('a failed lock is reported, not assumed', async () => {
+  const api = fakeApi({ session: true })
+  api.forgetLaunchSession = async () => false
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.lock()
+  assert.equal(controller.getState().launchReady, true)
+  assert.equal(controller.getState().tone, 'warn')
+})
+
+// ---- the same attempt is the same meeting --------------------------------------------------------------------
+
+test('retrying after a lost response reuses the idempotency key, so no second meeting is created', async () => {
+  const lost = new MeetingApiError('x', { status: 0, code: 'network' })
+  const api = fakeApi({ launch: [lost, launched()] })
+  const { controller } = build({ api })
+  await controller.start({ code: 'c', title: 'T' })
+  assert.equal(controller.getState().phase, 'idle')
+  await controller.start({ code: 'c', title: 'T' })
+  assert.equal(api.calls.launch.length, 2)
+  assert.ok(api.calls.launch[0].idempotencyKey, 'an attempt carries a key')
+  assert.equal(api.calls.launch[0].idempotencyKey, api.calls.launch[1].idempotencyKey)
+})
+
+test('a server failure keeps the key too (the meeting may have been created), a refusal does not', async () => {
+  const api = fakeApi({
+    launch: [
+      new MeetingApiError('x', { status: 502, code: 'bad-gateway' }),
+      new MeetingApiError('x', { status: 401, code: 'launch-code-invalid' }),
+      launched()
+    ]
+  })
+  const { controller } = build({ api })
+  await controller.start({ code: 'c' })
+  await controller.start({ code: 'c' })
+  await controller.start({ code: 'c' })
+  const keys = api.calls.launch.map((call) => call.idempotencyKey)
+  assert.equal(keys[0], keys[1], 'after a 502 the same key is tried again')
+  assert.notEqual(keys[2], keys[1], 'after a definitive refusal the next attempt is a new one')
+})
+
+test('after a meeting was launched the next one is a new attempt with a new key', async () => {
+  const api = fakeApi({ end: [completed(0)] })
+  const { controller } = build({ api })
+  await controller.start({ code: 'c' })
+  await controller.stop()
+  controller.reset()
+  await controller.start({ code: 'c' })
+  assert.notEqual(api.calls.launch[0].idempotencyKey, api.calls.launch[1].idempotencyKey)
+})
+
+test('a launch that was answered with an existing meeting connects to that meeting', async () => {
+  const api = fakeApi({ launch: launched({ reused: true }) })
+  const { controller, clients } = build({ api })
+  await controller.start({ code: 'c' })
+  assert.equal(clients.made.length, 1)
+  assert.equal(clients.made[0].options.meetingId, MEETING)
+  assert.equal(controller.getState().open, true)
+})
+
+// ---- audio held back by the browser ---------------------------------------------------------------------------
+
+test('audio the browser is holding back is a problem with a Reconnect, not a recording of silence', async () => {
+  const blocked = Object.assign(new Error('The browser is holding audio until you interact with the page.'), {
+    code: 'audio-context-suspended'
+  })
+  const { controller, storage } = build({ clients: fakeClients({ startError: blocked }) })
+  await controller.start({ code: 'c' })
+  const state = controller.getState()
+  assert.equal(state.phase, 'problem')
+  assert.equal(state.canReconnect, true)
+  assert.equal(state.tone, 'error')
+  assert.match(state.message, /interact with the page|click/i)
+  assert.match(state.message, /Reconnect/)
+  assert.equal(storage.read().meetingId, MEETING, 'the meeting stays open so Reconnect can carry on with it')
 })

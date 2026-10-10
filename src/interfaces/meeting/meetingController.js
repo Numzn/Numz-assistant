@@ -56,8 +56,19 @@ function emptyState() {
     canReconnect: false,
     canEnd: false,
     canDiscard: false,
+    launchReady: false, // the server accepts a start from this browser without the code being typed again
     result: null // { verified, storedSegments, unverifiedSessions } once done
   }
+}
+
+/** A key of 16 to 64 letters, digits, "_" and "-" (what the server's Idempotency-Key accepts). */
+function randomLaunchKey() {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID()
+  const bytes = new Uint8Array(16)
+  if (typeof cryptoApi?.getRandomValues === 'function') cryptoApi.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  return `k${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
 function plural(n, one, many) {
@@ -78,6 +89,9 @@ function describeLaunchError(err) {
 function describeConnectionError(err) {
   const name = err?.name ?? ''
   const message = String(err?.message ?? '')
+  if (err?.code === 'audio-context-suspended') {
+    return 'The browser is holding back audio until you interact with the page. Click anywhere on the page, then press Reconnect.'
+  }
   if (name === 'NotAllowedError' || name === 'SecurityError') {
     return 'The microphone is blocked. Allow it in the browser, then press Reconnect.'
   }
@@ -120,16 +134,25 @@ export function createMeetingController({
   checkSupport = () => ({ ok: true }),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
-  now = () => Date.now()
+  now = () => Date.now(),
+  newLaunchKey = randomLaunchKey
 }) {
   let state = emptyState()
+  let launchReady = false // survives a reset: it describes this browser, not one meeting
+  let pendingLaunchKey = null // the key of a launch attempt whose outcome is not known yet
   const listeners = new Set()
   let client = null
   let stopping = null // the client being stopped: its last lines are still decoded and saved while it winds down
   let session = null // { meetingId, ticketToken, expiresAt, title, startedAt }
   let ending = false
 
+  /** A clean form that still knows whether this browser is unlocked. */
+  function blank() {
+    return { ...emptyState(), launchReady }
+  }
+
   function set(patch) {
+    if ('launchReady' in patch) launchReady = patch.launchReady === true
     state = { ...state, ...patch }
     for (const listener of listeners) listener(state)
   }
@@ -164,6 +187,16 @@ export function createMeetingController({
       canEnd: true,
       canDiscard: false
     })
+  }
+
+  /**
+   * Whether the server will start a meeting for this browser without the code (it set a launch session after a
+   * correct code). Asked of the server each time: the cookie is HttpOnly, so the page cannot know by itself.
+   */
+  async function refreshLaunchSession() {
+    const status = typeof api.launchSession === 'function' ? await api.launchSession() : null
+    set({ launchReady: status?.authenticated === true })
+    return launchReady
   }
 
   async function connect() {
@@ -271,6 +304,7 @@ export function createMeetingController({
 
   return {
     getState: () => state,
+    refreshLaunchSession,
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -302,29 +336,56 @@ export function createMeetingController({
       })
     },
 
+    /** Forget the launch session on this browser, so the code has to be typed again. Not while a meeting is open. */
+    async lock() {
+      if (!launchReady || state.open || BUSY.has(state.phase)) return
+      const done = typeof api.forgetLaunchSession === 'function' ? await api.forgetLaunchSession() : false
+      if (done) set({ launchReady: false, message: 'Locked. The launch code is needed again to start a meeting.', tone: 'info' })
+      else set({ message: 'Could not reach the server to lock this browser. It is still unlocked.', tone: 'warn' })
+    },
+
+    /** code: typed by a person, or empty to rely on the launch session. title: optional. */
     async start({ code, title = '' } = {}) {
       if (state.open || BUSY.has(state.phase)) return
       const trimmedCode = String(code ?? '').trim()
-      if (!trimmedCode) {
-        set({ ...emptyState(), message: 'Enter the launch code.', tone: 'warn' })
+      if (!trimmedCode && !launchReady) await refreshLaunchSession() // the page may be stale
+      if (!trimmedCode && !launchReady) {
+        set({ ...blank(), message: 'Enter the launch code.', tone: 'warn' })
         return
       }
       // Check the browser before creating anything on the server: no meeting is launched for a page
       // that could never record (no secure connection, no audio worklet).
       const support = checkSupport()
       if (!support.ok) {
-        set({ ...emptyState(), message: support.reason, tone: 'error' })
+        set({ ...blank(), message: support.reason, tone: 'error' })
         return
       }
       const cleanTitle = String(title ?? '').trim()
-      set({ ...emptyState(), phase: 'launching', title: cleanTitle, message: 'Starting the meeting…' })
+      set({ ...blank(), phase: 'launching', title: cleanTitle, message: 'Starting the meeting…' })
+      // One key per attempt: if the answer is lost and the user tries again, the server hands back the same
+      // meeting instead of starting a second one.
+      pendingLaunchKey ??= newLaunchKey()
       let launched
       try {
-        launched = await api.launch({ code: trimmedCode, title: cleanTitle })
+        launched = await api.launch({ code: trimmedCode, title: cleanTitle, idempotencyKey: pendingLaunchKey })
       } catch (err) {
-        set({ ...emptyState(), title: cleanTitle, message: describeLaunchError(err), tone: 'error' })
+        const outcomeUnknown = err instanceof MeetingApiError && (err.status === 0 || err.status >= 500)
+        if (!outcomeUnknown) pendingLaunchKey = null
+        const lapsed = !trimmedCode && err instanceof MeetingApiError && err.status === 401
+        if (lapsed) {
+          set({
+            ...emptyState(),
+            launchReady: false,
+            title: cleanTitle,
+            message: 'The launch session has ended. Enter the launch code to start the meeting.',
+            tone: 'warn'
+          })
+          return
+        }
+        set({ ...blank(), title: cleanTitle, message: describeLaunchError(err), tone: 'error' })
         return
       }
+      pendingLaunchKey = null
       session = {
         meetingId: launched.meetingId,
         ticketToken: launched.ticket.token,
@@ -334,7 +395,11 @@ export function createMeetingController({
       }
       storage.write(session)
       set({ open: true, meetingId: session.meetingId })
+      // A correct code makes the server set a launch session; learn that from the server, not by assuming it.
+      // Alongside connecting, so it costs the recording nothing, and settled by the time start() returns.
+      const unlockStatus = trimmedCode ? refreshLaunchSession().catch(() => {}) : null
       await connect()
+      await unlockStatus
     },
 
     /** Stop recording, then end the meeting. */
@@ -371,7 +436,7 @@ export function createMeetingController({
       session = null
       client = null
       set({
-        ...emptyState(),
+        ...blank(),
         message: `Forgot meeting ${meetingId}. It is still open on the server; ask the operator to end it.`,
         tone: 'warn'
       })
@@ -380,7 +445,7 @@ export function createMeetingController({
     /** Back to the start form after a finished meeting. */
     reset() {
       if (state.phase !== 'done') return
-      set(emptyState())
+      set(blank())
     }
   }
 }

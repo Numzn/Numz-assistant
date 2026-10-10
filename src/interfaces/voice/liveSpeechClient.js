@@ -25,6 +25,35 @@ const SAMPLE_RATE = 16000
 // then it saves the last lines and reports how many it produced; closing earlier cuts that off.
 const DEFAULT_STOP_TIMEOUT_MS = 45000
 const WORKLET_URL = '/worklets/pcm-capture-processor.js'
+// How long to wait for a suspended AudioContext to start. Past this, the browser is waiting for a user gesture.
+const DEFAULT_RESUME_TIMEOUT_MS = 1500
+
+/**
+ * A page that starts recording without a click (a voice command, a reconnect) can be handed an AudioContext the
+ * browser keeps suspended. Its worklet then never runs: the meeting would say "Recording" and capture silence.
+ * Resume it, and if the browser still holds it back, say so with a code the caller can act on.
+ */
+async function ensureAudioRunning(context, timeoutMs) {
+  if (!context.state || context.state === 'running') return
+  let timer
+  try {
+    await Promise.race([
+      Promise.resolve(context.resume?.()),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs)
+      })
+    ])
+  } catch {
+    /* judged by the state below */
+  } finally {
+    clearTimeout(timer)
+  }
+  if (context.state && context.state !== 'running') {
+    const err = new Error('The browser is holding back audio until you interact with the page.')
+    err.code = 'audio-context-suspended'
+    throw err
+  }
+}
 
 /** Whether this page can capture live audio at all (secure context, AudioWorklet, WebSocket). */
 export function isLiveSpeechSupported() {
@@ -55,6 +84,7 @@ export function createLiveSpeechClient({
   meetingTicket = '',
   wsProtocols = [],
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
+  resumeTimeoutMs = DEFAULT_RESUME_TIMEOUT_MS,
   // true asks the browser to level the microphone (a soft or distant voice reaches a usable level).
   // Left undefined, the shared speech constraints apply (off, as the assistant's own VAD expects).
   autoGainControl = undefined,
@@ -176,6 +206,9 @@ export function createLiveSpeechClient({
             'live speech capture requires an exact sample rate match with the server.'
         )
       }
+
+      await ensureAudioRunning(audioContext, resumeTimeoutMs)
+      if (!active) return releaseCancelledStart()
 
       await audioContext.audioWorklet.addModule(WORKLET_URL)
       if (!active) return releaseCancelledStart()
