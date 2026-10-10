@@ -224,6 +224,22 @@ test('an action owner is kept only if the cited text names them or the cited seg
   assert.ok(items[1].caveats.includes('owner-unverified'))
 })
 
+test('a deadline is kept only when the cited words contain it', () => {
+  const lines = [seg(1, 'Priya will run the final testing by Thursday.'), seg(2, 'We should also look at the budget.')]
+  const { items } = groundNotes(
+    {
+      actionItems: [
+        { action: 'Run the final testing', owner: 'Priya', due: 'by Thursday', source: { segmentIds: ['seg_0001'] } },
+        { action: 'Run the final testing', owner: 'Priya', due: 'next Monday', source: { segmentIds: ['seg_0001'] } },
+        { action: 'Look at the budget', owner: null, due: null, source: { segmentIds: ['seg_0002'] } }
+      ]
+    },
+    lines
+  )
+  assert.deepEqual(items.map((item) => item.due), ['by Thursday', null, null])
+  assert.ok(items[1].caveats.includes('due-unverified'))
+})
+
 test('a summary is listed with the numbers and names that appear nowhere in the transcript', () => {
   const { summary } = groundNotes(
     { summary: 'The team agreed to move the launch to Friday. Priya will run testing. The budget is 40000 dollars and Marcus approved it.' },

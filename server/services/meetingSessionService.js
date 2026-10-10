@@ -403,7 +403,7 @@ export function createMeetingSessionService({
         canonical,
         now: nowIso()
       })
-      emit('TranscriptSegmentPersisted', { meetingId, segmentId: canonical.id, status: result.status })
+      emit('TranscriptSegmentPersisted', { meetingId, segmentId: canonical.id, status: result.status, segment: result.segment })
       return { status: result.status, inserted: result.status === 'INSERTED', segment: result.segment }
     },
 
