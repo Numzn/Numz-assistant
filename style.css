@@ -741,6 +741,156 @@ body[data-has-messages="true"] #thread {
   background: #ffffff;
 }
 
+/* ---- History screen (history.html) ---- */
+
+body[data-page="history"] #brand {
+  color: var(--text);
+  text-decoration: none;
+}
+
+body[data-page="history"] a.ghost {
+  text-decoration: none;
+}
+
+#historyMain {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 16px 40px;
+}
+
+#historyColumn {
+  max-width: var(--column);
+  margin: 0 auto;
+}
+
+#historyColumn h1 {
+  margin: 24px 0 6px;
+  font-size: clamp(24px, 4vw, 30px);
+  font-weight: 500;
+}
+
+#historyNote,
+#historyStatus {
+  margin: 0 0 16px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+#conversationList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conv {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px 4px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.conv-main {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.conv-main:hover {
+  background: var(--surface-hover);
+}
+
+.conv-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-meta {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.conv-delete {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.conv-delete:hover:not(:disabled),
+.conv-delete[data-armed="true"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+#historyActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.link-danger {
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.link-danger:hover {
+  color: var(--danger);
+}
+
+#deleteAllConfirm {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+}
+
+#deleteAllConfirm p {
+  margin: 0;
+}
+
+#deleteAllConfirm div {
+  display: flex;
+  gap: 10px;
+}
+
+.pill.danger {
+  border-color: transparent;
+  background: var(--danger);
+  color: var(--on-accent);
+}
+
+#historyLink {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+#historyLink:hover {
+  color: var(--text);
+}
+
 /* ---- Meeting panel: record and save a meeting ---- */
 
 #meetingPanel {

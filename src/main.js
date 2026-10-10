@@ -27,6 +27,7 @@ import { checkLiveSpeechSupport } from './interfaces/meeting/liveSupport.js'
 import { createChatController } from './interfaces/chat/chatController.js'
 import { createChatView } from './interfaces/chat/chatView.js'
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
+import { createHistoryApi } from './interfaces/history/historyApi.js'
 
 const canvas = document.querySelector('#canvas')
 if (!canvas) {
@@ -340,6 +341,34 @@ const chat = createChatController({
   interrupt: () => (voiceModeActive && voiceApi?.interrupt ? voiceApi.interrupt() : assistantController.interrupt())
 })
 chatView = createChatView({ chat, onVoiceMode: () => enterVoiceMode() })
+
+// ---- Saved conversations: reopen one from the history screen, and show its link only when history is on ----
+{
+  const historyApi = createHistoryApi()
+  const wanted = new URLSearchParams(globalThis.location?.search ?? '').get('conversation')
+  if (wanted) {
+    // Leave the address bar clean; a reload then starts fresh instead of reopening it again.
+    globalThis.history?.replaceState(null, '', globalThis.location.pathname)
+    historyApi
+      .get(wanted)
+      .then((conversation) => chat.open(conversation))
+      .catch((err) => {
+        console.warn('[history] could not open the conversation', err)
+        chatView?.notify(
+          err?.code === 'not-found' ? 'That conversation no longer exists.' : 'That conversation could not be opened. Check the connection and try again.'
+        )
+      })
+  }
+  const link = document.querySelector('#historyLink')
+  if (link) {
+    historyApi
+      .list({ limit: 1 })
+      .then((result) => {
+        link.hidden = !result?.enabled
+      })
+      .catch(() => {})
+  }
+}
 
 // ---- Voice mode: the orb, a status in words, and a way out ----
 const VOICE_ERRORS = {

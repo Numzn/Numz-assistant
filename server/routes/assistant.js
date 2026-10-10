@@ -113,6 +113,55 @@ async function handleChat(req, res, next) {
   }
 }
 
+// ---- Saved conversations ------------------------------------------------------------------------------
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function requireConversationId(req, res) {
+  const id = req.params.conversationId
+  if (!UUID.test(id)) {
+    res.status(400).json({ error: 'conversationId must be a UUID', requestId: req.id })
+    return null
+  }
+  return id
+}
+
+// When history is off, the list answers { enabled: false } so the app can hide its link without an error.
+assistantRouter.get('/conversations', (req, res) => {
+  const history = sessionService.getHistory()
+  if (!history) return res.json({ enabled: false, total: 0, conversations: [] })
+  res.json({ enabled: true, ...history.list({ limit: req.query.limit, offset: req.query.offset }) })
+})
+
+assistantRouter.get('/conversations/:conversationId', (req, res) => {
+  const id = requireConversationId(req, res)
+  if (!id) return
+  const history = sessionService.getHistory()
+  const conversation = history?.get(id) ?? null
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found', requestId: req.id })
+  res.json(conversation)
+})
+
+assistantRouter.delete('/conversations/:conversationId', (req, res) => {
+  const id = requireConversationId(req, res)
+  if (!id) return
+  const history = sessionService.getHistory()
+  if (!history) return res.status(404).json({ error: 'Conversation history is off', requestId: req.id })
+  const removed = history.remove(id)
+  sessionService.forget(id)
+  if (!removed) return res.status(404).json({ error: 'Conversation not found', requestId: req.id })
+  res.status(204).end()
+})
+
+// Deleting everything needs the explicit confirmation, so a stray request cannot do it.
+assistantRouter.delete('/conversations', (req, res) => {
+  const history = sessionService.getHistory()
+  if (!history) return res.status(404).json({ error: 'Conversation history is off', requestId: req.id })
+  if (req.query.confirm !== 'all') {
+    return res.status(400).json({ error: 'Deleting every conversation needs ?confirm=all', requestId: req.id })
+  }
+  res.json({ deleted: history.removeAll() })
+})
+
 assistantRouter.post('/chat', handleChat)
 assistantRouter.post('/sessions/:sessionId/chat', handleChat)
 

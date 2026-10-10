@@ -344,3 +344,48 @@ test('files are refused while a meeting blocks messages, and nothing is sent', a
   assert.deepEqual(await r.chat.send('hi', { attachments: [csv] }), { ok: false, reason: 'meeting' })
   assert.deepEqual(r.calls.submit, [])
 })
+
+// ---- opening a saved conversation ---------------------------------------------------------------------------
+
+test('opening a saved conversation replaces the thread, shows attached files as chips, and continues the same session', async () => {
+  const used = []
+  const eventBus = createEventBus()
+  const chat = createChatController({
+    assistantController: { submitText: async () => null, interrupt: async () => {} },
+    assistantClient: { useSession: (id) => used.push(id), createSession: async () => ({}) },
+    eventBus
+  })
+  await chat.open({
+    id: 'saved-1',
+    messages: [
+      { role: 'user', content: 'Summarise this\n\n[Attached file: prices.csv]\n```\nitem,price\nwidget,5\n```' },
+      { role: 'assistant', content: 'Widgets cost **5**.' },
+      { role: 'system', content: 'never shown' },
+      { role: 'user', content: 'Thanks' }
+    ]
+  })
+  assert.deepEqual(used, ['saved-1'], 'the next message goes to the saved session, so the assistant has its context')
+  const rows = chat.getState().messages
+  assert.deepEqual(rows.map((m) => `${m.role}:${m.text}`), ['user:Summarise this', 'assistant:Widgets cost **5**.', 'user:Thanks'])
+  assert.deepEqual(rows[0].attachments, [{ name: 'prices.csv', size: 'item,price\nwidget,5'.length }])
+  assert.ok(!JSON.stringify(rows).includes('widget,5'), 'file contents are not shown')
+  assert.ok(rows.every((m) => m.status === 'done'))
+})
+
+test('opening a conversation while a reply is in flight stops that reply first', async () => {
+  const r = rig({ hold: true })
+  const sending = r.chat.send('long one')
+  await tick()
+  await r.chat.open({ id: 'other', messages: [{ role: 'user', content: 'old question' }] })
+  await sending
+  assert.equal(r.calls.interrupt, 1)
+  assert.deepEqual(r.chat.getState().messages.map((m) => m.text), ['old question'])
+  assert.equal(r.chat.getState().busy, false)
+})
+
+test('a conversation with no messages opens as an empty thread', async () => {
+  const r = rig()
+  await r.chat.send('hello')
+  await r.chat.open({ id: 'empty', messages: [] })
+  assert.deepEqual(r.chat.getState().messages, [])
+})

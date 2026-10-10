@@ -10,7 +10,7 @@
  * to the assistant; a handled command never reaches the backend.
  */
 
-import { composeMessage } from './attachments.js'
+import { composeMessage, splitMessage } from './attachments.js'
 
 const OPEN = new Set(['thinking', 'streaming'])
 export const ERROR_TEXT = 'Something went wrong, so there is no reply. Try again.'
@@ -244,6 +244,26 @@ export function createChatController({
     return true
   }
 
+  /**
+   * Opens a saved conversation: its messages replace the thread (an attached file shows as a chip, not its
+   * contents) and the next message continues it, because the server restores the same session.
+   */
+  async function open(conversation) {
+    if (busy) await cancel()
+    assistantClient.useSession?.(conversation.id)
+    messages = (conversation.messages ?? [])
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+      .map((m) => {
+        if (m.role === 'assistant') return { id: newId(), role: 'assistant', status: 'done', text: m.content }
+        const { text, attachments } = splitMessage(m.content)
+        return { id: newId(), role: 'user', status: 'done', text, attachments }
+      })
+    busy = false
+    lastUserText = ''
+    lastDisplay = null
+    emit()
+  }
+
   return {
     getState: snapshot,
     subscribe(listener) {
@@ -254,6 +274,7 @@ export function createChatController({
     retry,
     cancel,
     newChat,
+    open,
     destroy() {
       for (const off of offs) off?.()
       listeners.clear()

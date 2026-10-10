@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#212121" />
+    <title>Conversations - NUMZ</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body data-page="history">
+    <div id="app">
+      <header id="appHeader">
+        <a id="brand" href="/">NUMZ</a>
+        <div id="headerActions">
+          <a class="ghost" href="/">Back to chat</a>
+        </div>
+      </header>
+
+      <main id="historyMain">
+        <div id="historyColumn">
+          <h1>Conversations</h1>
+          <p id="historyNote">Saved on this server so you can reopen them. Delete any of them here whenever you like.</p>
+          <p id="historyStatus" role="status" aria-live="polite">Loading…</p>
+          <ul id="conversationList" aria-label="Saved conversations"></ul>
+          <div id="historyActions">
+            <button id="loadMore" type="button" class="pill" hidden>Show more</button>
+            <button id="deleteAll" type="button" class="link-danger" hidden>Delete all conversations…</button>
+          </div>
+          <div id="deleteAllConfirm" role="alertdialog" aria-labelledby="deleteAllQuestion" hidden>
+            <p id="deleteAllQuestion"></p>
+            <div>
+              <button id="deleteAllYes" type="button" class="pill danger">Delete everything</button>
+              <button id="deleteAllNo" type="button" class="pill">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/src/history.js"></script>
+  </body>
+</html>

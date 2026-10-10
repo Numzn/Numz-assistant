@@ -18,6 +18,8 @@ import { createDatabase } from './persistence/sqliteDatabase.js'
 import { createMeetingRepository } from './persistence/meetingRepository.js'
 import { createSpeechSessionRepository } from './persistence/speechSessionRepository.js'
 import { createTranscriptRepository } from './persistence/transcriptRepository.js'
+import { createConversationRepository } from './persistence/conversationRepository.js'
+import { sessionService } from './sessions/sessionService.js'
 import { createMeetingSessionService } from './services/meetingSessionService.js'
 import { createMeetingAuth } from './auth/meetingAuth.js'
 import { logMeetingsConfig, meetingsHealth } from './meetings/meetingHealth.js'
@@ -36,6 +38,10 @@ const corsOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173')
 
 const aiConfig = logAiConfig()
 const speechDatabase = createDatabase()
+// Saved conversations live in the same database. ASSISTANT_HISTORY=off keeps conversations in memory only.
+const historyEnabled = !['off', '0', 'false', 'no'].includes(String(process.env.ASSISTANT_HISTORY ?? 'on').trim().toLowerCase())
+if (historyEnabled) sessionService.useStore(createConversationRepository(speechDatabase))
+console.log(`[history] assistant conversation history is ${historyEnabled ? 'ON (saved in the database)' : 'OFF (memory only)'}`)
 const meetingService = createMeetingSessionService({
   meetingRepository: createMeetingRepository(speechDatabase),
   speechSessionRepository: createSpeechSessionRepository(speechDatabase),

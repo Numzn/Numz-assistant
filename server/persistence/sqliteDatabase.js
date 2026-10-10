@@ -127,6 +127,34 @@ const MIGRATIONS = [
         END;
       `)
     }
+  },
+  {
+    version: 4,
+    name: 'assistant conversation history',
+    run(database) {
+      // A conversation is an assistant session that has had at least one message (empty sessions are never
+      // stored). conversation_id is the session id. Messages are ordered by seq; deleting a conversation
+      // deletes its messages. Plain tables: nothing here touches meetings or transcripts.
+      database.exec(`
+        CREATE TABLE assistant_conversations (
+          conversation_id TEXT PRIMARY KEY,
+          title TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE assistant_messages (
+          conversation_id TEXT NOT NULL REFERENCES assistant_conversations(conversation_id) ON DELETE CASCADE,
+          seq INTEGER NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+          content TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (conversation_id, seq)
+        );
+
+        CREATE INDEX idx_assistant_conversations_updated ON assistant_conversations(updated_at DESC);
+      `)
+    }
   }
 ]
 
