@@ -420,3 +420,41 @@ test('a chosen microphone is still requested exactly, with gain control as confi
     deviceId: { exact: 'mic-7' }
   })
 })
+
+// ---- a throttled timer: a hidden or covered browser window ticks the microphone loop about once a second ----------
+
+/** Runs the body with the loop's 50 ms timer firing every second, as Chrome does for a hidden tab. */
+async function withThrottledTicks(body) {
+  const mocked = globalThis.setInterval
+  globalThis.setInterval = (fn, ms, ...rest) => mocked(fn, ms === 50 ? 1000 : ms, ...rest)
+  try {
+    await body()
+  } finally {
+    globalThis.setInterval = mocked
+  }
+}
+
+test('throttled ticks: the assistant\'s own voice is still not an interruption (its loudness is learned from real samples)', async () => {
+  await withThrottledTicks(async () => {
+    const { input, seen } = rig()
+    await input.startContinuous()
+    assistantStartsSpeaking(input)
+    level = ECHO
+    await advance(9000)
+    assert.equal(seen.barges, 0)
+  })
+})
+
+test('throttled ticks: a person talking clearly over it is still heard as an interruption, once it has been measured', async () => {
+  await withThrottledTicks(async () => {
+    const { input, seen } = rig()
+    await input.startContinuous()
+    assistantStartsSpeaking(input)
+    level = ECHO
+    await advance(6000)
+    assert.equal(seen.barges, 0)
+    level = USER
+    await advance(4000)
+    assert.equal(seen.barges, 1)
+  })
+})
