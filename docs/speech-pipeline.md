@@ -358,11 +358,31 @@ overrides), runs at low priority, and must not be run while a meeting is being r
 as digits. The scorer is `audio/speech/scoring.py`, shared with the opt-in real-audio tests, so the numbers
 compare.
 
-**Baseline.** None exists yet for real meetings: clips and references have to be recorded first (see
-`audio/tests/fixtures/meetings/README.md`). The only run so far is the tool's own smoke test on the JFK clip,
-2026-10-10, on a busy host with the tool at niceness 10: 3 lines, WER 0.0, final decodes at 1.38 s per
-audio second with no fallback retries, lag up to 11.8 s behind the audio at `--pace 1`. That is a check that
-the tool works, not a baseline.
+**Baseline (2026-10-10).** One known-answer clip, scored two ways. The clip is LibriSpeech `dev-clean` speaker
+2277 (CC BY 4.0, one reader, *Sister Carrie*): the first 34 consecutive utterances of chapters 149896 and 149897,
+181.8 s, 528 words, joined with 0.8 s of digital silence. Its reference is LibriSpeech's own transcript.
+
+| | Clean WAV through the live path | The same clip played through speakers, room, microphone and browser |
+|---|---|---|
+| How | `speech:replay --pace 1`, idle host (load 1.75, 2.4 GB free, niceness 10) | production meeting, browser AGC on |
+| Raw WER | **0.025** (11 sub, 2 del, 0 ins) | **0.030** (12 sub, 2 del, 2 ins) |
+| Genuine errors* | 5 words (0.9%) | 8 words (1.5%) |
+| Lines | 34 (one per source utterance) | 18 |
+| Final decodes | 34, 0.44 s per audio s, longest 2.85 s | 51 decodes over 370 s of stream, 0.20 s per audio s, longest 4.1 s |
+| Lag behind the audio | max 4.0 s; a line is committed 2.2 s (median), 4.0 s (worst) after it ends | max 4.2 s |
+| Fallback retries | none (max temperature 0.0) | none |
+
+\* Raw WER minus differences that are spelling or number format, not recognition: the reference writes "to morrow",
+"to day", "materialised", "one thirty" and "rector's"; Whisper writes "tomorrow", "today", "materialized", "1.30"
+and "rectors". Both runs get the same rare words wrong (Drouet, Carrie, drearily).
+
+How to read it: **the speaker-to-microphone path cost 3 words out of 528 on this clip**, which is not
+distinguishable from run-to-run variation (a one-LSB change in the audio moved a punctuation mark in an earlier
+check). The mic run has fewer lines because the clip's 0.8 s gaps sit only 0.1 s above the 0.7 s endpointing
+threshold, and room noise and the browser's gain control eat part of a gap: that is a property of this fixture,
+not a defect. This is read speech by one person in a quiet recording, so it is a floor, not a prediction for
+meetings; and it cannot gate a *speed* change, because on clean audio the recognizer never retries. A baseline
+for real meetings still needs a recorded meeting and its reference transcript.
 
 **What it cannot tell you.** It measures this host, this model and the audio you give it. One clip is one
 voice in one room: take at least a few, in the conditions meetings really happen in. It does not measure the
