@@ -56,6 +56,7 @@ class LiveSpeechSession:
         diarizer: Optional[LiveDiarizer] = None,
         keep_audio_for_reprocessing: bool = False,
         forced_cut_window_s: float = FORCED_CUT_WINDOW_S,
+        meeting_id: Optional[str] = None,
     ):
         self.session_id = require_uuid(speech_session_id or new_speech_session_id())
         self.sample_rate = sample_rate
@@ -68,7 +69,7 @@ class LiveSpeechSession:
         self.speakers: set = set()
         self.keep_audio_for_reprocessing = keep_audio_for_reprocessing
 
-        self._diagnostics = SessionDiagnostics(self.session_id, sample_rate=sample_rate)
+        self._diagnostics = SessionDiagnostics(self.session_id, sample_rate=sample_rate, meeting_id=meeting_id)
         self._streaming_asr = streaming_asr or LocalAgreementStreamingAsr(
             sample_rate=sample_rate, language=language, decode_observer=self._diagnostics.on_decode
         )
@@ -215,6 +216,11 @@ class LiveSpeechSession:
             "partial": _event_to_dict(self.partial_transcript) if self.partial_transcript else None,
             "finalizedSegmentCount": len(self.finalized_segments),
         }
+
+    def diagnostics_summary(self) -> dict:
+        """The per-session numbers (levels, gate, decodes, lag, confidence counts), the same ones logged as
+        `live-speech-diag`. Numbers and ids only: no audio and no transcript text."""
+        return self._diagnostics.summary(final=self.state == SessionState.ENDED)
 
     def end(self):
         """Flush anything buffered and stop accepting audio. Newly committed segments are drainable afterwards."""

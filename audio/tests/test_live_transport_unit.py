@@ -179,5 +179,100 @@ class PersistenceReportingTests(unittest.TestCase):
         self.assertEqual(scripted.ended, [("stopped", 4)], "the API is told how many segments were committed")
 
 
+class DiagnosticsFailToBuild(LiveSpeechSession):
+    def diagnostics_summary(self):
+        raise RuntimeError("diagnostics broke")
+
+
+class DiagnosticsNotSerialisable(LiveSpeechSession):
+    def diagnostics_summary(self):
+        return {"session": self.session_id, "oops": object()}
+
+
+class StoppedFrameDiagnosticsTests(unittest.TestCase):
+    """The stopped frame carries the session's numbers, so a meeting's behaviour can be read from the meeting
+    itself instead of from a log file. It must never carry text, and it must never cost the client `stopped`."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved = (live_speech_ws.SESSION_FACTORY, live_speech_ws.MEETING_API_URL, live_speech_ws.MeetingPersistence)
+
+    def tearDown(self):
+        live_speech_ws.SESSION_FACTORY, live_speech_ws.MEETING_API_URL, live_speech_ws.MeetingPersistence = self._saved
+        self._dir.cleanup()
+
+    def run_session(self, session_cls, control=None):
+        live_speech_ws.SESSION_FACTORY = factory(session_cls)
+        socket = FakeSocket()
+        connection = live_speech_ws.LiveConnection(socket, Outbox(self._dir.name))
+        connection.start({"sampleRate": 16000, "channels": 1, "format": "f32le", **(control or {})})
+        speak(connection)
+        connection.finish("stopped")
+        return socket, socket.of_type("stopped")[0]
+
+    def test_the_stopped_frame_carries_the_session_numbers(self):
+        socket, stopped = self.run_session(LiveSpeechSession)
+        diagnostics = stopped["diagnostics"]
+        self.assertEqual(diagnostics["session"], socket.of_type("ready")[0]["sessionId"])
+        self.assertTrue(diagnostics["final"], "the summary is the end-of-session one")
+        self.assertEqual(diagnostics["frames"]["received"], 18, "10 speech frames and 8 of silence were ingested")
+        self.assertIn("levelDbfs", diagnostics)
+        self.assertIn("decodes", diagnostics)
+        self.assertNotIn("meeting", diagnostics, "a standalone session has no meeting to name")
+
+    def test_the_frame_holds_numbers_and_ids_only_never_transcript_text(self):
+        socket, stopped = self.run_session(LiveSpeechSession)
+        committed_text = socket.of_type("transcript", state="FINAL")[0]["segment"]["text"]
+        self.assertTrue(committed_text)
+        self.assertNotIn(committed_text, json.dumps(stopped["diagnostics"]))
+
+        def leaves(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    yield from leaves(item)
+            else:
+                yield value
+
+        strings = [leaf for leaf in leaves(stopped["diagnostics"]) if isinstance(leaf, str)]
+        self.assertEqual(strings, [stopped["diagnostics"]["session"]], "the only string in it is the session id")
+
+    def test_a_meeting_bound_session_names_its_meeting(self):
+        class FakePersistence:
+            def __init__(self, base_url, meeting_id, ticket, outbox):
+                self.meeting_id = meeting_id
+
+            def open_session(self):
+                return {"speechSessionId": "11111111-1111-4111-8111-111111111111", "timelineOffsetMs": 0}
+
+            def flush(self):
+                return {}
+
+            def persist(self, speech_session_id, segment):
+                return PersistOutcome(INSERTED, segment["id"], None)
+
+            def end_session(self, speech_session_id, reason, committed_segments=None):
+                return {"ok": True}
+
+        live_speech_ws.MEETING_API_URL = "http://127.0.0.1:1"
+        live_speech_ws.MeetingPersistence = FakePersistence
+        _, stopped = self.run_session(LiveSpeechSession, {"meetingId": MEETING, "meetingTicket": "ticket"})
+        self.assertEqual(stopped["diagnostics"]["meeting"], MEETING)
+        self.assertEqual(stopped["persistence"]["meetingBound"], True)
+
+    def test_diagnostics_that_fail_to_build_still_deliver_stopped(self):
+        with self.assertLogs("live_speech_ws", level="ERROR"):
+            _, stopped = self.run_session(DiagnosticsFailToBuild)
+        self.assertIsNone(stopped["diagnostics"])
+        self.assertEqual(stopped["persistence"]["committed"], 1, "the persistence summary still arrives")
+
+    def test_diagnostics_that_cannot_be_serialised_do_not_swallow_the_frame(self):
+        # _send() ignores a send failure by design (the durable state is in the outbox), so an unserialisable
+        # value inside the frame would otherwise make the client wait for a 'stopped' that never comes.
+        with self.assertLogs("live_speech_ws", level="ERROR"):
+            socket, stopped = self.run_session(DiagnosticsNotSerialisable)
+        self.assertIsNone(stopped["diagnostics"])
+        self.assertEqual(len(socket.of_type("stopped")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

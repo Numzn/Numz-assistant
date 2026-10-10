@@ -26,7 +26,8 @@ Wire protocol:
     {"type": "error", "code", "message", ["segmentId"]}
     {"type": "stopped", "transcript": {...} | null, "error": null | "transcript-invalid",
                         "persistence": {"meetingBound", "durable", "committed", "inserted", "alreadyExists",
-                                        "rejected", "failed"}}
+                                        "rejected", "failed"},
+                        "diagnostics": {...} | null}   (numbers and ids only: see speech/live/diagnostics.py)
 
 Persistence rules (see docs/meeting-lifecycle.md):
   - Every committed final segment is written to the durable outbox before delivery.
@@ -212,6 +213,7 @@ class LiveConnection:
             speech_session_id=self.speech_session_id,
             language=str(control.get("language") or ""),
             keep_audio_for_reprocessing=keep_audio,
+            meeting_id=self.meeting_id or None,
         )
         self.session.on_transcript_event(self._on_event)
         self.stream_position_s = 0.0
@@ -300,6 +302,19 @@ class LiveConnection:
                 segmentId=seg["id"],
             )
 
+    def _session_diagnostics(self):
+        """The session's numbers for the stopped frame, or None. Never raises: a failure here must not cost
+        the client its 'stopped' (and with it the persistence summary)."""
+        summarize = getattr(self.session, "diagnostics_summary", None)
+        if not callable(summarize):
+            return None
+        try:
+            # Round-tripped through JSON so that nothing unserialisable can make the whole frame fail to send.
+            return json.loads(json.dumps(summarize()))
+        except Exception:
+            logger.exception("live-speech: could not build the session diagnostics")
+            return None
+
     def _summary(self) -> dict:
         """What happened to this connection's segments. `failed` is the retry backlog for the meeting:
         segments not stored yet (including earlier sessions' leftovers and any held only in memory)."""
@@ -362,6 +377,7 @@ class LiveConnection:
                 "transcript": transcript,
                 "persistence": self._summary(),
                 "error": transcript_error,
+                "diagnostics": self._session_diagnostics(),
             }
         )
         self.session = None

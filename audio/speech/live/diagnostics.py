@@ -81,8 +81,11 @@ class SessionDiagnostics:
         clock: Callable[[], float] = time.monotonic,
         log_every_s: float = 60.0,
         log: Optional[logging.Logger] = None,
+        meeting_id: Optional[str] = None,
     ):
         self.session_id = session_id
+        # Only so a log line or a stopped frame can be matched to its meeting; nothing here reads or sends it.
+        self.meeting_id = meeting_id
         self.sample_rate = sample_rate
         self._clock = clock
         self._log_every_s = log_every_s
@@ -252,6 +255,7 @@ class SessionDiagnostics:
         received = self.frames_received
         return {
             "session": self.session_id,
+            **({"meeting": self.meeting_id} if self.meeting_id else {}),
             "final": final,
             "streamS": r(self.stream_s),
             "frames": {
