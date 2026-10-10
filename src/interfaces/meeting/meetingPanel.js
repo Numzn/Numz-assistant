@@ -4,10 +4,31 @@
  * Transcript text is only ever set with textContent, never as HTML.
  */
 
-const CODE_KEY = 'numz.meeting.launch-code'
+// Earlier versions kept the launch code in sessionStorage. The server's launch session replaces that, and the
+// code is no longer kept anywhere in the page: this only clears what an older version left behind.
+const OLD_CODE_KEY = 'numz.meeting.launch-code'
 const MAX_RENDERED_LINES = 500
 const NOT_CONFIGURED =
   'Meetings cannot be started from here yet: the server has no launch code set (MEETING_LAUNCH_CODE), or it cannot be reached.'
+
+const SOURCE_STATES = {
+  active: 'sound heard',
+  quiet: 'quiet',
+  'no-signal': 'no sound yet',
+  ended: 'ended',
+  unavailable: 'NOT recorded'
+}
+
+const SOURCE_HINTS = {
+  microphone: '',
+  tab:
+    'Your browser will ask which tab or screen to share. Tick "Share audio": a page cannot capture sound without ' +
+    'your choice. Whole-system audio is only offered by some browsers (Chrome or Edge on Windows); elsewhere share a ' +
+    "browser tab. This needs a click, so a voice command always uses the microphone.",
+  both:
+    'Your browser will ask which tab or screen to share; tick "Share audio". The microphone and the shared sound are ' +
+    'mixed into one recording. With speakers, use headphones, or the same voices are recorded twice.'
+}
 
 const LINE_LABELS = {
   saved: ['✓ saved', 'The server stored this line'],
@@ -33,6 +54,7 @@ function chipFor(state) {
       return ['Unfinished', 'warn']
     case 'done':
       if (state.result?.recordings === 0) return ['Ended, nothing recorded', 'info']
+      if (state.result?.verified && state.result?.storedSegments === 0) return ['Ended, no speech', 'warn']
       return state.result?.verified ? ['Saved and verified', 'ok'] : ['Ended, not verified', 'warn']
     default:
       return ['Not started', 'info']
@@ -44,11 +66,11 @@ function lineKind(persisted) {
   return persisted === 'FAILED' ? 'waiting' : 'notSaved'
 }
 
-function sessionStore() {
+function forgetOldRememberedCode() {
   try {
-    return globalThis.sessionStorage ?? null
+    globalThis.sessionStorage?.removeItem(OLD_CODE_KEY)
   } catch {
-    return null
+    /* nothing to clear */
   }
 }
 
@@ -65,7 +87,11 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   const chip = $('meetingChip')
   const form = $('meetingForm')
   const codeInput = $('meetingCode')
+  const codeLabel = form.querySelector('label[for="meetingCode"]')
   const titleInput = $('meetingTitleInput')
+  const sourceSelect = $('meetingSource')
+  const sourceHint = $('meetingSourceHint')
+  const sourcesList = $('meetingSources')
   const startButton = $('meetingStart')
   const live = $('meetingLive')
   const partial = $('meetingPartial')
@@ -79,21 +105,15 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   let launchAvailable = null // null until the server has been asked
   let renderedLastKey = null
   let actionsSignature = ''
+  let sourcesSignature = ''
   let previousPhase = 'idle'
   let lastActive = false
 
-  const remembered = sessionStore()?.getItem(CODE_KEY) ?? ''
-  if (remembered) codeInput.value = remembered
-
-  function rememberCode(code) {
-    try {
-      sessionStore()?.setItem(CODE_KEY, code)
-    } catch {
-      /* the code just has to be typed again next time */
-    }
-  }
+  forgetOldRememberedCode()
 
   async function refreshLaunchAvailability() {
+    // Whether this browser is already unlocked is asked every time the panel opens: the cookie can lapse.
+    controller.refreshLaunchSession?.().catch(() => {})
     if (launchAvailable === true) return
     launchAvailable = await api.launchAvailable()
     render(controller.getState())
@@ -103,7 +123,8 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     panel.hidden = false
     button.setAttribute('aria-expanded', 'true')
     refreshLaunchAvailability()
-    const target = form.hidden ? panel : codeInput.value ? titleInput : codeInput
+    const unlocked = controller.getState().launchReady === true
+    const target = form.hidden ? panel : unlocked || codeInput.value ? titleInput : codeInput
     target.focus({ preventScroll: true })
   }
 
@@ -120,6 +141,9 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     else if (state.canEnd && state.canReconnect) items.push({ id: 'end', label: 'End meeting', run: () => controller.finish() })
     else if (state.canEnd) items.push({ id: 'retry', label: 'Try again', primary: true, run: () => controller.finish() })
     if (state.canDiscard) items.push({ id: 'discard', label: 'Forget this meeting', run: () => controller.discard() })
+    if (state.phase === 'idle' && state.launchReady) {
+      items.push({ id: 'lock', label: 'Lock this browser', run: () => controller.lock() })
+    }
     if (state.phase === 'done') items.push({ id: 'new', label: 'New meeting', primary: true, run: () => controller.reset() })
     return items
   }
@@ -139,6 +163,27 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
         return element
       })
     )
+  }
+
+  function renderSources(state) {
+    const signature = JSON.stringify(state.sources.map((s) => [s.id, s.state]))
+    if (signature === sourcesSignature) return
+    sourcesSignature = signature
+    sourcesList.replaceChildren(
+      ...state.sources.map((entry) => {
+        const item = doc.createElement('li')
+        item.dataset.state = entry.state
+        item.textContent = `${entry.label}: ${SOURCE_STATES[entry.state] ?? entry.state}`
+        if (entry.detail) item.title = entry.detail
+        return item
+      })
+    )
+  }
+
+  function renderSourceHint() {
+    const text = SOURCE_HINTS[sourceSelect.value] ?? ''
+    sourceHint.textContent = text
+    sourceHint.hidden = !text
   }
 
   function lineElement(line) {
@@ -186,23 +231,29 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     const showForm = state.phase === 'idle' || state.phase === 'launching'
     form.hidden = !showForm
     live.hidden = showForm || state.phase === 'unfinished'
+    // Unlocked: the server already accepted the code on this browser, so there is nothing to type.
+    codeInput.hidden = state.launchReady === true
+    if (codeLabel) codeLabel.hidden = state.launchReady === true
     codeInput.disabled = state.phase === 'launching'
     titleInput.disabled = state.phase === 'launching'
+    sourceSelect.disabled = state.phase === 'launching'
     startButton.disabled = state.phase === 'launching' || launchAvailable === false
 
     stopButton.hidden = !(state.phase === 'connecting' || state.phase === 'live')
     stopButton.disabled = state.phase !== 'live' && state.phase !== 'connecting'
     partial.textContent = state.partial
-    counts.textContent = state.lines.length
+    counts.textContent = state.lines.length || state.droppedSeconds
       ? [
           `${state.counts.saved} saved`,
           state.counts.waiting ? `${state.counts.waiting} waiting` : null,
-          state.counts.notSaved ? `${state.counts.notSaved} not saved` : null
+          state.counts.notSaved ? `${state.counts.notSaved} not saved` : null,
+          state.droppedSeconds ? `about ${state.droppedSeconds} s of audio dropped` : null
         ]
           .filter(Boolean)
           .join(' · ')
       : ''
     renderLines(state.lines)
+    renderSources(state)
 
     const notConfigured = state.phase === 'idle' && !state.message && launchAvailable === false
     message.textContent = notConfigured ? NOT_CONFIGURED : state.message
@@ -233,10 +284,10 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   stopButton.addEventListener('click', () => controller.stop())
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
-    const code = codeInput.value
-    await controller.start({ code, title: titleInput.value })
+    await controller.start({ code: codeInput.value, title: titleInput.value, capture: sourceSelect.value })
     if (controller.getState().open) {
-      rememberCode(code.trim())
+      // The server holds the launch session now; the code is not kept in the page.
+      codeInput.value = ''
       titleInput.value = ''
     }
   })
@@ -250,6 +301,8 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     }
   })
 
+  sourceSelect.addEventListener('change', renderSourceHint)
+  renderSourceHint()
   controller.subscribe(render)
   render(controller.getState())
 

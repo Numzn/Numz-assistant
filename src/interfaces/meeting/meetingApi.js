@@ -1,6 +1,8 @@
 /**
- * The browser's view of the meeting API. It can do exactly two things, and holds only two credentials:
- *   launch  - start a NEW meeting, with the launch code (X-Meeting-Launch-Code)
+ * The browser's view of the meeting API. It can start a meeting, finish its own, and ask about its launch session:
+ *   launch  - start a NEW meeting, with the launch code (X-Meeting-Launch-Code) typed by a person, OR with the
+ *             launch session cookie the server set after such a code was accepted. The cookie is HttpOnly: this
+ *             code never reads it, it only goes with the request.
  *   end     - finish ITS OWN meeting, with the meeting ticket it was handed (Bearer)
  * It never has, and the server never accepts from it, the admin token.
  */
@@ -58,11 +60,43 @@ export function createMeetingApi({ fetchFn = (...args) => globalThis.fetch(...ar
       }
     },
 
-    /** -> { meetingId, status, ticket: { token, expiresAt }, ... } */
-    launch({ code, title }) {
+    /**
+     * Whether this browser may start a meeting without typing the code (the server set its launch session cookie
+     * after a correct code). The server decides; the cookie is invisible to scripts. Never throws.
+     * -> { available, authenticated }
+     */
+    async launchSession() {
+      try {
+        const body = await request(`${MEETINGS}/launch/session`, { method: 'GET', credentials: 'same-origin' })
+        return { available: body?.available === true, authenticated: body?.authenticated === true }
+      } catch {
+        return { available: false, authenticated: false }
+      }
+    },
+
+    /** Drop this browser's launch session. -> whether the server confirmed it. Never throws. */
+    async forgetLaunchSession() {
+      try {
+        await request(`${MEETINGS}/launch/session`, { method: 'DELETE', credentials: 'same-origin' })
+        return true
+      } catch {
+        return false
+      }
+    },
+
+    /**
+     * code: the launch code, or empty to rely on the launch session cookie.
+     * idempotencyKey: the same key on a repeated attempt returns the SAME meeting instead of a second one.
+     * -> { meetingId, status, ticket: { token, expiresAt }, reused?, ... }
+     */
+    launch({ code = '', title, idempotencyKey = '' }) {
+      const headers = { 'Content-Type': 'application/json' }
+      if (code) headers['X-Meeting-Launch-Code'] = code
+      if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
       return request(`${MEETINGS}/launch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Meeting-Launch-Code': code },
+        headers,
+        credentials: 'same-origin',
         body: JSON.stringify(title ? { title } : {})
       })
     },

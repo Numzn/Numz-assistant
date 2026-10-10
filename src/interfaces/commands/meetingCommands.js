@@ -4,8 +4,10 @@
  * Deliberately small and strict:
  *  - A command is the WHOLE message (after politeness words). "How do I start a meeting with a customer?" is
  *    a question for the assistant, not a command, and goes there.
- *  - Starting a meeting only opens the meeting panel. The launch code must be typed by a person there; nothing
- *    here holds, guesses or sends it, and the meeting ticket stays inside the meeting controller.
+ *  - Starting a meeting opens the meeting panel. If this browser has already been unlocked (a person typed the
+ *    launch code once and the server set its launch session), the meeting is started straight away; otherwise
+ *    the code must be typed by a person there. Nothing here holds, guesses or sends a code, and the meeting
+ *    ticket stays inside the meeting controller.
  *  - Stopping asks for confirmation first (a stray phrase must not end a recording).
  *  - What is said about the outcome comes from the meeting controller's own state. Nothing here ever says a
  *    meeting or transcript was saved or verified; it repeats what the backend confirmed, or says it is not
@@ -65,8 +67,8 @@ export function parseCommand(text) {
 }
 
 /**
- * meeting: { getState(), stop() }   the meeting controller
- * openPanel({ title? })              opens the meeting panel (and may fill the title)
+ * meeting: { getState(), start({ title }), stop() }   the meeting controller (getState().launchReady: unlocked)
+ * openPanel({ title? })                                opens the meeting panel (and may fill the title)
  */
 export function createCommandRouter({ meeting, openPanel, now = () => Date.now(), confirmTtlMs = 60_000 } = {}) {
   let confirmUntil = 0
@@ -95,6 +97,26 @@ export function createCommandRouter({ meeting, openPanel, now = () => Date.now()
     return outcome()
   }
 
+  /** Starts the meeting with the launch session and says only what the controller's state confirms. */
+  async function startNow(title) {
+    openPanel({ title }) // so the status, the lines and any problem are in front of the user
+    try {
+      await meeting.start({ title })
+    } catch {
+      return reply('The meeting could not be started. Check the meeting panel.', 'error')
+    }
+    const current = state()
+    if (current.phase === 'live') {
+      return reply('The speech service confirmed the recording. The meeting panel shows each line and whether it was saved.', 'ok')
+    }
+    if (current.phase === 'launching' || current.phase === 'connecting') {
+      return reply('Starting the meeting. The meeting panel shows when the speech service has confirmed it.', 'info')
+    }
+    if (current.phase === 'problem' || current.phase === 'unfinished') return reply(current.message, 'error')
+    if (current.phase === 'idle' && current.message) return reply(current.message, current.tone === 'warn' ? 'warn' : 'error')
+    return reply('The meeting is not confirmed as started. Check the meeting panel.', 'warn')
+  }
+
   return {
     /** Resolves to { reply, tone } when the text was a meeting command, or null (send it to the assistant). */
     async handle(text) {
@@ -112,6 +134,12 @@ export function createCommandRouter({ meeting, openPanel, now = () => Date.now()
 
       if (command.type === 'start') {
         if (recording()) return reply('A meeting is already recording. Type "stop meeting" to end it.', 'info')
+        if (state().phase === 'launching') {
+          return reply('The meeting is already starting. The meeting panel shows how it goes.', 'info')
+        }
+        if (state().launchReady === true && !isOpen() && typeof meeting.start === 'function') {
+          return startNow(command.title)
+        }
         openPanel({ title: command.title })
         if (isOpen()) {
           return reply('There is a meeting that was not finished. I opened the meeting panel so you can finish it.', 'warn')

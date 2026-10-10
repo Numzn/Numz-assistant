@@ -26,15 +26,32 @@ const completed = (stored, { verified = true, unverified = 0 } = {}) => ({
 const conflict = (code, details = null) => new MeetingApiError(code, { status: 409, code, details })
 const seg = (n, text = `line ${n}`) => ({ id: `seg_${n}`, start: n, end: n + 1, text })
 
-function fakeApi({ launch = launched(), end = [completed(0)] } = {}) {
-  const calls = { launch: [], end: [] }
+function fakeApi({ launch = launched(), end = [completed(0)], session = false } = {}) {
+  const calls = { launch: [], end: [], session: 0, forget: 0 }
   const queue = [...end]
+  const launches = Array.isArray(launch) ? [...launch] : null
+  const server = { authenticated: session }
   return {
     calls,
+    server,
+    async launchSession() {
+      calls.session += 1
+      return { available: true, authenticated: server.authenticated }
+    },
+    async forgetLaunchSession() {
+      calls.forget += 1
+      server.authenticated = false
+      return true
+    },
     async launch(args) {
       calls.launch.push(args)
-      if (launch instanceof Error) throw launch
-      return launch
+      const outcome = launches ? (launches.length > 1 ? launches.shift() : launches[0]) : launch
+      if (outcome instanceof Error) {
+        if (outcome.status === 401) server.authenticated = false
+        throw outcome
+      }
+      if (args.code) server.authenticated = true // the server starts the launch session after a correct code
+      return outcome
     },
     async end(args) {
       calls.end.push(args)
@@ -69,7 +86,11 @@ function fakeClients({ startError } = {}) {
       setOnFinalSegment: (fn) => (handlers.final = fn),
       setOnError: (fn) => (handlers.error = fn),
       setOnStopped: (fn) => (handlers.stopped = fn),
+      setOnSources: (fn) => (handlers.sources = fn),
+      setOnDropped: (fn) => (handlers.dropped = fn),
       emit: {
+        sources: (list) => handlers.sources(list),
+        dropped: (info) => handlers.dropped(info),
         ready: (persistence = 'meeting') => handlers.ready({ sessionId: 's-1', persistence }),
         partial: (text) => handlers.partial(text),
         stabilizing: (text) => handlers.stabilizing(text),
@@ -86,11 +107,13 @@ function fakeClients({ startError } = {}) {
 
 function build({ api = fakeApi(), clients = fakeClients(), storage = createMemoryMeetingStorage(), checkSupport } = {}) {
   const sleeps = []
+  let keys = 0
   const controller = createMeetingController({
     api,
     createLiveClient: clients,
     storage,
     checkSupport,
+    newLaunchKey: () => `attempt-${String(++keys).padStart(16, '0')}`,
     sleep: async (ms) => sleeps.push(ms),
     retryDelaysMs: [10, 20, 30],
     now: () => NOW
@@ -135,7 +158,11 @@ test('the happy path: launch, connect with the ticket, show saved lines, stop, e
   const { controller, api, clients, storage, phases } = build({ api: fakeApi({ end: [completed(2)] }) })
 
   await controller.start({ code: ' the-code ', title: '  Weekly sync ' })
-  assert.deepEqual(api.calls.launch, [{ code: 'the-code', title: 'Weekly sync' }], 'code and title are trimmed')
+  assert.deepEqual(
+    api.calls.launch,
+    [{ code: 'the-code', title: 'Weekly sync', idempotencyKey: 'attempt-0000000000000001' }],
+    'code and title are trimmed'
+  )
   assert.equal(controller.getState().phase, 'connecting')
   assert.equal(controller.getState().open, true)
 
@@ -458,6 +485,22 @@ test('a meeting that never recorded anything says so instead of claiming it is v
   assert.equal(state.result.recordings, 0)
 })
 
+test('a recording that produced no lines is not reported as a success (found in the first real run)', async () => {
+  // Its only source never carried any sound. The server's integrity report is "verified" (0 of 0), which is true
+  // and useless: the person must be told that nothing was heard.
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(0)] }) })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  clients.made[0].emit.sources([{ id: 'microphone', label: 'Microphone', state: 'no-signal', detail: '' }])
+  await controller.stop()
+  const state = controller.getState()
+  assert.equal(state.phase, 'done')
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /No speech was transcribed/)
+  assert.doesNotMatch(state.message, /Saved 0 lines|complete and verified/)
+  assert.deepEqual(state.result, { verified: true, storedSegments: 0, unverifiedSessions: 0, recordings: 1 })
+})
+
 test('after a finished meeting the form comes back with reset', async () => {
   const { controller, clients } = build()
   await controller.start({ code: 'code' })
@@ -490,4 +533,380 @@ test('storage that throws never breaks the meeting', () => {
   assert.equal(garbage.read(), null)
   const wrongShape = createMeetingStorage({ getItem: () => JSON.stringify({ meetingId: 5 }), setItem() {}, removeItem() {} })
   assert.equal(wrongShape.read(), null)
+})
+
+// ---- Error frames from the speech service: which ones end the recording --------------------------------------
+
+/** What liveSpeechClient hands over for a server `error` frame: an Error that carries the frame's code. */
+const frame = (code, message = 'something happened') => Object.assign(new Error(`[${code}] ${message}`), { code })
+
+test('a line that could not be saved yet does not end the recording: the service keeps it and retries', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'the-code', title: '' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.final(seg(1, 'first'), 'INSERTED')
+  live.emit.error(frame('persistence-failure', 'Segment seg_2 is not saved yet (http-503); it is queued and will be retried'))
+  live.emit.final(seg(2, 'second'), 'FAILED')
+  live.emit.final(seg(3, 'third'), 'INSERTED')
+
+  const state = controller.getState()
+  assert.equal(state.phase, 'live', 'still recording')
+  assert.equal(live.stopCalls, 0, 'the microphone was not released')
+  assert.deepEqual(state.lines.map((line) => line.text), ['first', 'second', 'third'], 'and later lines keep arriving')
+  assert.deepEqual(state.counts, { saved: 2, waiting: 1, notSaved: 0 })
+  assert.equal(state.tone, 'warn', 'but the person is told something needs watching')
+  assert.match(state.message, /recording (continues|carries on)/i)
+})
+
+test('every per-line or per-decode problem is survivable: none of them stops the microphone', async () => {
+  for (const code of ['segment-rejected', 'persistence-failure', 'asr-failure', 'outbox-unavailable', 'finalize-failure', 'transcript-invalid', 'malformed-audio']) {
+    const { controller, clients } = build()
+    await controller.start({ code: 'the-code', title: '' })
+    const live = clients.made[0]
+    live.emit.ready()
+    live.emit.error(frame(code))
+    assert.equal(controller.getState().phase, 'live', `${code} must not end the recording`)
+    assert.equal(live.stopCalls, 0, `${code} must not release the microphone`)
+  }
+})
+
+test('a problem that makes saving impossible still stops the recording and offers to reconnect', async () => {
+  for (const code of ['unsupported-format', 'persistence-unconfigured', 'persistence-unauthorized', 'persistence-rejected', 'persistence-unavailable', 'invalid-meeting-id']) {
+    const { controller, clients } = build()
+    await controller.start({ code: 'the-code', title: '' })
+    const live = clients.made[0]
+    live.emit.error(frame(code))
+    const state = controller.getState()
+    assert.equal(state.phase, 'problem', `${code} is fatal`)
+    assert.equal(state.canReconnect, true)
+    assert.equal(live.stopCalls, 1, `${code} releases the microphone`)
+  }
+})
+
+test('an error with no code (the connection dropped, the microphone failed) is treated as fatal, as before', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'the-code', title: '' })
+  clients.made[0].emit.error(new Error('Live speech connection closed unexpectedly'))
+  assert.equal(controller.getState().phase, 'problem')
+})
+
+test('an unrecognised code is fatal: unknown problems are never assumed harmless', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'the-code', title: '' })
+  clients.made[0].emit.error(frame('something-new'))
+  assert.equal(controller.getState().phase, 'problem')
+})
+
+test('lines that were refused are counted as not saved and the meeting is not reported verified', async () => {
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(1, { verified: false, unverified: 1 })] }) })
+  await controller.start({ code: 'the-code', title: '' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.final(seg(1, 'saved'), 'INSERTED')
+  live.emit.error(frame('segment-rejected', 'The meeting API rejected segment seg_2: segment-id-conflict'))
+  live.emit.final(seg(2, 'refused'), 'REJECTED')
+  await controller.stop()
+  const done = controller.getState()
+  assert.deepEqual(done.counts, { saved: 1, waiting: 0, notSaved: 1 })
+  assert.equal(done.result.verified, false)
+  assert.equal(done.tone, 'warn')
+})
+
+// ---- launch session: starting without typing the code again -------------------------------------------------
+
+test('with a launch session the meeting starts without a code, and no code is ever sent', async () => {
+  const { controller, api, clients } = build({ api: fakeApi({ session: true }) })
+  await controller.refreshLaunchSession()
+  assert.equal(controller.getState().launchReady, true)
+  await controller.start({ title: 'Weekly' })
+  assert.deepEqual(api.calls.launch, [{ code: '', title: 'Weekly', idempotencyKey: 'attempt-0000000000000001' }])
+  assert.equal(controller.getState().phase, 'connecting')
+  assert.equal(clients.made.length, 1)
+})
+
+test('with no launch session an empty code is still caught, and the server is asked once', async () => {
+  const { controller, api } = build({ api: fakeApi({ session: false }) })
+  await controller.start({ title: 'x' })
+  assert.equal(api.calls.launch.length, 0)
+  assert.match(controller.getState().message, /Enter the launch code/)
+  assert.equal(controller.getState().launchReady, false)
+  assert.equal(api.calls.session, 1, 'it checked, in case the page was stale')
+})
+
+test('a stale page still starts: start asks the server whether a launch session exists before refusing', async () => {
+  const api = fakeApi({ session: false })
+  const { controller } = build({ api })
+  api.server.authenticated = true // unlocked in another tab since this page loaded
+  await controller.start({})
+  assert.equal(api.calls.launch.length, 1)
+  assert.equal(api.calls.launch[0].code, '')
+})
+
+test('launchReady survives finishing a meeting and starting the form again', async () => {
+  const api = fakeApi({ session: true, end: [completed(1)] })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  controller.getState().phase === 'connecting' && (await controller.stop())
+  assert.equal(controller.getState().phase, 'done')
+  assert.equal(controller.getState().launchReady, true)
+  controller.reset()
+  assert.equal(controller.getState().phase, 'idle')
+  assert.equal(controller.getState().launchReady, true)
+})
+
+test('a correct code typed once unlocks this browser, as the server reports it', async () => {
+  const api = fakeApi({ session: false })
+  const { controller } = build({ api })
+  assert.equal(controller.getState().launchReady, false)
+  await controller.start({ code: 'the-code' })
+  assert.equal(controller.getState().launchReady, true, 'taken from the server, not assumed')
+})
+
+test('when the launch session has lapsed the refusal says so and the code field comes back', async () => {
+  const api = fakeApi({
+    session: true,
+    launch: new MeetingApiError('no', { status: 401, code: 'launch-code-required' })
+  })
+  const { controller, clients } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  const state = controller.getState()
+  assert.equal(state.phase, 'idle')
+  assert.equal(state.launchReady, false)
+  assert.equal(state.open, false)
+  assert.match(state.message, /launch session has ended.*launch code/i)
+  assert.equal(clients.made.length, 0)
+})
+
+test('locking forgets the launch session on the server and on the page', async () => {
+  const api = fakeApi({ session: true })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.lock()
+  assert.equal(api.calls.forget, 1)
+  assert.equal(controller.getState().launchReady, false)
+})
+
+test('locking is refused while a meeting is open', async () => {
+  const api = fakeApi({ session: true })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  await controller.lock()
+  assert.equal(api.calls.forget, 0)
+  assert.equal(controller.getState().launchReady, true)
+})
+
+test('a failed lock is reported, not assumed', async () => {
+  const api = fakeApi({ session: true })
+  api.forgetLaunchSession = async () => false
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.lock()
+  assert.equal(controller.getState().launchReady, true)
+  assert.equal(controller.getState().tone, 'warn')
+})
+
+// ---- the same attempt is the same meeting --------------------------------------------------------------------
+
+test('retrying after a lost response reuses the idempotency key, so no second meeting is created', async () => {
+  const lost = new MeetingApiError('x', { status: 0, code: 'network' })
+  const api = fakeApi({ launch: [lost, launched()] })
+  const { controller } = build({ api })
+  await controller.start({ code: 'c', title: 'T' })
+  assert.equal(controller.getState().phase, 'idle')
+  await controller.start({ code: 'c', title: 'T' })
+  assert.equal(api.calls.launch.length, 2)
+  assert.ok(api.calls.launch[0].idempotencyKey, 'an attempt carries a key')
+  assert.equal(api.calls.launch[0].idempotencyKey, api.calls.launch[1].idempotencyKey)
+})
+
+test('a server failure keeps the key too (the meeting may have been created), a refusal does not', async () => {
+  const api = fakeApi({
+    launch: [
+      new MeetingApiError('x', { status: 502, code: 'bad-gateway' }),
+      new MeetingApiError('x', { status: 401, code: 'launch-code-invalid' }),
+      launched()
+    ]
+  })
+  const { controller } = build({ api })
+  await controller.start({ code: 'c' })
+  await controller.start({ code: 'c' })
+  await controller.start({ code: 'c' })
+  const keys = api.calls.launch.map((call) => call.idempotencyKey)
+  assert.equal(keys[0], keys[1], 'after a 502 the same key is tried again')
+  assert.notEqual(keys[2], keys[1], 'after a definitive refusal the next attempt is a new one')
+})
+
+test('after a meeting was launched the next one is a new attempt with a new key', async () => {
+  const api = fakeApi({ end: [completed(0)] })
+  const { controller } = build({ api })
+  await controller.start({ code: 'c' })
+  await controller.stop()
+  controller.reset()
+  await controller.start({ code: 'c' })
+  assert.notEqual(api.calls.launch[0].idempotencyKey, api.calls.launch[1].idempotencyKey)
+})
+
+test('a launch that was answered with an existing meeting connects to that meeting', async () => {
+  const api = fakeApi({ launch: launched({ reused: true }) })
+  const { controller, clients } = build({ api })
+  await controller.start({ code: 'c' })
+  assert.equal(clients.made.length, 1)
+  assert.equal(clients.made[0].options.meetingId, MEETING)
+  assert.equal(controller.getState().open, true)
+})
+
+// ---- audio held back by the browser ---------------------------------------------------------------------------
+
+test('audio the browser is holding back is a problem with a Reconnect, not a recording of silence', async () => {
+  const blocked = Object.assign(new Error('The browser is holding audio until you interact with the page.'), {
+    code: 'audio-context-suspended'
+  })
+  const { controller, storage } = build({ clients: fakeClients({ startError: blocked }) })
+  await controller.start({ code: 'c' })
+  const state = controller.getState()
+  assert.equal(state.phase, 'problem')
+  assert.equal(state.canReconnect, true)
+  assert.equal(state.tone, 'error')
+  assert.match(state.message, /interact with the page|click/i)
+  assert.match(state.message, /Reconnect/)
+  assert.equal(storage.read().meetingId, MEETING, 'the meeting stays open so Reconnect can carry on with it')
+})
+
+// ---- capture sources ------------------------------------------------------------------------------------
+
+const source = (id, state = 'active', detail = '') => ({
+  id,
+  label: id === 'microphone' ? 'Microphone' : 'Tab or system audio',
+  state,
+  detail
+})
+
+test('the capture mode chosen at start reaches the recording client, and defaults to the microphone', async () => {
+  const a = build()
+  await a.controller.start({ code: 'c' })
+  assert.equal(a.clients.made[0].options.captureMode, 'microphone')
+
+  const b = build()
+  await b.controller.start({ code: 'c', capture: 'both' })
+  assert.equal(b.clients.made[0].options.captureMode, 'both')
+  assert.equal(b.controller.getState().capture, 'both')
+
+  const c = build()
+  await c.controller.start({ code: 'c', capture: 'something-else' })
+  assert.equal(c.clients.made[0].options.captureMode, 'microphone', 'an unknown mode is never passed on')
+})
+
+test('support is checked for the mode asked for, before anything is launched', async () => {
+  const asked = []
+  const { controller, api } = build({
+    checkSupport: ({ capture }) => {
+      asked.push(capture)
+      return capture === 'tab' ? { ok: false, reason: 'This browser cannot share a tab or screen audio.' } : { ok: true }
+    }
+  })
+  await controller.start({ code: 'c', capture: 'tab' })
+  assert.deepEqual(asked, ['tab'])
+  assert.equal(api.calls.launch.length, 0)
+  assert.match(controller.getState().message, /cannot share a tab/)
+})
+
+test('Reconnect keeps the capture mode of the meeting', async () => {
+  const blocked = Object.assign(new Error('Sharing the tab or screen audio was cancelled or blocked.'), { code: 'display-capture-failed' })
+  const clients = fakeClients({ startError: blocked })
+  const { controller } = build({ clients })
+  await controller.start({ code: 'c', capture: 'tab' })
+  assert.equal(controller.getState().phase, 'problem')
+  assert.match(controller.getState().message, /cancelled or blocked.*Reconnect/)
+  await controller.reconnect()
+  assert.deepEqual(clients.made.map((live) => live.options.captureMode), ['tab', 'tab'])
+})
+
+test('source status is kept in the state, and cleared when a new connection is made', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c', capture: 'both' })
+  const live = clients.made[0]
+  live.emit.sources([source('microphone'), source('tab')])
+  assert.deepEqual(controller.getState().sources.map((s) => s.id), ['microphone', 'tab'])
+  live.emit.error(new Error('Live speech connection closed unexpectedly'))
+  assert.equal(controller.getState().phase, 'problem')
+  await controller.reconnect()
+  assert.deepEqual(controller.getState().sources, [], 'the old connection\'s sources are not shown for the new one')
+})
+
+test('a source that is not being recorded is said so plainly, with what is still recording', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c', capture: 'both' })
+  const live = clients.made[0]
+  live.emit.sources([source('microphone'), source('tab', 'unavailable', 'Sharing the tab or screen audio was cancelled or blocked.')])
+  live.emit.ready()
+  const state = controller.getState()
+  assert.equal(state.phase, 'live')
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /Tab or system audio is NOT being recorded/)
+  assert.match(state.message, /cancelled or blocked/)
+  assert.match(state.message, /Recording continues from Microphone/)
+})
+
+test('a source that ends mid-meeting updates the message; recovery restores the normal one', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c', capture: 'both' })
+  const live = clients.made[0]
+  live.emit.ready()
+  assert.equal(controller.getState().tone, 'ok')
+  live.emit.sources([source('microphone'), source('tab', 'ended', 'The browser ended this source.')])
+  assert.equal(controller.getState().tone, 'warn')
+  assert.match(controller.getState().message, /Tab or system audio is NOT being recorded/)
+  live.emit.sources([source('microphone'), source('tab')])
+  assert.equal(controller.getState().tone, 'ok')
+  assert.match(controller.getState().message, /^Recording\./)
+})
+
+test('a source with no sound since the start is flagged, because that is what a muted microphone looks like', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.sources([source('microphone', 'no-signal')])
+  const state = controller.getState()
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /Microphone.*no sound/i)
+  assert.match(state.message, /muted/i)
+})
+
+test('a quiet pause is not a warning', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.sources([source('microphone', 'quiet')])
+  assert.equal(controller.getState().tone, 'ok')
+})
+
+test('every source ending is a problem with Reconnect, not a recording of nothing', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.error(Object.assign(new Error('Every audio source has stopped (the microphone was unplugged or sharing was stopped).'), { code: 'capture-ended' }))
+  const state = controller.getState()
+  assert.equal(state.phase, 'problem')
+  assert.equal(state.canReconnect, true)
+  assert.match(state.message, /stopped/)
+})
+
+test('audio dropped because the connection could not keep up is counted and shown, not hidden', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.dropped({ frames: 100, seconds: 10 })
+  const state = controller.getState()
+  assert.equal(state.droppedSeconds, 10)
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /10 s of audio/)
+  assert.match(state.message, /missing from the transcript/)
 })

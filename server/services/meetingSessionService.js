@@ -232,6 +232,16 @@ export function createMeetingSessionService({
 
     getMeeting: getRequired,
 
+    /**
+     * The meeting still being captured that was started by this launch attempt, or null. Lets a repeated
+     * start (a double trigger, a retry after a lost answer) return the same meeting instead of making another.
+     * A meeting that has ended, failed or been cancelled is never handed out again.
+     */
+    findActiveByLaunchKey(launchKey) {
+      if (typeof launchKey !== 'string' || !launchKey) return null
+      return meetingRepository.getActiveMeetings().find((meeting) => meeting.metadata?.launchKey === launchKey) ?? null
+    },
+
     /** Makes the meeting LIVE. It creates no speech session: each transport connection attaches its own. */
     startMeeting(meetingId) {
       move(meetingId, S.STARTING)

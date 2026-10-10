@@ -103,12 +103,16 @@ test('normalize strips politeness and punctuation only', () => {
 
 function rig(initial = {}) {
   let state = { phase: 'idle', open: false, message: '', tone: 'info', ...initial }
-  const calls = { stop: 0, panels: [] }
+  const calls = { stop: 0, panels: [], starts: [] }
   const meeting = {
     getState: () => state,
     async stop() {
       calls.stop += 1
       await meeting.onStop?.()
+    },
+    async start(options) {
+      calls.starts.push(options)
+      await meeting.onStart?.()
     }
   }
   let clock = 1_000
@@ -276,4 +280,90 @@ test('a failure while stopping is not swallowed (the caller reports it)', async 
   }
   await r.router.handle('stop the meeting')
   await assert.rejects(() => r.router.handle('yes'), /boom/)
+})
+
+// ---- starting by voice or text when this browser is already unlocked ------------------------------------------
+
+test('when this browser is unlocked, "start a meeting" starts it, with no code and no promise it is recording', async () => {
+  const r = rig({ launchReady: true })
+  r.meeting.onStart = () => r.set({ phase: 'connecting', open: true, message: 'Connecting. Allow the microphone if the browser asks.' })
+  const result = await r.router.handle('start a meeting')
+  assert.deepEqual(r.calls.starts, [{ title: undefined }])
+  assert.equal(r.calls.panels.length, 1, 'the panel opens so the status is visible')
+  assert.match(result.reply, /Starting the meeting/)
+  assert.doesNotMatch(result.reply, /launch code/i)
+  assert.doesNotMatch(result.reply, /is recording|recording now|started|saved|verified/i)
+})
+
+test('the title said with the command reaches the meeting', async () => {
+  const r = rig({ launchReady: true })
+  r.meeting.onStart = () => r.set({ phase: 'connecting', open: true })
+  await r.router.handle('start a meeting called Weekly sync')
+  assert.deepEqual(r.calls.starts, [{ title: 'Weekly sync' }])
+})
+
+test('when starting failed the reply is the controller\'s own explanation, as an error', async () => {
+  const r = rig({ launchReady: true })
+  r.meeting.onStart = () =>
+    r.set({ phase: 'idle', open: false, tone: 'error', message: 'Could not reach the server. Check the connection and try again.' })
+  const result = await r.router.handle('start the meeting')
+  assert.deepEqual(result, { reply: 'Could not reach the server. Check the connection and try again.', tone: 'error' })
+})
+
+test('a microphone problem after launch is reported as the problem it is', async () => {
+  const r = rig({ launchReady: true })
+  r.meeting.onStart = () =>
+    r.set({ phase: 'problem', open: true, tone: 'error', message: 'The microphone is blocked. Allow it in the browser, then press Reconnect.' })
+  const result = await r.router.handle('start the meeting')
+  assert.equal(result.tone, 'error')
+  assert.match(result.reply, /microphone is blocked/)
+})
+
+test('a lapsed launch session sends the user to the code field instead of pretending', async () => {
+  const r = rig({ launchReady: true })
+  r.meeting.onStart = () =>
+    r.set({ phase: 'idle', open: false, launchReady: false, tone: 'warn', message: 'The launch session has ended. Enter the launch code to start the meeting.' })
+  const result = await r.router.handle('start the meeting')
+  assert.match(result.reply, /launch session has ended/)
+  assert.equal(result.tone, 'warn')
+  assert.equal(r.calls.panels.length, 1)
+})
+
+test('saying it twice does not start two meetings', async () => {
+  const r = rig({ launchReady: true })
+  r.meeting.onStart = () => r.set({ phase: 'launching', open: false })
+  await r.router.handle('start a meeting')
+  const second = await r.router.handle('start a meeting')
+  assert.equal(r.calls.starts.length, 1, 'the second phrase found the first still starting')
+  assert.match(second.reply, /already starting/i)
+})
+
+test('an unfinished meeting is never replaced by a new start, even when unlocked', async () => {
+  const r = rig({ launchReady: true, phase: 'unfinished', open: true })
+  const result = await r.router.handle('start a meeting')
+  assert.deepEqual(r.calls.starts, [])
+  assert.match(result.reply, /not finished/i)
+})
+
+test('a recording meeting is not started again, even when unlocked', async () => {
+  const r = rig({ launchReady: true, phase: 'live', open: true })
+  await r.router.handle('start a meeting')
+  assert.deepEqual(r.calls.starts, [])
+})
+
+test('a controller that throws from start is reported, not swallowed into a success', async () => {
+  const r = rig({ launchReady: true })
+  r.meeting.onStart = () => {
+    throw new Error('boom')
+  }
+  const result = await r.router.handle('start a meeting')
+  assert.equal(result.tone, 'error')
+  assert.doesNotMatch(result.reply, /Starting the meeting/)
+})
+
+test('without a launch session the command still only opens the panel and asks for the code', async () => {
+  const r = rig({ launchReady: false })
+  const result = await r.router.handle('start a meeting')
+  assert.deepEqual(r.calls.starts, [])
+  assert.match(result.reply, /launch code/i)
 })

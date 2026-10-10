@@ -1,4 +1,5 @@
 import { isLiveSpeechSupported } from '../voice/liveSpeechClient.js'
+import { isCaptureSupported } from '../voice/captureSources.js'
 
 /**
  * Whether this page can record a meeting, checked BEFORE a meeting is created on the server.
@@ -6,8 +7,11 @@ import { isLiveSpeechSupported } from '../voice/liveSpeechClient.js'
  * microphone on a secure page (https, or localhost), so a plain http page on a LAN or tailnet address
  * gets no microphone at all.
  */
-export function checkLiveSpeechSupport(scope = globalThis) {
-  if (isLiveSpeechSupported()) return { ok: true }
+export function checkLiveSpeechSupport(scope = globalThis, capture = 'microphone') {
+  if (isLiveSpeechSupported()) {
+    // Sharing a tab's audio is a separate browser feature (getDisplayMedia), checked for that mode only.
+    return isCaptureSupported(capture, scope.navigator?.mediaDevices)
+  }
   if (scope.isSecureContext === false) {
     return {
       ok: false,

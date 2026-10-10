@@ -16,7 +16,8 @@
  *   16000 Hz, mono, 32-bit float PCM, little-endian, raw frames.
  */
 
-import { speechAudioConstraints, stopTracks } from './micUtils.js'
+import { speechAudioConstraints } from './micUtils.js'
+import { acquireCapture, createSourceMonitor, normalizeCaptureMode } from './captureSources.js'
 import { safeJsonParse } from '../../utils/json.js'
 
 const FRAME_SAMPLES = 1600 // 100ms @ 16kHz — matches the worklet's default
@@ -25,6 +26,42 @@ const SAMPLE_RATE = 16000
 // then it saves the last lines and reports how many it produced; closing earlier cuts that off.
 const DEFAULT_STOP_TIMEOUT_MS = 45000
 const WORKLET_URL = '/worklets/pcm-capture-processor.js'
+// Audio the network could not take is dropped, not queued without limit. f32le at 16 kHz is 64,000 bytes a second,
+// so 4 MiB is about a minute of backlog: past that the connection is stalled, and holding more only costs memory.
+const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024
+const FRAME_SECONDS = FRAME_SAMPLES / SAMPLE_RATE
+const DROP_REPORT_EVERY_FRAMES = 100 // tell the caller at the first drop, then every 10 s of dropped audio
+const DEFAULT_MONITOR_INTERVAL_MS = 500
+const MIX_GAIN = 0.7 // two sources are summed: leave headroom so loud speech on both does not clip
+// How long to wait for a suspended AudioContext to start. Past this, the browser is waiting for a user gesture.
+const DEFAULT_RESUME_TIMEOUT_MS = 1500
+
+/**
+ * A page that starts recording without a click (a voice command, a reconnect) can be handed an AudioContext the
+ * browser keeps suspended. Its worklet then never runs: the meeting would say "Recording" and capture silence.
+ * Resume it, and if the browser still holds it back, say so with a code the caller can act on.
+ */
+async function ensureAudioRunning(context, timeoutMs) {
+  if (!context.state || context.state === 'running') return
+  let timer
+  try {
+    await Promise.race([
+      Promise.resolve(context.resume?.()),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs)
+      })
+    ])
+  } catch {
+    /* judged by the state below */
+  } finally {
+    clearTimeout(timer)
+  }
+  if (context.state && context.state !== 'running') {
+    const err = new Error('The browser is holding back audio until you interact with the page.')
+    err.code = 'audio-context-suspended'
+    throw err
+  }
+}
 
 /** Whether this page can capture live audio at all (secure context, AudioWorklet, WebSocket). */
 export function isLiveSpeechSupported() {
@@ -55,6 +92,12 @@ export function createLiveSpeechClient({
   meetingTicket = '',
   wsProtocols = [],
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
+  resumeTimeoutMs = DEFAULT_RESUME_TIMEOUT_MS,
+  // 'microphone' (default) | 'tab' (a shared tab's or the system's audio) | 'both' (mixed). See captureSources.js.
+  captureMode = 'microphone',
+  maxBufferedBytes = DEFAULT_MAX_BUFFERED_BYTES,
+  monitorIntervalMs = DEFAULT_MONITOR_INTERVAL_MS,
+  sourceTiming = {},
   // true asks the browser to level the microphone (a soft or distant voice reaches a usable level).
   // Left undefined, the shared speech constraints apply (off, as the assistant's own VAD expects).
   autoGainControl = undefined,
@@ -68,11 +111,17 @@ export function createLiveSpeechClient({
   let onError = () => {}
   let onStopped = () => {}
   let onReady = () => {}
+  let onSources = () => {}
+  let onDropped = () => {}
 
-  let stream = null
+  let capture = null // the acquired sources (captureSources.js); released as one
+  let monitor = null // what each source is doing (active / no-signal / ended ...)
   let audioContext = null
   let workletNode = null
-  let sourceNode = null
+  let mixNode = null
+  let sourceNodes = [] // { id, node, analyser }
+  let monitorTimer = null
+  let droppedFrames = 0
   let ws = null
   let active = false
   let stoppedWaiters = [] // resolved when the server confirms the session is finished
@@ -96,7 +145,11 @@ export function createLiveSpeechClient({
       return
     }
     if (type === 'error') {
-      onError(new Error(`[${msg.code}] ${msg.message}`))
+      // The code travels with the error: the caller decides which problems end a recording (see meetingController).
+      const err = new Error(`[${msg.code}] ${msg.message}`)
+      err.code = typeof msg.code === 'string' ? msg.code : undefined
+      if (typeof msg.segmentId === 'string') err.segmentId = msg.segmentId
+      onError(err)
       return
     }
     if (type === 'stopped') {
@@ -105,7 +158,13 @@ export function createLiveSpeechClient({
     }
   }
 
+  function stopMonitor() {
+    if (monitorTimer !== null) clearInterval(monitorTimer)
+    monitorTimer = null
+  }
+
   async function teardownAudio() {
+    stopMonitor()
     try {
       workletNode?.port?.close?.()
     } catch {
@@ -116,8 +175,17 @@ export function createLiveSpeechClient({
     } catch {
       /* ignore */
     }
+    for (const entry of sourceNodes) {
+      for (const node of [entry.node, entry.analyser]) {
+        try {
+          node?.disconnect?.()
+        } catch {
+          /* ignore */
+        }
+      }
+    }
     try {
-      sourceNode?.disconnect?.()
+      mixNode?.disconnect?.()
     } catch {
       /* ignore */
     }
@@ -128,11 +196,13 @@ export function createLiveSpeechClient({
         /* ignore */
       }
     }
-    stopTracks(stream)
+    capture?.release()
     workletNode = null
-    sourceNode = null
+    mixNode = null
+    sourceNodes = []
     audioContext = null
-    stream = null
+    capture = null
+    monitor = null
   }
 
   /** stop() ran while start() was still waiting (permission prompt, worklet load, socket open). */
@@ -146,6 +216,38 @@ export function createLiveSpeechClient({
     ws = null
   }
 
+  function handleSourceEnded(id) {
+    if (!monitor) return
+    monitor.markEnded(id)
+    if (active && !monitor.anyLive()) {
+      const err = new Error('Every audio source has stopped (the microphone was unplugged or sharing was stopped).')
+      err.code = 'capture-ended'
+      onError(err)
+    }
+  }
+
+  /** Reads each source's level a couple of times a second, so a silent source shows as such. */
+  function startMonitor() {
+    const withAnalyser = sourceNodes.filter((entry) => entry.analyser)
+    if (!monitor || withAnalyser.length === 0) return
+    const floats = new Float32Array(1024)
+    const bytes = new Uint8Array(1024)
+    const rms = (analyser) => {
+      let sum = 0
+      if (typeof analyser.getFloatTimeDomainData === 'function') {
+        analyser.getFloatTimeDomainData(floats)
+        for (let i = 0; i < floats.length; i++) sum += floats[i] * floats[i]
+        return Math.sqrt(sum / floats.length)
+      }
+      analyser.getByteTimeDomainData?.(bytes)
+      for (let i = 0; i < bytes.length; i++) sum += ((bytes[i] - 128) / 128) ** 2
+      return Math.sqrt(sum / bytes.length)
+    }
+    monitorTimer = setInterval(() => {
+      for (const entry of withAnalyser) monitor?.reportLevel(entry.id, rms(entry.analyser))
+    }, monitorIntervalMs)
+  }
+
   async function start() {
     if (active) return
     if (!isSupported()) throw new Error('Live speech capture is not supported in this browser')
@@ -153,17 +255,27 @@ export function createLiveSpeechClient({
 
     try {
       const deviceId = typeof getDeviceId === 'function' ? getDeviceId() : ''
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: speechAudioConstraints({
+      droppedFrames = 0
+      capture = await acquireCapture({
+        mode: normalizeCaptureMode(captureMode),
+        mediaDevices: navigator.mediaDevices,
+        micConstraints: speechAudioConstraints({
           deviceId,
           channelCount: 1,
           ...(typeof autoGainControl === 'boolean' ? { autoGainControl } : {})
         }),
-        video: false
+        onSourceEnded: handleSourceEnded
       })
-      // stop() may have been called while the browser's permission prompt was open. Release what was
-      // just granted instead of carrying on and leaving the microphone running.
+      // stop() may have been called while a browser prompt (microphone, share picker) was open. Release what
+      // was just granted instead of carrying on and leaving a source running.
       if (!active) return releaseCancelledStart()
+
+      monitor = createSourceMonitor({
+        sources: capture.sources,
+        onChange: (snapshot) => onSources(snapshot),
+        ...sourceTiming
+      })
+      onSources(monitor.snapshot())
 
       audioContext = new window.AudioContext({ sampleRate: SAMPLE_RATE })
       if (audioContext.sampleRate !== SAMPLE_RATE) {
@@ -173,11 +285,26 @@ export function createLiveSpeechClient({
         )
       }
 
+      await ensureAudioRunning(audioContext, resumeTimeoutMs)
+      if (!active) return releaseCancelledStart()
+
       await audioContext.audioWorklet.addModule(WORKLET_URL)
       if (!active) return releaseCancelledStart()
-      sourceNode = audioContext.createMediaStreamSource(stream)
       workletNode = new window.AudioWorkletNode(audioContext, 'pcm-capture-processor', {
         processorOptions: { frameSamples: FRAME_SAMPLES }
+      })
+      // One recording stream: a single source goes straight to the recorder, several are summed first.
+      const live = capture.sources.filter((source) => source.stream)
+      if (live.length > 1 && typeof audioContext.createGain === 'function') {
+        mixNode = audioContext.createGain()
+        mixNode.gain.value = MIX_GAIN
+        mixNode.connect(workletNode)
+      }
+      sourceNodes = live.map((source) => {
+        const node = audioContext.createMediaStreamSource(source.stream)
+        const analyser = typeof audioContext.createAnalyser === 'function' ? audioContext.createAnalyser() : null
+        if (analyser) analyser.fftSize = 1024
+        return { id: source.id, node, analyser }
       })
 
       ws = wsProtocols.length ? new WebSocket(wsUrl, wsProtocols) : new WebSocket(wsUrl)
@@ -208,9 +335,23 @@ export function createLiveSpeechClient({
       )
 
       workletNode.port.onmessage = (ev) => {
-        if (ws?.readyState === WebSocket.OPEN) ws.send(ev.data)
+        const socket = ws
+        if (socket?.readyState !== WebSocket.OPEN) return
+        if (socket.bufferedAmount > maxBufferedBytes) {
+          // The connection is not keeping up. Say so rather than grow without bound: the transcript has a gap.
+          droppedFrames += 1
+          if (droppedFrames === 1 || droppedFrames % DROP_REPORT_EVERY_FRAMES === 0) {
+            onDropped({ frames: droppedFrames, seconds: droppedFrames * FRAME_SECONDS })
+          }
+          return
+        }
+        socket.send(ev.data)
       }
-      sourceNode.connect(workletNode)
+      for (const entry of sourceNodes) {
+        entry.node.connect(mixNode ?? workletNode)
+        entry.analyser && entry.node.connect(entry.analyser)
+      }
+      startMonitor()
     } catch (err) {
       active = false
       await teardownAudio()
@@ -287,6 +428,14 @@ export function createLiveSpeechClient({
     },
     setOnStopped(fn) {
       onStopped = typeof fn === 'function' ? fn : () => {}
+    },
+    /** Called with [{ id, label, state, detail }] when a source starts, goes quiet, has no sound, or ends. */
+    setOnSources(fn) {
+      onSources = typeof fn === 'function' ? fn : () => {}
+    },
+    /** Called with { frames, seconds } when audio had to be dropped because the connection could not keep up. */
+    setOnDropped(fn) {
+      onDropped = typeof fn === 'function' ? fn : () => {}
     }
   }
 }

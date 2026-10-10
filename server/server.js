@@ -9,6 +9,8 @@ import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
 import { createMeetingsRouter } from './routes/meetings.js'
+import { createMeetingIntelligenceService } from './services/meetingIntelligenceService.js'
+import { generateGroundedNotes } from './services/speechNotesService.js'
 import { attachSocketServer } from './websocket/socketServer.js'
 import { createUpgradeRouter } from './websocket/upgradeRouter.js'
 import { attachLiveSpeechRelay, liveSpeechUpstreamUrl } from './websocket/liveSpeechRelay.js'
@@ -53,7 +55,9 @@ const meetingAuth = createMeetingAuth({
   adminToken: process.env.MEETING_API_TOKEN ?? '',
   ticketSecret: process.env.MEETING_TICKET_SECRET ?? '',
   launchCode: process.env.MEETING_LAUNCH_CODE ?? '',
-  ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200
+  ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200,
+  // How long typing the launch code once covers starting further meetings (default 8 h).
+  launchSessionTtlSeconds: Number.parseInt(process.env.MEETING_LAUNCH_SESSION_TTL_S ?? '28800', 10) || 28800
 })
 // One shared access code protects the assistant API (HTTP, its WebSocket and the DeepSeek probe). Unset keeps it
 // open exactly as before; see server/auth/assistantAuth.js.
@@ -124,7 +128,14 @@ function createApp() {
   // Login, logout and status stay outside the protected area; everything else under /assistant needs the cookie.
   app.use('/api/v1/assistant/auth', assistantAuth.router())
   app.use('/api/v1/assistant', assistantAuth.requireAccess, assistantRouter)
-  app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth: meetingAuth }))
+  app.use(
+    '/api/v1/meetings',
+    createMeetingsRouter({
+      meetingService,
+      auth: meetingAuth,
+      intelligenceService: createMeetingIntelligenceService({ meetingService, generateNotes: generateGroundedNotes })
+    })
+  )
 
   if (isProd) {
     const dist = path.join(rootDir, 'dist')

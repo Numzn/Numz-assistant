@@ -131,9 +131,17 @@
         <input id="meetingCode" name="launch-code" type="password" autocomplete="new-password" spellcheck="false" />
         <label for="meetingTitleInput">Title <span class="optional">(optional)</span></label>
         <input id="meetingTitleInput" name="title" type="text" maxlength="120" autocomplete="off" />
+        <label for="meetingSource">Audio source</label>
+        <select id="meetingSource" name="source" aria-describedby="meetingSourceHint">
+          <option value="microphone" selected>Microphone</option>
+          <option value="tab">Shared tab or system audio</option>
+          <option value="both">Microphone and shared tab or system audio</option>
+        </select>
+        <p id="meetingSourceHint" hidden></p>
         <button id="meetingStart" type="submit">Start meeting</button>
       </form>
       <div id="meetingLive" hidden>
+        <ul id="meetingSources" aria-label="Audio sources" aria-live="polite"></ul>
         <div id="meetingPartial" aria-hidden="true"></div>
         <ol id="meetingLines" aria-live="polite" aria-relevant="additions"></ol>
         <div id="meetingCounts"></div>

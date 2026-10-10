@@ -39,9 +39,35 @@ function emptySnapshot() {
  * exists yet) — this is the seam, exercised directly with fabricated
  * finalized segments.
  */
-export function createRollingIntelligenceTracker() {
+export function createRollingIntelligenceTracker({ generate = generateResponse } = {}) {
   let pendingSegments = []
   let lastSnapshot = null
+  let chain = Promise.resolve() // updates run one after another
+
+  async function refresh() {
+    // Only what was handed to the model is cleared afterwards: segments ingested while it was thinking are
+    // still pending. (The whole buffer used to be emptied, silently losing those.)
+    const batch = pendingSegments.slice()
+    const previousText = lastSnapshot ? JSON.stringify(lastSnapshot) : '(none yet)'
+    const messages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Previous rolling understanding:\n${previousText}\n\nNew segments:\n${batch.map(formatSegmentLine).join('\n')}`
+      }
+    ]
+
+    const reply = await generate(messages) // if this throws, nothing is dropped: the batch stays pending
+    pendingSegments = pendingSegments.slice(batch.length)
+
+    const candidate = stripCodeFences(reply)
+    try {
+      lastSnapshot = JSON.parse(candidate)
+    } catch (err) {
+      lastSnapshot = { ...(lastSnapshot ?? emptySnapshot()), _lastParseError: err.message, _lastRaw: reply }
+    }
+    return lastSnapshot
+  }
 
   return {
     ingest(newSegments) {
@@ -52,33 +78,12 @@ export function createRollingIntelligenceTracker() {
       return pendingSegments.length > 0
     },
 
-    async snapshot() {
-      if (pendingSegments.length === 0) {
-        return lastSnapshot ?? emptySnapshot()
-      }
-
-      const previousText = lastSnapshot ? JSON.stringify(lastSnapshot) : '(none yet)'
-      const messages = [
-        { role: 'system', content: SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: `Previous rolling understanding:\n${previousText}\n\nNew segments:\n${pendingSegments.map(formatSegmentLine).join('\n')}`
-        }
-      ]
-
-      const reply = await generateResponse(messages)
-      const candidate = stripCodeFences(reply)
-      pendingSegments = []
-
-      try {
-        lastSnapshot = JSON.parse(candidate)
-      } catch (err) {
-        lastSnapshot = lastSnapshot ?? emptySnapshot()
-        lastSnapshot._lastParseError = err.message
-        lastSnapshot._lastRaw = reply
-      }
-
-      return lastSnapshot
+    snapshot() {
+      // One update at a time: a call made while one is running waits its turn, then sends only what is still
+      // pending, so no segment goes to the model twice.
+      const run = chain.then(() => (pendingSegments.length === 0 ? lastSnapshot ?? emptySnapshot() : refresh()))
+      chain = run.catch(() => {})
+      return run
     }
   }
 }

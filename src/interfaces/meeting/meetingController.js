@@ -1,4 +1,5 @@
 import { MeetingApiError } from './meetingApi.js'
+import { normalizeCaptureMode } from '../voice/captureSources.js'
 
 /**
  * The browser's meeting flow as a small state machine, with no DOM and no globals, so it can be tested.
@@ -23,7 +24,25 @@ export const LIVE_SPEECH_PATH = '/api/v1/live-speech'
 const MAX_LINES = 500
 const DEFAULT_RETRY_DELAYS_MS = [1500, 2000, 3000, 4000, 5000, 5000]
 const RETRYABLE_END = new Set(['speech-session-active', 'transcript-incomplete'])
+
+/**
+ * Error frames from the speech service that concern ONE line or ONE piece of audio. The service keeps (or
+ * quarantines) what it could not deliver and carries on, so the recording must too: stopping the microphone
+ * because a single line was refused would lose everything said afterwards. Anything not listed here, and
+ * anything with no code at all (the connection dropped, the microphone failed), ends the recording.
+ */
+const RECOVERABLE_CODES = new Map([
+  ['segment-rejected', 'A line was refused by the server and is not saved.'],
+  ['persistence-failure', 'A line could not be saved yet; the speech service keeps it and will retry.'],
+  ['asr-failure', 'The recognizer failed on a piece of audio.'],
+  ['outbox-unavailable', 'The speech service could not keep a line on disk and holds it in memory only.'],
+  ['finalize-failure', 'The last piece of speech could not be finished.'],
+  ['transcript-invalid', 'The summary of the session could not be built; its lines were saved one by one.'],
+  ['malformed-audio', 'A damaged piece of audio was skipped.']
+])
 const SAVED = new Set(['INSERTED', 'ALREADY_EXISTS'])
+const RECORDING_OK = 'Recording. Each line is saved as you speak.'
+const NOT_RECORDING = new Set(['ended', 'unavailable'])
 const BUSY = new Set(['launching', 'connecting', 'live', 'stopping', 'ending'])
 
 function emptyState() {
@@ -40,8 +59,43 @@ function emptyState() {
     canReconnect: false,
     canEnd: false,
     canDiscard: false,
+    capture: 'microphone', // microphone | tab | both: where this meeting's audio comes from
+    sources: [], // [{ id, label, state, detail }] what each source is doing (see captureSources.js)
+    droppedSeconds: 0, // audio the connection could not carry; missing from the transcript
+    launchReady: false, // the server accepts a start from this browser without the code being typed again
     result: null // { verified, storedSegments, unverifiedSessions } once done
   }
+}
+
+/** A key of 16 to 64 letters, digits, "_" and "-" (what the server's Idempotency-Key accepts). */
+function randomLaunchKey() {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID()
+  const bytes = new Uint8Array(16)
+  if (typeof cryptoApi?.getRandomValues === 'function') cryptoApi.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  return `k${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+}
+
+/** What a person needs to know about the sources, or '' when there is nothing to say (a quiet pause is not news). */
+function describeSources(list) {
+  const lost = list.filter((source) => NOT_RECORDING.has(source.state))
+  const running = list.filter((source) => !NOT_RECORDING.has(source.state))
+  const parts = []
+  if (lost.length) {
+    const what = lost.map((source) => `${source.label} is NOT being recorded${source.detail ? ` (${source.detail})` : ''}`)
+    parts.push(
+      `${what.join('. ')}.` +
+        (running.length ? ` Recording continues from ${running.map((source) => source.label).join(' and ')}.` : '')
+    )
+  }
+  for (const source of running.filter((entry) => entry.state === 'no-signal')) {
+    parts.push(
+      `${source.label}: no sound has reached the recorder yet. ` +
+        'Check that it is not muted and that the right device or tab is selected.'
+    )
+  }
+  return parts.join(' ')
 }
 
 function plural(n, one, many) {
@@ -62,6 +116,9 @@ function describeLaunchError(err) {
 function describeConnectionError(err) {
   const name = err?.name ?? ''
   const message = String(err?.message ?? '')
+  if (err?.code === 'audio-context-suspended') {
+    return 'The browser is holding back audio until you interact with the page. Click anywhere on the page, then press Reconnect.'
+  }
   if (name === 'NotAllowedError' || name === 'SecurityError') {
     return 'The microphone is blocked. Allow it in the browser, then press Reconnect.'
   }
@@ -104,16 +161,26 @@ export function createMeetingController({
   checkSupport = () => ({ ok: true }),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
-  now = () => Date.now()
+  now = () => Date.now(),
+  newLaunchKey = randomLaunchKey
 }) {
   let state = emptyState()
+  let captureMode = 'microphone' // kept for Reconnect
+  let launchReady = false // survives a reset: it describes this browser, not one meeting
+  let pendingLaunchKey = null // the key of a launch attempt whose outcome is not known yet
   const listeners = new Set()
   let client = null
   let stopping = null // the client being stopped: its last lines are still decoded and saved while it winds down
   let session = null // { meetingId, ticketToken, expiresAt, title, startedAt }
   let ending = false
 
+  /** A clean form that still knows whether this browser is unlocked. */
+  function blank() {
+    return { ...emptyState(), launchReady }
+  }
+
   function set(patch) {
+    if ('launchReady' in patch) launchReady = patch.launchReady === true
     state = { ...state, ...patch }
     for (const listener of listeners) listener(state)
   }
@@ -150,8 +217,25 @@ export function createMeetingController({
     })
   }
 
+  /**
+   * Whether the server will start a meeting for this browser without the code (it set a launch session after a
+   * correct code). Asked of the server each time: the cookie is HttpOnly, so the page cannot know by itself.
+   */
+  async function refreshLaunchSession() {
+    const status = typeof api.launchSession === 'function' ? await api.launchSession() : null
+    set({ launchReady: status?.authenticated === true })
+    return launchReady
+  }
+
+  /** The message while recording: all well, or all well apart from what the sources say. */
+  function recordingStatus() {
+    const note = describeSources(state.sources)
+    return note ? { message: `${RECORDING_OK} ${note}`, tone: 'warn' } : { message: RECORDING_OK, tone: 'ok' }
+  }
+
   async function connect() {
     set({
+      sources: [],
       phase: 'connecting',
       message: 'Connecting. Allow the microphone if the browser asks.',
       tone: 'info',
@@ -162,7 +246,8 @@ export function createMeetingController({
     const live = createLiveClient({
       meetingId: session.meetingId,
       meetingTicket: session.ticketToken,
-      wsProtocols: [TICKET_PROTOCOL, session.ticketToken]
+      wsProtocols: [TICKET_PROTOCOL, session.ticketToken],
+      captureMode
     })
     client = live
     live.setOnReady(({ persistence } = {}) => {
@@ -171,14 +256,35 @@ export function createMeetingController({
         handleConnectionProblem(live, new Error('The speech service is not saving this meeting.'))
         return
       }
-      set({ phase: 'live', message: 'Recording. Each line is saved as you speak.', tone: 'ok' })
+      set({ phase: 'live', ...recordingStatus() })
+    })
+    live.setOnSources?.((list) => {
+      if (client !== live) return
+      set({ sources: Array.isArray(list) ? list : [] })
+      if (state.phase === 'live') set(recordingStatus())
+    })
+    live.setOnDropped?.((info) => {
+      if (client !== live) return
+      const seconds = Math.round(Number(info?.seconds) || 0)
+      set({
+        droppedSeconds: seconds,
+        message:
+          `The connection is not keeping up: about ${seconds} s of audio were dropped and are missing from the ` +
+          'transcript. Check the network.',
+        tone: 'warn'
+      })
     })
     live.setOnPartial((text) => client === live && set({ partial: String(text ?? '') }))
     live.setOnStabilizing((text) => client === live && set({ partial: String(text ?? '') }))
     // A line decoded while Stop waits for the speech service is saved on the server, so it is shown and counted
     // too (the last thing said used to be missing from the panel). Provisional text is not: Stop clears it.
     live.setOnFinalSegment((segment, persisted) => (client === live || stopping === live) && addLine(segment, persisted))
-    live.setOnError((err) => handleConnectionProblem(live, err))
+    live.setOnError((err) => {
+      const explanation = RECOVERABLE_CODES.get(err?.code)
+      if (!explanation) return handleConnectionProblem(live, err)
+      if (client !== live && stopping !== live) return
+      set({ message: `Recording continues. ${explanation} Check the counts below.`, tone: 'warn' })
+    })
     try {
       await live.start()
     } catch (err) {
@@ -196,6 +302,8 @@ export function createMeetingController({
     session = null
     // "Verified" is true of a meeting that never recorded anything, but saying so would mislead.
     const nothingRecorded = recordings === 0
+    // A recording that produced no lines is "verified" (0 of 0) and tells the person nothing they need.
+    const nothingHeard = !nothingRecorded && storedSegments === 0 && verified
     set({
       phase: 'done',
       open: false,
@@ -204,9 +312,12 @@ export function createMeetingController({
       canEnd: false,
       canDiscard: false,
       result: { verified, storedSegments, unverifiedSessions, recordings },
-      tone: nothingRecorded ? 'info' : verified ? 'ok' : 'warn',
+      tone: nothingRecorded ? 'info' : nothingHeard ? 'warn' : verified ? 'ok' : 'warn',
       message: nothingRecorded
         ? 'Meeting ended. Nothing was recorded.'
+        : nothingHeard
+        ? 'Meeting ended. No speech was transcribed, so there is nothing to save. ' +
+          'Check that the microphone is not muted, or that the shared tab was playing sound.'
         : verified
         ? `Saved ${plural(storedSegments, 'line', 'lines')}. The transcript is complete and verified.`
         : `Ended with ${plural(storedSegments, 'line', 'lines')} saved, but NOT verified: ` +
@@ -250,6 +361,7 @@ export function createMeetingController({
 
   return {
     getState: () => state,
+    refreshLaunchSession,
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -281,29 +393,61 @@ export function createMeetingController({
       })
     },
 
-    async start({ code, title = '' } = {}) {
+    /** Forget the launch session on this browser, so the code has to be typed again. Not while a meeting is open. */
+    async lock() {
+      if (!launchReady || state.open || BUSY.has(state.phase)) return
+      const done = typeof api.forgetLaunchSession === 'function' ? await api.forgetLaunchSession() : false
+      if (done) set({ launchReady: false, message: 'Locked. The launch code is needed again to start a meeting.', tone: 'info' })
+      else set({ message: 'Could not reach the server to lock this browser. It is still unlocked.', tone: 'warn' })
+    },
+
+    /**
+     * code: typed by a person, or empty to rely on the launch session. title: optional.
+     * capture: 'microphone' (default) | 'tab' | 'both'. Sharing a tab needs a click, so voice never asks for it.
+     */
+    async start({ code, title = '', capture = 'microphone' } = {}) {
       if (state.open || BUSY.has(state.phase)) return
       const trimmedCode = String(code ?? '').trim()
-      if (!trimmedCode) {
-        set({ ...emptyState(), message: 'Enter the launch code.', tone: 'warn' })
+      if (!trimmedCode && !launchReady) await refreshLaunchSession() // the page may be stale
+      if (!trimmedCode && !launchReady) {
+        set({ ...blank(), message: 'Enter the launch code.', tone: 'warn' })
         return
       }
       // Check the browser before creating anything on the server: no meeting is launched for a page
       // that could never record (no secure connection, no audio worklet).
-      const support = checkSupport()
+      const wanted = normalizeCaptureMode(capture)
+      const support = checkSupport({ capture: wanted })
       if (!support.ok) {
-        set({ ...emptyState(), message: support.reason, tone: 'error' })
+        set({ ...blank(), message: support.reason, tone: 'error' })
         return
       }
       const cleanTitle = String(title ?? '').trim()
-      set({ ...emptyState(), phase: 'launching', title: cleanTitle, message: 'Starting the meeting…' })
+      captureMode = wanted
+      set({ ...blank(), phase: 'launching', title: cleanTitle, capture: wanted, message: 'Starting the meeting…' })
+      // One key per attempt: if the answer is lost and the user tries again, the server hands back the same
+      // meeting instead of starting a second one.
+      pendingLaunchKey ??= newLaunchKey()
       let launched
       try {
-        launched = await api.launch({ code: trimmedCode, title: cleanTitle })
+        launched = await api.launch({ code: trimmedCode, title: cleanTitle, idempotencyKey: pendingLaunchKey })
       } catch (err) {
-        set({ ...emptyState(), title: cleanTitle, message: describeLaunchError(err), tone: 'error' })
+        const outcomeUnknown = err instanceof MeetingApiError && (err.status === 0 || err.status >= 500)
+        if (!outcomeUnknown) pendingLaunchKey = null
+        const lapsed = !trimmedCode && err instanceof MeetingApiError && err.status === 401
+        if (lapsed) {
+          set({
+            ...emptyState(),
+            launchReady: false,
+            title: cleanTitle,
+            message: 'The launch session has ended. Enter the launch code to start the meeting.',
+            tone: 'warn'
+          })
+          return
+        }
+        set({ ...blank(), title: cleanTitle, message: describeLaunchError(err), tone: 'error' })
         return
       }
+      pendingLaunchKey = null
       session = {
         meetingId: launched.meetingId,
         ticketToken: launched.ticket.token,
@@ -313,7 +457,11 @@ export function createMeetingController({
       }
       storage.write(session)
       set({ open: true, meetingId: session.meetingId })
+      // A correct code makes the server set a launch session; learn that from the server, not by assuming it.
+      // Alongside connecting, so it costs the recording nothing, and settled by the time start() returns.
+      const unlockStatus = trimmedCode ? refreshLaunchSession().catch(() => {}) : null
       await connect()
+      await unlockStatus
     },
 
     /** Stop recording, then end the meeting. */
@@ -350,7 +498,7 @@ export function createMeetingController({
       session = null
       client = null
       set({
-        ...emptyState(),
+        ...blank(),
         message: `Forgot meeting ${meetingId}. It is still open on the server; ask the operator to end it.`,
         tone: 'warn'
       })
@@ -359,7 +507,7 @@ export function createMeetingController({
     /** Back to the start form after a finished meeting. */
     reset() {
       if (state.phase !== 'done') return
-      set(emptyState())
+      set(blank())
     }
   }
 }
