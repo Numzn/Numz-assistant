@@ -29,6 +29,18 @@ export function createVoiceOrchestrator({
   let suspended = false
   let awaitingWakeCommand = false
 
+  // Turn identity. A turn ends when it is interrupted, stopped or a meeting starts. Whatever it still does when its
+  // pending request returns must not speak, change the voice state, or keep the next command out as "busy".
+  let turnId = 0
+  // A capture that began before this moment was already given up on (interrupted, stopped, meeting started).
+  let staleBefore = 0
+  // Capture ids already handed to a turn: one capture is answered at most once, whatever announces it again.
+  const handledCaptures = new Set()
+  const MAX_REMEMBERED_CAPTURES = 64
+  // The latest request, until it settles. It can outlive an interrupted turn: the server does not stop generating
+  // an interrupted reply, and sends the rest of it on the same connection.
+  let requestInFlight = null
+
   // Continuous (ChatGPT-Voice-style) conversation loop.
   let conversationActive = false
   let streamingText = ''
@@ -86,6 +98,49 @@ export function createVoiceOrchestrator({
     }
   }
 
+  function nowMs() {
+    return globalThis.performance?.now?.() ?? Date.now()
+  }
+
+  /** The turn in progress is over: its late results are ignored and the next command is not held off. */
+  function abandonTurn() {
+    turnId += 1
+    staleBefore = nowMs()
+    if (busy) {
+      busy = false
+      setBusyUi(false)
+    }
+  }
+
+  /**
+   * After an interruption the next command is held (not dropped) until the abandoned request has settled, so that
+   * the tail of the old reply is not received as the start of the new one. Bounded: it never waits for ever.
+   */
+  async function waitForAbandonedRequest() {
+    const pending = requestInFlight
+    if (!pending) return
+    const limit = Number(config?.interruptSettleMs)
+    const waitMs = Number.isFinite(limit) && limit >= 0 ? limit : 6000
+    let timer = null
+    const gaveUp = new Promise((resolve) => {
+      timer = setTimeout(resolve, waitMs)
+    })
+    try {
+      await Promise.race([pending, gaveUp])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // A safety net, not a timer for normal speech: browsers sometimes never report that speech ended, and the turn
+  // must not stay busy for ever when that happens. Generous: 150 ms per character plus 15 s.
+  function speechWatchdogMs(text) {
+    const configured = Number(config?.ttsWatchdogMs)
+    if (Number.isFinite(configured) && configured > 0) return configured
+    const chars = Math.max(String(text ?? '').length, streamingText.length)
+    return Math.max(20000, 15000 + chars * 150)
+  }
+
   // Chunks are queued and drained one at a time (not fired concurrently
   // with .then()) so submission order is guaranteed even though
   // ensureSpeakingStarted() and enqueueChunk() are both async — otherwise a
@@ -100,7 +155,11 @@ export function createVoiceOrchestrator({
     try {
       while (pendingSpeechChunks.length > 0) {
         const text = pendingSpeechChunks.shift()
-        await ensureSpeakingStarted()
+        const ready = await ensureSpeakingStarted()
+        if (!ready) {
+          pendingSpeechChunks = [] // given up on while the state was being synced: nothing more is spoken
+          break
+        }
         try {
           await voiceOutput.enqueueChunk(text, ttsOptions())
         } catch (err) {
@@ -115,21 +174,37 @@ export function createVoiceOrchestrator({
   function queueSpeechChunk(text) {
     if (suspended) return
     pendingSpeechChunks.push(text)
-    drainSpeechQueue()
+    drainSpeechQueue().catch((err) => console.error('[voice] speaking failed', err))
   }
 
+  /** Resolves true when speech may go ahead, false when the turn was given up on while the state was synced. */
   async function ensureSpeakingStarted() {
-    if (speakingStarted) return
+    if (speakingStarted) return true
+    const turn = turnId
     speakingStarted = true
-    voiceOutput.beginStream()
-    await assistantController.setSpeaking()
-    if (wakeMode) voiceInput.stop()
-    if (isLocalVoiceInput() && typeof voiceInput.pauseWake === 'function') {
-      await voiceInput.pauseWake()
-    }
-    if (conversationActive && typeof voiceInput.setSpeakingPhase === 'function') {
-      // Keep the mic + analyser running so the VAD loop can detect barge-in.
-      voiceInput.setSpeakingPhase(true)
+    try {
+      voiceOutput.beginStream()
+      await assistantController.setSpeaking()
+      if (turn !== turnId || suspended) {
+        speakingStarted = false
+        return false
+      }
+      if (wakeMode) voiceInput.stop()
+      if (isLocalVoiceInput() && typeof voiceInput.pauseWake === 'function') {
+        await voiceInput.pauseWake()
+      }
+      if (turn !== turnId || suspended) {
+        speakingStarted = false
+        return false
+      }
+      if (conversationActive && typeof voiceInput.setSpeakingPhase === 'function') {
+        // Keep the mic + analyser running so the VAD loop can detect barge-in.
+        voiceInput.setSpeakingPhase(true)
+      }
+      return true
+    } catch (err) {
+      speakingStarted = false
+      throw err
     }
   }
 
@@ -220,6 +295,7 @@ export function createVoiceOrchestrator({
 
   async function speakReply(replyText) {
     if (suspended) return
+    const turn = turnId
     // Most of the reply was very likely already spoken incrementally, chunk
     // by chunk, as it streamed in (see bindStreaming's token handler) —
     // ensureSpeakingStarted() is a no-op if that already happened. This
@@ -228,28 +304,52 @@ export function createVoiceOrchestrator({
     // controller.js, which emits no token events at all).
     if (!speakingStarted) {
       if (!replyText) return
-      await ensureSpeakingStarted()
+      const ready = await ensureSpeakingStarted()
+      if (!ready) return
       await voiceOutput.enqueueChunk(replyText, ttsOptions())
+      if (turn !== turnId) return
     } else if (speechBuffer.trim()) {
       // Flush whatever's left in the buffer past the last sentence boundary.
-      await voiceOutput.enqueueChunk(speechBuffer, ttsOptions())
+      const rest = speechBuffer
       speechBuffer = ''
+      await voiceOutput.enqueueChunk(rest, ttsOptions())
+      if (turn !== turnId) return
     }
 
+    let stallTimer = null
     try {
-      await voiceOutput.endStream()
+      const ended = Promise.resolve(voiceOutput.endStream())
+      ended.catch(() => {}) // if the watchdog wins, a late rejection is not an unhandled one
+      const stalled = new Promise((resolve) => {
+        stallTimer = setTimeout(() => resolve('stalled'), speechWatchdogMs(replyText))
+      })
+      const outcome = await Promise.race([ended.then(() => 'done'), stalled])
+      if (outcome === 'stalled') {
+        console.warn('[voice] speech never reported that it finished; carrying on')
+        try {
+          voiceOutput.cancel()
+        } catch {
+          /* nothing was playing */
+        }
+        setUiStatus('')
+      }
     } catch (err) {
       const reason = String(err?.error ?? err?.name ?? '')
       // Barge-in / manual stop cancels speech synthesis — not a real failure.
       if (reason !== 'interrupted' && reason !== 'canceled') throw err
     } finally {
-      if (typeof voiceInput.setSpeakingPhase === 'function') {
-        voiceInput.setSpeakingPhase(false)
+      if (stallTimer) clearTimeout(stallTimer)
+      // Only the turn still in progress puts the shared state back. A turn that was interrupted already did,
+      // and doing it again here could clear the speaking state of the turn that followed it.
+      if (turn === turnId) {
+        if (typeof voiceInput.setSpeakingPhase === 'function') {
+          voiceInput.setSpeakingPhase(false)
+        }
+        speakingStarted = false
       }
-      speakingStarted = false
     }
 
-    if (!conversationActive) {
+    if (turn === turnId && !conversationActive) {
       await safeSetIdle()
       if (wakeMode) await startWakeListening()
     }
@@ -275,6 +375,8 @@ export function createVoiceOrchestrator({
     }
 
     busy = true
+    const turn = ++turnId
+    const current = () => turn === turnId
     setBusyUi(true)
     if (typeof voiceInput.setDetectionEnabled === 'function') {
       voiceInput.setDetectionEnabled(false)
@@ -287,6 +389,7 @@ export function createVoiceOrchestrator({
     setUiResponse('')
 
     const local = await answerCommand(cleaned)
+    if (!current()) return
     if (local) {
       setUiResponse(local.reply)
       eventBus?.emit?.('command:handled', { text: cleaned, reply: local.reply })
@@ -295,16 +398,19 @@ export function createVoiceOrchestrator({
         await assistantController.setProcessing()
         await speakReply(local.reply)
       } catch (err) {
+        if (!current()) return
         console.error('[voice] speaking a command reply failed', err)
         await assistantController.setError()
         await safeSetIdle()
         if (conversationActive) await stopConversation()
       } finally {
-        busy = false
-        setBusyUi(false)
-        voiceDebug.setPhase('idle')
+        if (current()) {
+          busy = false
+          setBusyUi(false)
+          voiceDebug.setPhase('idle')
+        }
       }
-      if (conversationActive) await afterTurnComplete()
+      if (current() && conversationActive) await afterTurnComplete()
       return
     }
 
@@ -312,7 +418,20 @@ export function createVoiceOrchestrator({
     voiceDebug.setPhase('thinking')
     setUiStatus('Thinking…')
 
-    const reply = await assistantController.requestReply(cleaned)
+    await waitForAbandonedRequest()
+    if (!current()) return
+    const request = Promise.resolve(assistantController.requestReply(cleaned))
+    const settled = request.then(
+      () => {},
+      () => {}
+    )
+    requestInFlight = settled
+    settled.then(() => {
+      if (requestInFlight === settled) requestInFlight = null
+    })
+    const reply = await request
+    // Interrupted, stopped or a meeting started while the request was pending: its answer is no longer wanted.
+    if (!current()) return
     voiceDebug.mark('llm_end')
     voiceDebug.measure('llm_total', 'llm_start', 'llm_end')
     if (!reply) {
@@ -328,6 +447,7 @@ export function createVoiceOrchestrator({
         if (typeof voiceInput.setSpeakingPhase === 'function') voiceInput.setSpeakingPhase(false)
         speakingStarted = false
       }
+      if (!current()) return
       busy = false
       setBusyUi(false)
       voiceDebug.setPhase('idle')
@@ -340,17 +460,20 @@ export function createVoiceOrchestrator({
     try {
       await speakReply(reply)
     } catch (err) {
+      if (!current()) return
       console.error('[voice] speak failed', err)
       await assistantController.setError()
       await safeSetIdle()
       if (conversationActive) await stopConversation()
     } finally {
-      busy = false
-      setBusyUi(false)
-      voiceDebug.setPhase('idle')
+      if (current()) {
+        busy = false
+        setBusyUi(false)
+        voiceDebug.setPhase('idle')
+      }
     }
 
-    if (conversationActive) await afterTurnComplete()
+    if (current() && conversationActive) await afterTurnComplete()
   }
 
   /**
@@ -414,6 +537,7 @@ export function createVoiceOrchestrator({
    */
   async function suspend() {
     suspended = true
+    abandonTurn()
     pendingSpeechChunks = []
     speechBuffer = ''
     try {
@@ -431,6 +555,7 @@ export function createVoiceOrchestrator({
 
   async function stopConversation() {
     conversationActive = false
+    abandonTurn()
     try {
       if (typeof voiceInput.stopContinuous === 'function') {
         await voiceInput.stopContinuous()
@@ -455,8 +580,12 @@ export function createVoiceOrchestrator({
 
   async function handleBargeIn() {
     if (!conversationActive) return
+    // The reply in progress is over: its request may still be pending, but whatever it returns is ignored, and
+    // what the person says next is a new turn, not "busy".
+    abandonTurn()
     voiceOutput.cancel()
-    if (typeof voiceInput.setSpeakingPhase === 'function') voiceInput.setSpeakingPhase(false)
+    // The speech was cut at once and the person is already talking: only a short wait before listening.
+    if (typeof voiceInput.setSpeakingPhase === 'function') voiceInput.setSpeakingPhase(false, { interrupted: true })
     streamingText = ''
     speechBuffer = ''
     speakingStarted = false
@@ -482,6 +611,7 @@ export function createVoiceOrchestrator({
       await handleBargeIn()
       return
     }
+    abandonTurn()
     try {
       voiceOutput.cancel()
     } catch {
@@ -497,11 +627,27 @@ export function createVoiceOrchestrator({
       console.warn('[voice] interrupt failed', err)
     }
     await safeSetIdle()
+    // The interrupted turn used to re-arm the wake word as it unwound; it is abandoned now, so do it here.
+    if (wakeMode) await startWakeListening()
   }
 
-  async function handleFinalTranscript(text) {
+  async function handleFinalTranscript(text, meta = null) {
     const cleaned = typeof text === 'string' ? text.trim() : ''
     if (!cleaned) return
+
+    if (meta && typeof meta === 'object') {
+      // Began before the last interruption / stop: it was being said (or played back) before that, not now.
+      if (typeof meta.startedAt === 'number' && meta.startedAt < staleBefore) return
+      // The same capture is answered once, however many times it is announced. (By identity, never by text:
+      // a person may say the same thing twice, and that is two commands.)
+      if (meta.captureId !== undefined && meta.captureId !== null) {
+        if (handledCaptures.has(meta.captureId)) return
+        handledCaptures.add(meta.captureId)
+        if (handledCaptures.size > MAX_REMEMBERED_CAPTURES) {
+          handledCaptures.delete(handledCaptures.values().next().value)
+        }
+      }
+    }
 
     if (!wakeMode) {
       await handleAssistantPrompt(cleaned)
@@ -830,6 +976,8 @@ export function createVoiceOrchestrator({
 
     if (typeof voiceInput.setOnBargeIn === 'function') {
       voiceInput.setOnBargeIn(() => {
+        // Only an interruption of something of ours: the assistant speaking, or a reply on its way.
+        if (!speakingStarted && !busy) return
         handleBargeIn().catch((err) => console.error('[voice] barge-in failed', err))
       })
     }
@@ -848,24 +996,27 @@ export function createVoiceOrchestrator({
       setUiTranscript(text)
     })
 
-    voiceInput.setOnFinal((text) => {
+    voiceInput.setOnFinal((text, meta) => {
       voiceDebug.measure('stt', 'stt_start')
       voiceDebug.mark('transcript_ready')
       voiceDebug.mark('utterance_end')
-      handleFinalTranscript(text)
+      handleFinalTranscript(text, meta)
     })
 
     voiceInput.setOnError(async (err) => {
       console.error('[voice] stt error', err)
+      const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : ''
+      const code =
+        err && typeof err === 'object' && 'error' in err ? String(err.error) : ''
+      // An empty capture that comes back while a turn is under way belongs to an earlier moment. It must not
+      // stop the capture now running, nor reset the turn (busy, speaking, listening) in progress.
+      if (conversationActive && busy && code === 'no-speech') return
       pressed = false
       try {
         voiceInput.stop()
       } catch {
         /* ignore */
       }
-      const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : ''
-      const code =
-        err && typeof err === 'object' && 'error' in err ? String(err.error) : ''
 
       // Conversation mode: a stray VAD trigger that yields no speech should
       // quietly loop back to listening rather than dropping out of the loop.
@@ -939,6 +1090,8 @@ export function createVoiceOrchestrator({
     })
 
     voiceOutput.setOnStart(() => {
+      // Its voice is audible from now: the input starts measuring how loud that is in the microphone.
+      if (typeof voiceInput.notePlaybackStarted === 'function') voiceInput.notePlaybackStarted()
       voiceDebug.setPhase('speaking')
       voiceDebug.mark('tts_start')
       setUiStatus('Speaking…')

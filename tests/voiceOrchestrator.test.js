@@ -10,8 +10,12 @@ import { createVoiceOrchestrator } from '../src/interfaces/voice/voiceOrchestrat
 
 function deferred() {
   let resolve
-  const promise = new Promise((r) => (resolve = r))
-  return { promise, resolve }
+  let reject
+  const promise = new Promise((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
 }
 
 function rig() {
@@ -322,4 +326,435 @@ test('after a spoken command in a conversation, listening resumes', async () => 
   await r.hear('start a meeting')
   await tick()
   assert.equal(r.counts.startContinuous, before + 1)
+})
+
+// ---- The assistant must not hear itself ------------------------------------------------------------------------
+//
+// Deterministic lifecycle tests of the orchestrator with a scripted input and output. The acoustics (how loud the
+// assistant is in a real microphone, how well a browser cancels it) cannot be tested here: see the manual test in
+// the change notes. The input side of the same fix is tested in tests/voiceInputLocal.test.js.
+
+function convRig({ ttsWatchdogMs, interruptSettleMs, ui = {} } = {}) {
+  const calls = { start: 0, cancel: 0, interrupt: 0, startContinuous: 0, stopContinuous: 0, stop: 0, error: 0, idle: 0, requests: 0, notePlayback: 0 }
+  const speakingPhase = [] // every setSpeakingPhase(active, options)
+  const detection = []
+  const spoken = []
+  const callbacks = {}
+  const listeners = new Map()
+  let reply = null
+  let playback = deferred()
+  let playbackRejectsOnCancel = false
+
+  const voiceInput = {
+    isSupported: () => true,
+    setOnFinal: (fn) => (callbacks.final = fn),
+    setOnPartial: (fn) => (callbacks.partial = fn),
+    setOnError: (fn) => (callbacks.error = fn),
+    setOnBargeIn: (fn) => (callbacks.bargeIn = fn),
+    setOnPhase: (fn) => (callbacks.phase = fn),
+    start: () => (calls.start += 1),
+    stop: () => (calls.stop += 1),
+    startContinuous: async () => (calls.startContinuous += 1),
+    stopContinuous: async () => (calls.stopContinuous += 1),
+    setSpeakingPhase: (active, options) => speakingPhase.push({ active, options }),
+    setDetectionEnabled: (enabled) => detection.push(enabled),
+    notePlaybackStarted: () => (calls.notePlayback += 1),
+    getInputLevel: () => 0
+  }
+  const voiceOutput = {
+    isSupported: () => true,
+    setOnStart: (fn) => (callbacks.outputStart = fn),
+    setOnEnd() {},
+    setOnError() {},
+    cancel() {
+      calls.cancel += 1
+      if (playbackRejectsOnCancel) playback.reject({ error: 'canceled' })
+    },
+    beginStream() {},
+    enqueueChunk: async (text) => spoken.push(text),
+    endStream: () => playback.promise
+  }
+  const assistantController = {
+    requestReply: () => {
+      calls.requests += 1
+      reply = deferred()
+      return reply.promise
+    },
+    setProcessing: async () => {},
+    setListening: async () => {},
+    setSpeaking: async () => {},
+    setIdle: async () => (calls.idle += 1),
+    setError: async () => (calls.error += 1),
+    setTranscribing: async () => {},
+    interrupt: async () => (calls.interrupt += 1)
+  }
+  const eventBus = {
+    on(type, fn) {
+      listeners.set(type, fn)
+      return () => listeners.delete(type)
+    },
+    emit(type, payload) {
+      listeners.get(type)?.({ payload })
+    }
+  }
+  const orchestrator = createVoiceOrchestrator({
+    stateMachine: { subscribe: () => () => {}, getState: () => 'IDLE' },
+    assistantController,
+    voiceInput,
+    voiceOutput,
+    deviceManager: {},
+    ui,
+    config: { audioMode: 'local', conversationMode: true, ttsWatchdogMs, interruptSettleMs },
+    eventBus
+  })
+  const api = orchestrator.init()
+  let captureSeq = 100
+  return {
+    api,
+    calls,
+    spoken,
+    speakingPhase,
+    detection,
+    callbacks,
+    /** A finished capture: a new identity each time unless one is given. */
+    hear(text, meta = {}) {
+      const full = { captureId: ++captureSeq, startedAt: performance.now(), ...meta }
+      callbacks.final(text, full)
+      return full
+    },
+    streamToken: (token) => eventBus.emit('assistant:token', { token }),
+    answer: (text) => reply.resolve(text),
+    /** The resolver of the request pending right now, kept for later (a request that may return late). */
+    takeAnswer: () => reply.resolve,
+    finishPlayback: () => playback.resolve(),
+    failPlayback: (error) => playback.reject(error),
+    rejectPlaybackOnCancel: () => (playbackRejectsOnCancel = true),
+    newPlayback: () => (playback = deferred())
+  }
+}
+
+const settle = async () => {
+  for (let i = 0; i < 4; i++) await tick()
+}
+
+/** One whole turn: the user speaks, the reply streams in and is spoken, and playback ends normally. */
+async function completeTurn(r, said = 'what time is it', replyText = 'It is noon. ') {
+  const meta = r.hear(said)
+  await settle()
+  r.streamToken(replyText)
+  await settle()
+  r.answer(replyText.trim())
+  await settle()
+  r.finishPlayback()
+  await settle()
+  r.newPlayback()
+  return meta
+}
+
+test('one finalized utterance produces at most one assistant turn, however often it is announced', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  const meta = r.hear('what time is it')
+  await settle()
+  r.callbacks.final('what time is it', meta) // announced again while the turn is in progress
+  await settle()
+  assert.equal(r.calls.requests, 1)
+
+  r.streamToken('It is noon. ')
+  await settle()
+  r.answer('It is noon.')
+  await settle()
+  r.finishPlayback()
+  await settle()
+  r.callbacks.final('what time is it', meta) // and again after the turn is over
+  await settle()
+  assert.equal(r.calls.requests, 1, 'the same capture is never answered twice')
+})
+
+test('a person saying the same thing again is a second command: identity decides, never the words', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  await completeTurn(r, 'what time is it')
+  assert.equal(r.calls.requests, 1)
+  await completeTurn(r, 'what time is it')
+  assert.equal(r.calls.requests, 2)
+})
+
+test('a stale partial transcript never becomes a command', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  r.callbacks.partial('make me a sandwich')
+  r.callbacks.partial('make me a sandwich please')
+  await settle()
+  assert.equal(r.calls.requests, 0)
+})
+
+test('a final that began before an interruption is dropped when it arrives; a fresh one is answered', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  const began = performance.now()
+  await tick()
+  await r.api.interrupt()
+  r.callbacks.final('the assistant\'s own words, captured', { captureId: 900, startedAt: began })
+  await settle()
+  assert.equal(r.calls.requests, 0, 'it was recorded before the interruption: not a command')
+  r.hear('what time is it')
+  await settle()
+  assert.equal(r.calls.requests, 1, 'speech after the interruption is')
+})
+
+test('a fresh command after the assistant has finished speaking is a new turn, and listening came back first', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  const before = r.calls.startContinuous
+  await completeTurn(r, 'what time is it')
+  assert.equal(r.calls.startContinuous, before + 1, 'listening resumed after the reply')
+  const ended = r.speakingPhase.filter((entry) => entry.active === false).at(-1)
+  assert.ok(ended, 'the speaking phase was ended')
+  assert.ok(!ended.options?.interrupted, 'a reply that ran to its end is not reported as an interruption')
+  r.hear('and tomorrow')
+  await settle()
+  assert.equal(r.calls.requests, 2)
+})
+
+test('the output tells the input when its voice is audible, so the loudness measurement starts there', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  r.callbacks.outputStart()
+  assert.equal(r.calls.notePlayback, 1)
+})
+
+test('a genuine interruption: speech is cut, the stream aborted and listening resumes at once', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  r.hear('tell me a story')
+  await settle()
+  r.streamToken('Once upon a time there was a very tall dragon. ')
+  await settle()
+  assert.ok(r.spoken.length >= 1, 'the assistant is speaking')
+  const before = { ...r.calls }
+
+  r.callbacks.bargeIn() // the person talks over it
+  await settle()
+  assert.equal(r.calls.cancel, before.cancel + 1, 'speech is cut')
+  assert.equal(r.calls.interrupt, before.interrupt + 1, 'the stream is aborted')
+  assert.equal(r.calls.startContinuous, before.startContinuous + 1, 'listening resumes')
+  assert.ok(
+    r.speakingPhase.some((entry) => entry.active === false && entry.options?.interrupted === true),
+    'the input is told this stop was an interruption (a short wait: the person is already talking)'
+  )
+})
+
+test('the command that follows an interruption is not dropped as "busy": it is held until the old request settles, then answered', async () => {
+  const r = convRig({ interruptSettleMs: 5000 })
+  await r.api.startConversation()
+  r.hear('tell me a story')
+  await settle()
+  const answerFirst = r.takeAnswer() // the request of the turn about to be interrupted
+  r.streamToken('Once upon a time there was a very tall dragon. ')
+  await settle()
+  r.callbacks.bargeIn()
+  await settle()
+
+  r.hear('never mind, what time is it')
+  await settle()
+  assert.equal(r.calls.requests, 1, 'the new request waits: the server is still sending the old reply')
+
+  const spokenBefore = [...r.spoken]
+  answerFirst('and the dragon loved to read very very long books') // the abandoned request returns, late
+  await settle()
+  assert.equal(r.calls.requests, 2, 'now the new command is sent: it was held, not lost')
+  assert.deepEqual(r.spoken, spokenBefore, 'nothing from the abandoned turn is spoken')
+  assert.equal(r.calls.error, 0)
+
+  r.streamToken('It is exactly noon right now. ')
+  await settle()
+  r.answer('It is exactly noon right now.')
+  await settle()
+  assert.ok(r.spoken.some((text) => text.includes('exactly noon')), 'the new turn is spoken normally')
+})
+
+test('the hold after an interruption is bounded: a request that never returns does not block the next command', async () => {
+  const r = convRig({ interruptSettleMs: 40 })
+  await r.api.startConversation()
+  r.hear('tell me a story')
+  await settle()
+  r.streamToken('Once upon a time there was a very tall dragon. ')
+  await settle()
+  r.callbacks.bargeIn()
+  await settle()
+  r.hear('never mind, what time is it')
+  await settle()
+  assert.equal(r.calls.requests, 1)
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  await settle()
+  assert.equal(r.calls.requests, 2, 'the old request never returned; the command went ahead')
+})
+
+test('when nothing is pending an interruption does not delay the next command at all', async () => {
+  const r = convRig({ interruptSettleMs: 5000 })
+  await r.api.startConversation()
+  await completeTurn(r, 'what time is it')
+  r.hear('and tomorrow')
+  await settle()
+  assert.equal(r.calls.requests, 2, 'a finished request is not waited for')
+})
+
+test('after a manual interrupt in wake mode the wake word is armed again, as it was before', async () => {
+  const handlers = {}
+  const wakeButtonEl = {
+    addEventListener: (type, fn) => (handlers[type] = fn),
+    removeEventListener() {},
+    setAttribute() {}
+  }
+  const r = convRig({ ui: { wakeButtonEl } })
+  await handlers.click({ preventDefault() {} }) // wake mode on
+  await settle()
+  const armed = r.calls.start
+  r.hear('numz what time is it')
+  await settle()
+  assert.equal(r.calls.requests, 1)
+  await r.api.interrupt()
+  await settle()
+  assert.equal(r.calls.start, armed + 1, 'listening for the wake word began again')
+})
+
+test('the reply of an interrupted turn is never spoken, even when it arrives late', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  r.hear('tell me a story')
+  await settle()
+  const answerFirst = r.takeAnswer()
+  await r.api.interrupt()
+  answerFirst('A story the person no longer wants to hear.')
+  await settle()
+  assert.deepEqual(r.spoken, [], 'nothing from the abandoned turn is spoken')
+  assert.equal(r.calls.error, 0)
+})
+
+test('an interruption heard while nothing of the assistant\'s is playing or pending is ignored', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  const before = { ...r.calls }
+  r.callbacks.bargeIn()
+  await settle()
+  assert.equal(r.calls.cancel, before.cancel)
+  assert.equal(r.calls.interrupt, before.interrupt)
+})
+
+test('a speech failure puts the assistant in its error state, then idle, and a new conversation can start', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  r.hear('what time is it')
+  await settle()
+  r.streamToken('It is noon. ')
+  await settle()
+  r.answer('It is noon.')
+  await settle()
+  await silenced(async () => {
+    r.failPlayback({ error: 'synthesis-failed' })
+    await settle()
+  })
+  assert.equal(r.calls.error, 1)
+  assert.ok(r.calls.idle >= 1, 'it ends idle, not stuck in speaking')
+  assert.equal(r.api.isConversationActive(), false)
+  assert.equal(r.speakingPhase.at(-1).active, false, 'the input is not left in its speaking phase')
+
+  r.newPlayback()
+  assert.deepEqual(await r.api.startConversation(), { ok: true })
+  r.hear('what time is it')
+  await settle()
+  assert.equal(r.calls.requests, 2, 'the turn did not stay busy')
+})
+
+test('speech cancelled by the browser is not an error: listening comes back', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  r.hear('what time is it')
+  await settle()
+  r.streamToken('It is noon. ')
+  await settle()
+  r.answer('It is noon.')
+  await settle()
+  const before = r.calls.startContinuous
+  r.failPlayback({ error: 'canceled' })
+  await settle()
+  assert.equal(r.calls.error, 0)
+  assert.equal(r.calls.startContinuous, before + 1, 'listening resumed')
+  assert.equal(r.api.isConversationActive(), true)
+  r.newPlayback()
+  r.hear('and tomorrow')
+  await settle()
+  assert.equal(r.calls.requests, 2)
+})
+
+test('speech that never reports its end does not leave the turn stuck', async () => {
+  const r = convRig({ ttsWatchdogMs: 40 })
+  await r.api.startConversation()
+  r.hear('what time is it')
+  await settle()
+  r.streamToken('It is noon. ')
+  await settle()
+  r.answer('It is noon.')
+  await settle()
+  const before = { ...r.calls }
+  await new Promise((resolve) => setTimeout(resolve, 120)) // endStream() never settles
+  await settle()
+  assert.equal(r.calls.cancel, before.cancel + 1, 'the stuck speech is cut')
+  assert.equal(r.calls.startContinuous, before.startContinuous + 1, 'and listening resumes')
+  r.newPlayback()
+  r.hear('are you there')
+  await settle()
+  assert.equal(r.calls.requests, 2)
+})
+
+test('an empty capture from earlier does not reset the turn that is in progress', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  r.hear('what time is it')
+  await settle()
+  r.streamToken('The time right now is exactly noon. ')
+  await settle()
+  assert.equal(r.spoken.length, 1, 'the first sentence is being spoken')
+  const before = { ...r.calls }
+  const spokenBefore = r.spoken.length
+  await silenced(async () => {
+    r.callbacks.error({ error: 'no-speech' }) // an earlier capture came back empty, mid-reply
+    await settle()
+  })
+  assert.equal(r.calls.startContinuous, before.startContinuous, 'listening was not restarted over the reply')
+  assert.equal(r.calls.stop, before.stop, 'and the capture now running was not stopped')
+  r.streamToken('And in ten minutes it will be a quarter past. ')
+  await settle()
+  assert.ok(r.spoken.length > spokenBefore, 'the rest of the reply is still spoken')
+})
+
+test('between turns an empty capture still returns to listening, as before', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  const before = r.calls.startContinuous
+  await silenced(async () => {
+    r.callbacks.error({ error: 'no-speech' })
+    await settle()
+  })
+  assert.equal(r.calls.startContinuous, before + 1)
+})
+
+test('meeting: a final captured before the meeting started is dropped after it, and the assistant answers again later', async () => {
+  const r = convRig()
+  await r.api.startConversation()
+  const began = performance.now()
+  await tick()
+  await r.api.suspend()
+  r.callbacks.final('something said before the meeting', { captureId: 700, startedAt: began })
+  await settle()
+  assert.equal(r.calls.requests, 0, 'nothing is asked of the assistant during a meeting')
+  r.api.resume()
+  await r.api.startConversation()
+  r.callbacks.final('something said before the meeting', { captureId: 701, startedAt: began })
+  await settle()
+  assert.equal(r.calls.requests, 0, 'and it stays dropped afterwards')
+  r.hear('are you there')
+  await settle()
+  assert.equal(r.calls.requests, 1)
 })

@@ -34,6 +34,17 @@ export function createVoiceInputLocal({
   vadCooldownMs = 1200,
   vadBargeInMinMs = 600,
   vadBargeInThreshold = 0.04,
+  // Self-echo protection. The assistant's own voice leaves the speakers and reaches this microphone: browser echo
+  // cancellation is not guaranteed for speech synthesis, and a fixed loudness threshold cannot tell the two voices
+  // apart (it was 0.04, and a laptop's speakers are louder than that in its own microphone).
+  //  - After the assistant stops, the microphone is ignored this long: its last words are still in the room.
+  vadPostSpeechSettleMs = 700,
+  //  - After it was cut off by an interruption the pause is short: the person is already talking.
+  vadBargeInSettleMs = 150,
+  //  - An interruption must be this many times louder than the assistant's own voice measured in this microphone.
+  vadBargeInEchoRatio = 1.8,
+  //  - The first part of the playback is spent measuring that loudness; nothing counts as an interruption then.
+  vadBargeInGuardMs = 500,
   getDeviceId = () => ''
 } = {}) {
   let onPartial = () => {}
@@ -123,6 +134,18 @@ export function createVoiceInputLocal({
   let capturePeakRms = 0
   let cooldownUntil = 0
   let cooldownTimer = null
+  // The turn is in progress (the orchestrator turned detection off): stay deaf until listening is restarted.
+  let detectionHeld = false
+  // Self-echo: when this playback began, when it became audible, how loud it is in this microphone, and until
+  // when the sound it left in the room is still being waited out.
+  let speakingStartedAt = 0
+  let playbackAudibleAt = 0
+  let echoLevel = 0
+  let settleUntil = 0
+  let bargeInReported = false // an interruption is reported once per playback, however long the person talks
+  // The capture in progress (or the last one): who it is, when it began, and whether it must be thrown away.
+  let captureSeq = 0
+  let currentCapture = null
 
   function now() {
     return performance.now?.() ?? Date.now()
@@ -165,18 +188,42 @@ export function createVoiceInputLocal({
     return rms < quietCeiling
   }
 
-  function scheduleDetectionCooldown() {
+  function scheduleDetectionCooldown(ms = vadCooldownMs) {
     detectionEnabled = false
-    cooldownUntil = now() + vadCooldownMs
+    cooldownUntil = Math.max(cooldownUntil, now() + ms)
+    armCooldownTimer()
+  }
+
+  function armCooldownTimer() {
     if (cooldownTimer) clearTimeout(cooldownTimer)
     cooldownTimer = setTimeout(() => {
       cooldownTimer = null
-      if (!continuousActive || captureActive || speakingPhase) return
-      if (now() < cooldownUntil) return
+      // Not while a capture is running, the assistant is speaking, or a turn holds detection off: listening
+      // comes back through startContinuous() at the end of the turn, not because a timer ran out mid-turn.
+      if (!continuousActive || captureActive || speakingPhase || detectionHeld) return
+      if (now() < cooldownUntil) {
+        armCooldownTimer() // fired a little early: wait out the rest
+        return
+      }
       detectionEnabled = true
       speechStartAt = 0
       silenceStartAt = 0
-    }, vadCooldownMs)
+    }, Math.max(0, cooldownUntil - now()))
+  }
+
+  /** The assistant's voice is over (or was cut): wait out what is still in the room before listening. */
+  function settleAfterPlayback(ms) {
+    settleUntil = now() + ms
+    speechStartAt = 0
+    silenceStartAt = 0
+    bargeStartAt = 0
+    scheduleDetectionCooldown(ms)
+  }
+
+  /** A capture that began before or during playback holds the assistant's own voice: throw it away. */
+  function discardActiveCapture() {
+    if (currentCapture) currentCapture.discarded = true
+    stopRecorderOnly()
   }
 
   function vadTick() {
@@ -185,16 +232,33 @@ export function createVoiceInputLocal({
     const t = now()
 
     if (speakingPhase) {
-      // Barge-in: require clearly louder than ambient noise (not random clicks).
-      const bargeLoud = rms >= Math.max(vadBargeInThreshold, speechStartThreshold() * 1.15)
-      if (bargeLoud) {
+      // Whatever is loud now is, most likely, the assistant itself. Measure how loud it is in this microphone
+      // while it starts (the sound is only counted from when it is audible), then ask an interruption to be
+      // clearly louder than that as well as louder than the fixed floor.
+      const audibleSince = Math.max(speakingStartedAt, playbackAudibleAt)
+      if (t - audibleSince < vadBargeInGuardMs) {
+        echoLevel = Math.max(echoLevel, rms)
+        bargeStartAt = 0
+        return
+      }
+      const ceiling = Math.max(
+        vadBargeInThreshold,
+        speechStartThreshold() * 1.15,
+        echoLevel * vadBargeInEchoRatio
+      )
+      if (bargeInReported) return
+      if (rms >= ceiling) {
         if (!bargeStartAt) bargeStartAt = t
         if (t - bargeStartAt >= vadBargeInMinMs) {
           bargeStartAt = 0
+          bargeInReported = true
           onBargeIn()
         }
       } else {
         bargeStartAt = 0
+        // Not an interruption: follow slow changes in the assistant's own loudness (upwards only, and slowly,
+        // so that a person speaking for a moment does not raise the bar against themselves).
+        if (rms > echoLevel) echoLevel += 0.02 * (rms - echoLevel)
       }
       return
     }
@@ -217,7 +281,7 @@ export function createVoiceInputLocal({
       return
     }
 
-    if (!detectionEnabled || t < cooldownUntil) {
+    if (!detectionEnabled || detectionHeld || t < cooldownUntil) {
       speechStartAt = 0
       if (!captureActive && !speakingPhase) updateNoiseFloor(rms)
       return
@@ -250,6 +314,8 @@ export function createVoiceInputLocal({
     if (continuousActive) {
       speechStartAt = 0
       silenceStartAt = 0
+      bargeStartAt = 0
+      detectionHeld = false
       detectionEnabled = now() >= cooldownUntil
       emitPhase('listening')
       return true
@@ -294,6 +360,8 @@ export function createVoiceInputLocal({
 
     continuousActive = true
     detectionEnabled = true
+    detectionHeld = false
+    settleUntil = 0
     speechStartAt = 0
     silenceStartAt = 0
     bargeStartAt = 0
@@ -305,7 +373,9 @@ export function createVoiceInputLocal({
   async function stopContinuous() {
     continuousActive = false
     detectionEnabled = false
+    detectionHeld = false
     speakingPhase = false
+    settleUntil = 0
     cooldownUntil = 0
     if (cooldownTimer) {
       clearTimeout(cooldownTimer)
@@ -428,6 +498,8 @@ export function createVoiceInputLocal({
       return
     }
     captureActive = true
+    const capture = { id: ++captureSeq, startedAt: now(), discarded: false }
+    currentCapture = capture
     capturePeakRms = 0
     chunks = []
     onPartial('')
@@ -438,6 +510,15 @@ export function createVoiceInputLocal({
 
     try {
       await ensureStream()
+      // Thrown away (the assistant began to speak) or replaced while the microphone was being opened.
+      if (capture.discarded || currentCapture !== capture) {
+        if (currentCapture === capture) captureActive = false
+        if (capture.discarded) {
+          emitPhase('idle')
+          onRejected({ reason: 'overlapped-playback' })
+        }
+        return
+      }
       const mimeType = pickMimeType()
       recorder = new globalThis.window.MediaRecorder(stream, mimeType ? { mimeType } : undefined)
 
@@ -457,9 +538,17 @@ export function createVoiceInputLocal({
         captureActive = false
         const wasHold = holdToTalkActive
         holdToTalkActive = false
-        if (continuousActive) scheduleDetectionCooldown()
+
+        if (continuousActive && !capture.discarded) scheduleDetectionCooldown()
 
         try {
+          if (capture.discarded) {
+            // It holds the assistant's own voice. Not a transcript, and not a "no speech" error either: that
+            // would restart listening in the middle of the reply. The settle after playback decides when to listen.
+            emitPhase('idle')
+            onRejected({ reason: 'overlapped-playback' })
+            return
+          }
           if (!chunks.length) {
             emitPhase('idle')
             onError({ error: 'no-speech' })
@@ -467,7 +556,7 @@ export function createVoiceInputLocal({
           }
           const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' })
           const text = await transcribe(blob)
-          if (text) onFinal(text)
+          if (text) onFinal(text, { captureId: capture.id, startedAt: capture.startedAt })
           else onError({ error: 'no-speech' })
         } catch (err) {
           emitPhase('idle')
@@ -547,21 +636,49 @@ export function createVoiceInputLocal({
       onBargeIn = typeof fn === 'function' ? fn : () => {}
     },
 
+    /**
+     * false: a turn is in progress, do not start a capture until listening is restarted with startContinuous().
+     * (A cooldown timer used to re-open detection a second after an utterance ended, in the middle of the turn,
+     * and a capture started then went on to record the assistant's own reply.)
+     */
     setDetectionEnabled(enabled) {
       detectionEnabled = Boolean(enabled)
+      detectionHeld = !enabled
       if (!enabled) {
         speechStartAt = 0
         silenceStartAt = 0
       }
     },
 
-    setSpeakingPhase(active) {
-      speakingPhase = Boolean(active)
+    /**
+     * The assistant started (true) or stopped (false) speaking. Stopping because it was cut off by an interruption
+     * is reported with { interrupted: true }: the person is already talking, so the wait is short.
+     */
+    setSpeakingPhase(active, { interrupted = false } = {}) {
+      const next = Boolean(active)
+      const was = speakingPhase
+      speakingPhase = next
       bargeStartAt = 0
-      if (active) {
+      if (next) {
         detectionEnabled = false
         speechStartAt = 0
+        silenceStartAt = 0
+        if (!was) {
+          speakingStartedAt = now()
+          playbackAudibleAt = 0
+          echoLevel = 0
+          bargeInReported = false
+        }
+        // Anything being recorded now will contain the assistant.
+        if (captureActive) discardActiveCapture()
+        return
       }
+      if (was) settleAfterPlayback(interrupted ? vadBargeInSettleMs : vadPostSpeechSettleMs)
+    },
+
+    /** The output reports that the assistant's voice is audible now: the loudness measurement starts here. */
+    notePlaybackStarted() {
+      if (speakingPhase) playbackAudibleAt = now()
     },
 
     startContinuous,
@@ -573,11 +690,11 @@ export function createVoiceInputLocal({
 
     /**
      * The microphone level right now, 0..1, read from the analyser the hands-free loop already runs.
-     * 0 when it is not listening, and while the assistant is speaking: the assistant's own voice in the
-     * microphone must never be mistaken for the user's.
+     * 0 when it is not listening, while the assistant is speaking and while its last words are still in the room:
+     * the assistant's own voice in the microphone must never be mistaken for the user's.
      */
     getInputLevel() {
-      if (!continuousActive || !analyserNode || speakingPhase) return 0
+      if (!continuousActive || !analyserNode || speakingPhase || now() < settleUntil) return 0
       return Math.min(1, readRms() / 0.12)
     },
 

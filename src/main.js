@@ -179,6 +179,10 @@ if (settings.voice?.enabled) {
           vadCooldownMs: settings.voice?.vadCooldownMs,
           vadBargeInMinMs: settings.voice?.vadBargeInMinMs,
           vadBargeInThreshold: settings.voice?.vadBargeInThreshold,
+          vadPostSpeechSettleMs: settings.voice?.vadPostSpeechSettleMs,
+          vadBargeInSettleMs: settings.voice?.vadBargeInSettleMs,
+          vadBargeInEchoRatio: settings.voice?.vadBargeInEchoRatio,
+          vadBargeInGuardMs: settings.voice?.vadBargeInGuardMs,
           getDeviceId: () => deviceManager.getPreferredDeviceId?.() ?? ''
         })
       : sttMode === 'server'
