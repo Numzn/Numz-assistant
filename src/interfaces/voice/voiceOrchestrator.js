@@ -148,27 +148,45 @@ export function createVoiceOrchestrator({
   // them out of order.
   let pendingSpeechChunks = []
   let drainingSpeechQueue = false
+  let speechDrain = Promise.resolve()
 
-  async function drainSpeechQueue() {
-    if (drainingSpeechQueue) return
+  // A reply reaches the speech output a chunk at a time, and each chunk waits for the one before it to finish
+  // speaking. So "the output has nothing queued" is NOT "the reply has been spoken": chunks may still be waiting
+  // here (or on the voice, or on the server round trip that precedes speech). A reply is over when this queue is
+  // empty and the output has ended. (Treating the output alone as the end made the assistant declare itself done
+  // as it began to speak, and listen to, and transcribe, its own voice.)
+  function drainSpeechQueue() {
+    if (drainingSpeechQueue) return speechDrain
     drainingSpeechQueue = true
-    try {
-      while (pendingSpeechChunks.length > 0) {
-        const text = pendingSpeechChunks.shift()
-        const ready = await ensureSpeakingStarted()
-        if (!ready) {
-          pendingSpeechChunks = [] // given up on while the state was being synced: nothing more is spoken
-          break
+    speechDrain = (async () => {
+      try {
+        while (pendingSpeechChunks.length > 0) {
+          const text = pendingSpeechChunks.shift()
+          const ready = await ensureSpeakingStarted()
+          if (!ready) {
+            pendingSpeechChunks = [] // given up on while the state was being synced: nothing more is spoken
+            break
+          }
+          try {
+            await voiceOutput.enqueueChunk(text, ttsOptions())
+          } catch (err) {
+            console.error('[voice] streaming speech chunk failed', err)
+          }
         }
-        try {
-          await voiceOutput.enqueueChunk(text, ttsOptions())
-        } catch (err) {
-          console.error('[voice] streaming speech chunk failed', err)
-        }
+      } finally {
+        drainingSpeechQueue = false
       }
-    } finally {
-      drainingSpeechQueue = false
+    })()
+    return speechDrain
+  }
+
+  /** Resolves when every chunk of the reply has been spoken and the output has ended. */
+  async function waitUntilSpoken(turn) {
+    while (drainingSpeechQueue || pendingSpeechChunks.length > 0) {
+      await drainSpeechQueue()
+      if (turn !== turnId) return
     }
+    await voiceOutput.endStream()
   }
 
   function queueSpeechChunk(text) {
@@ -296,29 +314,19 @@ export function createVoiceOrchestrator({
   async function speakReply(replyText) {
     if (suspended) return
     const turn = turnId
-    // Most of the reply was very likely already spoken incrementally, chunk
-    // by chunk, as it streamed in (see bindStreaming's token handler) —
-    // ensureSpeakingStarted() is a no-op if that already happened. This
-    // only does the full one-shot speak() setup+call when streaming never
-    // produced a single chunk (e.g. the non-streaming JSON fallback path in
-    // controller.js, which emits no token events at all).
-    if (!speakingStarted) {
-      if (!replyText) return
-      const ready = await ensureSpeakingStarted()
-      if (!ready) return
-      await voiceOutput.enqueueChunk(replyText, ttsOptions())
-      if (turn !== turnId) return
-    } else if (speechBuffer.trim()) {
-      // Flush whatever's left in the buffer past the last sentence boundary.
-      const rest = speechBuffer
-      speechBuffer = ''
-      await voiceOutput.enqueueChunk(rest, ttsOptions())
-      if (turn !== turnId) return
-    }
+    // Most of the reply was very likely already handed over chunk by chunk as it streamed in (see bindStreaming's
+    // token handler). What is left is the tail past the last sentence boundary, or the whole reply when it never
+    // streamed (the non-streaming JSON fallback path in controller.js emits no token events at all). It goes
+    // through the same queue, so it is spoken after everything before it, in order.
+    const streamed = speakingStarted || drainingSpeechQueue || pendingSpeechChunks.length > 0
+    const rest = String((streamed ? speechBuffer : replyText) ?? '').trim()
+    speechBuffer = ''
+    if (!streamed && !rest) return
+    if (rest) pendingSpeechChunks.push(rest)
 
     let stallTimer = null
     try {
-      const ended = Promise.resolve(voiceOutput.endStream())
+      const ended = waitUntilSpoken(turn)
       ended.catch(() => {}) // if the watchdog wins, a late rejection is not an unhandled one
       const stalled = new Promise((resolve) => {
         stallTimer = setTimeout(() => resolve('stalled'), speechWatchdogMs(replyText))
@@ -440,10 +448,11 @@ export function createVoiceOrchestrator({
         // the turn ended without a final reply (e.g. aborted mid-stream) —
         // still need to close out speaking state cleanly.
         try {
-          await voiceOutput.endStream()
+          await waitUntilSpoken(turn)
         } catch {
           /* ignore */
         }
+        if (!current()) return
         if (typeof voiceInput.setSpeakingPhase === 'function') voiceInput.setSpeakingPhase(false)
         speakingStarted = false
       }
