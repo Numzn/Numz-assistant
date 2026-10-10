@@ -1,5 +1,6 @@
 import { MeetingApiError } from './meetingApi.js'
 import { normalizeCaptureMode } from '../voice/captureSources.js'
+import { createIntelligenceStore } from './meetingIntelligenceStore.js'
 
 /**
  * The browser's meeting flow as a small state machine, with no DOM and no globals, so it can be tested.
@@ -63,6 +64,8 @@ function emptyState() {
     sources: [], // [{ id, label, state, detail }] what each source is doing (see captureSources.js)
     droppedSeconds: 0, // audio the connection could not carry; missing from the transcript
     launchReady: false, // the server accepts a start from this browser without the code being typed again
+    intelligence: null, // the server's live intelligence state for this meeting (see meetingIntelligenceStore.js)
+    intelligenceError: null, // this page could not get it (separate from what the server says about the analysis)
     result: null // { verified, storedSegments, unverifiedSessions } once done
   }
 }
@@ -162,7 +165,8 @@ export function createMeetingController({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
   now = () => Date.now(),
-  newLaunchKey = randomLaunchKey
+  newLaunchKey = randomLaunchKey,
+  intelligenceOptions = {} // timers / intervals for the intelligence poller (tests)
 }) {
   let state = emptyState()
   let captureMode = 'microphone' // kept for Reconnect
@@ -176,7 +180,8 @@ export function createMeetingController({
 
   /** A clean form that still knows whether this browser is unlocked. */
   function blank() {
-    return { ...emptyState(), launchReady }
+    const known = intelligence.get() // the last meeting's findings stay readable until another meeting starts
+    return { ...emptyState(), launchReady, intelligence: known.data, intelligenceError: known.error }
   }
 
   function set(patch) {
@@ -184,6 +189,14 @@ export function createMeetingController({
     state = { ...state, ...patch }
     for (const listener of listeners) listener(state)
   }
+
+  // The one copy of the meeting's findings: the panel renders it, chat answers from it.
+  const intelligence = createIntelligenceStore({
+    api,
+    now,
+    ...intelligenceOptions,
+    onChange: ({ data, error }) => set({ intelligence: data, intelligenceError: error })
+  })
 
   function addLine(segment, persisted) {
     const kind = SAVED.has(persisted) ? 'saved' : persisted === 'FAILED' ? 'waiting' : 'notSaved'
@@ -300,6 +313,7 @@ export function createMeetingController({
     const recordings = (integrity.sessions ?? []).length
     storage.clear()
     session = null
+    intelligence.markClosed() // keeps asking until the final record is settled
     // "Verified" is true of a meeting that never recorded anything, but saying so would mislead.
     const nothingRecorded = recordings === 0
     // A recording that produced no lines is "verified" (0 of 0) and tells the person nothing they need.
@@ -362,6 +376,12 @@ export function createMeetingController({
   return {
     getState: () => state,
     refreshLaunchSession,
+    /** The server's intelligence state for the current (or last) meeting, or null. The one copy. */
+    getIntelligence: () => intelligence.get().data,
+    /** Ask the server to update now (and, for a closed meeting, to retry the final record). -> state | null */
+    refreshIntelligence: (options) => intelligence.refresh(options),
+    /** Resolves once the final record is settled (ready, failed, withheld, empty) or the time limit passes. */
+    awaitFinalIntelligence: (options) => intelligence.awaitFinal({ sleep, ...options }),
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -381,6 +401,7 @@ export function createMeetingController({
         return
       }
       session = saved
+      intelligence.track({ meetingId: saved.meetingId, ticketToken: saved.ticketToken })
       set({
         phase: 'unfinished',
         open: true,
@@ -423,6 +444,7 @@ export function createMeetingController({
       }
       const cleanTitle = String(title ?? '').trim()
       captureMode = wanted
+      intelligence.untrack() // another meeting's findings are never shown under this one
       set({ ...blank(), phase: 'launching', title: cleanTitle, capture: wanted, message: 'Starting the meeting…' })
       // One key per attempt: if the answer is lost and the user tries again, the server hands back the same
       // meeting instead of starting a second one.
@@ -457,6 +479,7 @@ export function createMeetingController({
       }
       storage.write(session)
       set({ open: true, meetingId: session.meetingId })
+      intelligence.track({ meetingId: session.meetingId, ticketToken: session.ticketToken })
       // A correct code makes the server set a launch session; learn that from the server, not by assuming it.
       // Alongside connecting, so it costs the recording nothing, and settled by the time start() returns.
       const unlockStatus = trimmedCode ? refreshLaunchSession().catch(() => {}) : null
@@ -497,6 +520,7 @@ export function createMeetingController({
       storage.clear()
       session = null
       client = null
+      intelligence.untrack()
       set({
         ...blank(),
         message: `Forgot meeting ${meetingId}. It is still open on the server; ask the operator to end it.`,

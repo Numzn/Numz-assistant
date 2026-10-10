@@ -101,6 +101,27 @@ export function createMeetingApi({ fetchFn = (...args) => globalThis.fetch(...ar
       })
     },
 
+    /**
+     * The live state of THIS meeting's intelligence (the meeting's own ticket is the credential). With `since`, a
+     * revision the caller already has, an unchanged answer is `{ unchanged: true, revision }` and nothing else.
+     */
+    intelligence({ meetingId, ticketToken, since = null }) {
+      const query = Number.isInteger(since) ? `?since=${since}` : ''
+      return request(`${MEETINGS}/${encodeURIComponent(meetingId)}/intelligence/live${query}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${ticketToken}` }
+      })
+    },
+
+    /** Update now (waits a bounded time); for a closed meeting, (re)attempts the final record. */
+    refreshIntelligence({ meetingId, ticketToken, final = false }) {
+      return request(`${MEETINGS}/${encodeURIComponent(meetingId)}/intelligence/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ticketToken}` },
+        body: JSON.stringify(final ? { final: true } : {})
+      })
+    },
+
     /** -> the completed meeting with its integrity report; 409 while lines are missing or a recording is open. */
     end({ meetingId, ticketToken }) {
       return request(`${MEETINGS}/${encodeURIComponent(meetingId)}/end`, {
