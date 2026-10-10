@@ -12,6 +12,7 @@
     "lecture:notes": "node scripts/lecture-notes.js",
     "speech:process": "node scripts/run-speech-process.js",
     "speech:notes": "node scripts/speech-notes.js",
+    "speech:replay": "node scripts/run-replay.js",
     "meeting": "node scripts/meeting-admin.js",
     "outbox:status": "node scripts/run-outbox.js status",
     "outbox:replay": "node scripts/run-outbox.js replay",
