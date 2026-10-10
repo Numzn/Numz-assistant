@@ -24,6 +24,8 @@ import { createMeetingController, LIVE_SPEECH_PATH } from './interfaces/meeting/
 import { createMeetingStorage } from './interfaces/meeting/meetingStorage.js'
 import { createMeetingPanel } from './interfaces/meeting/meetingPanel.js'
 import { checkLiveSpeechSupport } from './interfaces/meeting/liveSupport.js'
+import { createChatController } from './interfaces/chat/chatController.js'
+import { createChatView } from './interfaces/chat/chatView.js'
 
 const canvas = document.querySelector('#canvas')
 if (!canvas) {
@@ -56,18 +58,19 @@ assistantStateMachine.subscribe((next, prev) => {
   console.log('[assistant:visual]', prev, '->', next)
 })
 
+// Five words for the voice-mode status; every internal state maps onto one of them.
 const STATE_LABELS = {
   IDLE: 'Ready',
   LISTENING: 'Listening',
-  TRANSCRIBING: 'Transcribing',
+  TRANSCRIBING: 'Thinking',
   PROCESSING: 'Thinking',
   THINKING: 'Thinking',
   RETRIEVING_MEMORY: 'Thinking',
-  TOOL_EXECUTION: 'Working',
+  TOOL_EXECUTION: 'Thinking',
   GENERATING: 'Thinking',
   SPEAKING: 'Speaking',
-  INTERRUPTED: 'Listening',
-  ERROR_RECOVERY: 'Recovering',
+  INTERRUPTED: 'Ready',
+  ERROR_RECOVERY: 'Error',
   ERROR: 'Error'
 }
 
@@ -104,7 +107,8 @@ if (settings.voice?.enabled) {
   const responseEl = document.querySelector('#assistantResponse')
   const latencyEl = document.querySelector('#latencyFooter')
 
-  if (latencyEl && settings.voice?.latencyAuditEnabled) {
+  const debugRequested = globalThis.location?.search?.includes('debug') === true
+  if (latencyEl && debugRequested && settings.voice?.latencyAuditEnabled) {
     latencyEl.hidden = false
     latencyEl.removeAttribute('aria-hidden')
   }
@@ -228,9 +232,10 @@ function meetingSocketUrl() {
   return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}${LIVE_SPEECH_PATH}`
 }
 
+let meetingController = null
 try {
   const meetingApi = createMeetingApi()
-  const meetingController = createMeetingController({
+  meetingController = createMeetingController({
     api: meetingApi,
     storage: createMeetingStorage(),
     checkSupport: checkLiveSpeechSupport,
@@ -259,11 +264,56 @@ try {
   console.error('[meeting] panel failed to start', err)
 }
 
+// ---- Settings popover: the voice engine toggles it; this keeps it accessible and easy to dismiss ----
+{
+  const button = document.querySelector('#micSettingsButton')
+  const panel = document.querySelector('#micSettingsPanel')
+  const wrap = document.querySelector('#settingsWrap')
+  if (button && panel && wrap) {
+    const sync = () => button.setAttribute('aria-expanded', String(!panel.hidden))
+    const close = () => {
+      panel.hidden = true
+      sync()
+    }
+    button.addEventListener('click', () => queueMicrotask(sync)) // after the engine's own toggle
+    document.addEventListener('pointerdown', (event) => {
+      if (!panel.hidden && !wrap.contains(event.target)) close()
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !panel.hidden) {
+        close()
+        button.focus()
+      }
+    })
+    sync()
+  }
+}
+
+// ---- Home: the conversation and its composer ----
+// A meeting uses the microphone and the assistant stands down for it (see setAssistantVoiceAvailable), so
+// ordinary messages wait until it is finished. Same definition of "open" as the meeting panel uses.
+const meetingIsOpen = () => {
+  const meeting = meetingController?.getState?.()
+  return Boolean(meeting && (meeting.open || meeting.phase === 'launching'))
+}
+const chat = createChatController({
+  assistantController,
+  assistantClient,
+  eventBus,
+  isBlocked: () => (meetingIsOpen() ? 'meeting' : null)
+})
+const chatView = createChatView({ chat })
+
+// The orb is only drawn in voice mode (the Home screen covers it), so it costs nothing the rest of the time.
 const clock = new THREE.Clock()
 
 function tick() {
   requestAnimationFrame(tick)
-  animator.update(clock.getElapsedTime(), clock.getDelta())
+  // One clock read per frame: getElapsedTime() already advances the clock, so a getDelta() after it returned
+  // about zero and the orb's state transitions never visibly happened.
+  const delta = clock.getDelta()
+  if (document.body.dataset.mode !== 'voice') return
+  animator.update(clock.elapsedTime, delta)
   composer.render()
 }
 

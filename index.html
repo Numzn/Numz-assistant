@@ -3,50 +3,116 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AI Core</title>
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#212121" />
+    <title>NUMZ</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
-  <body>
-    <canvas id="canvas"></canvas>
-    <div id="voiceUi" aria-label="Voice controls">
+  <body data-mode="chat">
+    <!-- The orb. Drawn only in voice mode; the Home screen covers it. -->
+    <canvas id="canvas" aria-hidden="true"></canvas>
+
+    <div id="app">
+      <header id="appHeader">
+        <span id="brand">NUMZ</span>
+        <div id="headerActions">
+          <button id="newChatButton" type="button" class="ghost" aria-label="New conversation" title="New conversation">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+            <span>New chat</span>
+          </button>
+          <button
+            id="meetingButton"
+            type="button"
+            class="ghost"
+            aria-label="Meeting"
+            aria-expanded="false"
+            aria-controls="meetingPanel"
+            title="Record and save a meeting"
+          >
+            Meeting
+          </button>
+          <div id="settingsWrap">
+            <button
+              id="micSettingsButton"
+              type="button"
+              class="ghost"
+              aria-label="Settings"
+              aria-expanded="false"
+              aria-controls="micSettingsPanel"
+              title="Settings"
+            >
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M3 6h14M3 14h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /><circle cx="7" cy="6" r="2" fill="#212121" stroke="currentColor" stroke-width="1.6" /><circle cx="13" cy="14" r="2" fill="#212121" stroke="currentColor" stroke-width="1.6" /></svg>
+              <span class="sr-only">Settings</span>
+            </button>
+            <div id="micSettingsPanel" role="group" aria-label="Voice settings" hidden>
+              <label for="micDeviceSelect">Microphone</label>
+              <div id="micDeviceControls">
+                <select id="micDeviceSelect"></select>
+                <button id="micRefreshButton" type="button">Refresh</button>
+                <button id="micTestButton" type="button">Test</button>
+              </div>
+              <div id="micDeviceHint"></div>
+              <div id="wakeRow">
+                <span>Wake word</span>
+                <button id="wakeButton" type="button" aria-pressed="false" aria-label="Toggle wake word mode" title="Toggle wake word mode">Wake</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main id="chatMain">
+        <h1 id="welcome">What can I help with?</h1>
+        <ol id="thread" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation"></ol>
+      </main>
+
+      <div id="composerWrap">
+        <p id="composerNotice" role="status" aria-live="polite" hidden></p>
+        <form id="composer" autocomplete="off">
+          <label for="composerInput" class="sr-only">Message NUMZ</label>
+          <textarea
+            id="composerInput"
+            rows="1"
+            maxlength="4000"
+            placeholder="Message NUMZ"
+            enterkeyhint="send"
+            aria-keyshortcuts="Enter"
+            spellcheck="true"
+          ></textarea>
+          <div id="composerActions">
+            <button id="voiceModeButton" type="button" class="round" aria-label="Start voice mode" title="Start voice mode" hidden>
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 3a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0v-4A2.5 2.5 0 0 0 10 3Zm-5 6.5a5 5 0 0 0 10 0M10 14.5V17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+            </button>
+            <button id="sendButton" type="submit" class="round primary" aria-label="Send message" title="Send (Enter)" disabled>
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 16V4m0 0-5 5m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+            </button>
+            <button id="stopButton" type="button" class="round primary" aria-label="Stop" title="Stop" hidden>
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5" fill="currentColor" /></svg>
+            </button>
+          </div>
+        </form>
+        <p id="composerHint">Enter to send &middot; Shift+Enter for a new line</p>
+      </div>
+    </div>
+
+    <!-- Voice mode: the orb (the canvas behind) plus a status and the controls to stop. -->
+    <section id="voiceMode" aria-label="Voice mode" hidden>
       <div id="assistantStateBadge" data-state="IDLE">
         <span id="assistantStateDot" aria-hidden="true"></span>
-        <span id="assistantStateLabel">Ready</span>
+        <span id="assistantStateLabel" role="status" aria-live="polite">Ready</span>
       </div>
-      <div id="voiceControls">
-        <button id="micButton" type="button" aria-label="Hold to talk">
-          Hold to talk
-        </button>
-        <button id="wakeButton" type="button" aria-label="Toggle wake word mode" title="Toggle wake word mode">
-          Wake
-        </button>
-        <button id="micSettingsButton" type="button" aria-label="Microphone settings" title="Microphone settings">
-          Mic
-        </button>
-        <button
-          id="meetingButton"
-          type="button"
-          aria-label="Meeting"
-          aria-expanded="false"
-          aria-controls="meetingPanel"
-          title="Record and save a meeting"
-        >
-          Meeting
-        </button>
+      <p id="voiceStatus" aria-live="polite"></p>
+      <div id="voiceModeActions">
+        <button id="voiceInterruptButton" type="button" class="pill" hidden>Stop</button>
+        <button id="voiceEndButton" type="button" class="pill primary">End voice mode</button>
       </div>
-      <div id="micSettingsPanel" hidden>
-        <label for="micDeviceSelect">Microphone test device</label>
-        <div id="micDeviceControls">
-          <select id="micDeviceSelect"></select>
-          <button id="micRefreshButton" type="button">Refresh</button>
-          <button id="micTestButton" type="button">Test</button>
-        </div>
-        <div id="micDeviceHint"></div>
-      </div>
-      <div id="voiceStatus" aria-live="polite"></div>
-      <div id="voiceTranscript" aria-live="polite"></div>
-      <div id="assistantResponse" aria-live="polite"></div>
-    </div>
+    </section>
+
+    <!-- Kept for the voice engine, which writes here; the conversation thread is the only place text is shown. -->
+    <button id="micButton" type="button" aria-label="Hold to talk" hidden>Hold to talk</button>
+    <div id="voiceTranscript" hidden></div>
+    <div id="assistantResponse" hidden></div>
+
     <section id="meetingPanel" aria-label="Meeting" hidden>
       <div id="meetingHead">
         <span id="meetingHeading">Meeting</span>
@@ -69,6 +135,7 @@
       <p id="meetingMessage" role="status" aria-live="polite" data-tone="info"></p>
       <div id="meetingActions"></div>
     </section>
+
     <div id="latencyFooter" hidden aria-hidden="true"></div>
     <pre id="voiceDebugPanel" hidden aria-label="Voice debug"></pre>
     <script type="module" src="/src/main.js"></script>
