@@ -109,6 +109,7 @@ export function createMeetingController({
   let state = emptyState()
   const listeners = new Set()
   let client = null
+  let stopping = null // the client being stopped: its last lines are still decoded and saved while it winds down
   let session = null // { meetingId, ticketToken, expiresAt, title, startedAt }
   let ending = false
 
@@ -174,7 +175,9 @@ export function createMeetingController({
     })
     live.setOnPartial((text) => client === live && set({ partial: String(text ?? '') }))
     live.setOnStabilizing((text) => client === live && set({ partial: String(text ?? '') }))
-    live.setOnFinalSegment((segment, persisted) => client === live && addLine(segment, persisted))
+    // A line decoded while Stop waits for the speech service is saved on the server, so it is shown and counted
+    // too (the last thing said used to be missing from the panel). Provisional text is not: Stop clears it.
+    live.setOnFinalSegment((segment, persisted) => (client === live || stopping === live) && addLine(segment, persisted))
     live.setOnError((err) => handleConnectionProblem(live, err))
     try {
       await live.start()
@@ -318,11 +321,14 @@ export function createMeetingController({
       if (!client || !['connecting', 'live'].includes(state.phase)) return
       const live = client
       client = null
+      stopping = live
       set({ phase: 'stopping', partial: '', message: 'Finishing the last lines… this can take a few seconds.', tone: 'info' })
       try {
         await live.stop()
       } catch {
         // The speech service finishes the session by itself when the socket closes.
+      } finally {
+        stopping = null
       }
       await finish()
     },

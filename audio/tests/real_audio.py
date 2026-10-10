@@ -110,7 +110,7 @@ def excess_repeats(hypothesis, reference=JFK_REFERENCE, size=3):
     return [" ".join(gram) for gram, n in sorted(heard.items()) if n >= 2 and n > expected.get(gram, 0)]
 
 
-def run_stream(stream, clip_start_s=None, clip_end_s=None, language="en"):
+def run_stream(stream, clip_start_s=None, clip_end_s=None, language="en", **session_args):
     """Feed a stream through the real LiveSpeechSession (real gate, endpointing, Whisper) in 100 ms frames.
 
     Returns what reached the recognizer and what came out. With clip_start_s/clip_end_s (where the speech
@@ -131,7 +131,7 @@ def run_stream(stream, clip_start_s=None, clip_end_s=None, language="en"):
         return push(frame, timestamp_s)
 
     asr.push_audio = counting_push
-    session = LiveSpeechSession(language=language, streaming_asr=asr)
+    session = LiveSpeechSession(language=language, streaming_asr=asr, **session_args)
 
     started = time.perf_counter()
     for i, frame in enumerate(frames, start=1):
@@ -172,3 +172,13 @@ def clip_in_noise(clip_dbfs, offset_samples=0, lead_s=1.0, tail_s=2.5, noise_dbf
     tail = int(tail_s * SAMPLE_RATE)
     stream = np.concatenate([white_noise(lead, noise_dbfs, seed), clip, white_noise(tail, noise_dbfs, seed + 1)])
     return stream, lead / SAMPLE_RATE, (lead + len(clip)) / SAMPLE_RATE
+
+
+def continuous_fast_speech(repeats=3, speed=1.25):
+    """The clip with its pauses and room tone removed, sped up, and repeated: speech with no pause to end an
+    utterance in and no free place for a cut to land. Returns (samples, reference text)."""
+    clip = load_clip()
+    frames = [clip[i : i + FRAME_SAMPLES] for i in range(0, len(clip) - FRAME_SAMPLES + 1, FRAME_SAMPLES)]
+    speech = np.concatenate([f for f in frames if 20 * np.log10(max(rms(f), 1e-9)) > -36])
+    fast = np.interp(np.arange(0, len(speech) - 1, speed), np.arange(len(speech)), speech).astype(np.float32)
+    return np.concatenate([fast] * repeats), " ".join([JFK_REFERENCE] * repeats)

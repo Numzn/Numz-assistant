@@ -119,6 +119,50 @@ class Decodes(unittest.TestCase):
         self.assertEqual((confidence["finalSegments"], confidence["avgLogprobMean"]), (1, None))
 
 
+class SlowDecodes(unittest.TestCase):
+    """A 30-45 s decode of a few seconds of speech was seen in a real meeting; the log has to say why."""
+
+    def retried(self, temperature, compression):
+        return SimpleNamespace(
+            text="secret words", avg_logprob=-0.9, no_speech_prob=0.1, temperature=temperature, compression_ratio=compression
+        )
+
+    def test_a_slow_decode_is_logged_with_its_retry_evidence_and_never_its_text(self):
+        diagnostics, _ = make_diagnostics()
+        with self.assertLogs("speech.live.diagnostics", level="WARNING") as logged:
+            diagnostics.on_decode("final", 34.7, 20.0, [self.retried(0.6, 3.4), self.retried(0.0, 1.2)])
+        (line,) = logged.output
+        payload = json.loads(line.split("slow-decode ", 1)[1])
+        self.assertEqual(
+            (payload["seconds"], payload["audioS"], payload["segments"], payload["maxTemperature"], payload["maxCompressionRatio"]),
+            (34.7, 20.0, 2, 0.6, 3.4),
+        )
+        self.assertNotIn("secret", line)
+
+    def test_normal_decodes_are_not_logged_individually(self):
+        diagnostics, _ = make_diagnostics()
+        with self.assertNoLogs("speech.live.diagnostics", level="WARNING"):
+            diagnostics.on_decode("final", 4.9, 20.0, [self.retried(0.0, 1.5)])
+            diagnostics.on_decode("preview", 2.0, 6.0, [])
+
+    def test_the_summary_counts_slow_decodes_and_keeps_the_worst_retry(self):
+        diagnostics, _ = make_diagnostics()
+        with self.assertLogs("speech.live.diagnostics", level="WARNING"):
+            diagnostics.on_decode("final", 45.2, 20.0, [self.retried(0.4, 2.9)])
+            diagnostics.on_decode("final", 12.0, 8.0, [self.retried(0.2, 2.5)])
+        diagnostics.on_decode("final", 3.0, 8.0, [self.retried(0.0, 1.1)])
+        decodes = diagnostics.summary()["decodes"]
+        self.assertEqual((decodes["slow"], decodes["maxTemperature"], decodes["maxCompressionRatio"]), (2, 0.4, 2.9))
+
+    def test_a_runaway_session_cannot_flood_the_log(self):
+        diagnostics, _ = make_diagnostics()
+        with self.assertLogs("speech.live.diagnostics", level="WARNING") as logged:
+            for _ in range(60):
+                diagnostics.on_decode("final", 30.0, 20.0, [])
+        self.assertEqual(len(logged.output), 20)
+        self.assertEqual(diagnostics.summary()["decodes"]["slow"], 60, "all are still counted")
+
+
 class Lag(unittest.TestCase):
     def test_no_lag_while_processing_keeps_up_with_real_time(self):
         diagnostics, clock = make_diagnostics()

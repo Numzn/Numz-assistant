@@ -30,6 +30,9 @@ LEVEL_BINS = 50  # -100 .. 0 dBFS
 # Whisper's own cut-offs: a segment below the first is a poor decode, above the second probably not speech.
 LOW_LOGPROB = -1.0
 LIKELY_NON_SPEECH = 0.6
+# A decode this slow (a normal final takes 2-5 s) is logged on its own, so a long lag can be explained.
+SLOW_DECODE_S = 10.0
+MAX_SLOW_LOGS = 20  # per session
 
 
 def _never_raises(method):
@@ -106,6 +109,10 @@ class SessionDiagnostics:
         self.max_no_speech_prob: Optional[float] = None
         self.low_logprob_segments = 0
         self.likely_non_speech_segments = 0
+        self.max_temperature: Optional[float] = None
+        self.max_compression_ratio: Optional[float] = None
+        self.slow_decodes = 0
+        self.forced_cuts = 0
 
         self._wall_at_first_frame: Optional[float] = None
         self._stream_at_first_frame = 0.0
@@ -149,6 +156,11 @@ class SessionDiagnostics:
                 self._quiet_run_in_utterance_s = 0.0
 
     @_never_raises
+    def on_forced_cut(self):
+        """An utterance reached the length limit and was cut (in a gap between words if there was one)."""
+        self.forced_cuts += 1
+
+    @_never_raises
     def on_forwarded(self):
         """A frame was handed to the recognizer."""
         self.frames_forwarded += 1
@@ -156,6 +168,40 @@ class SessionDiagnostics:
     @_never_raises
     def on_decode(self, kind: str, seconds: float, audio_s: float, segments=()):
         """One Whisper decode: kind 'preview' or 'final', its wall time, the audio it covered, its raw segments."""
+        decode_max_temperature = decode_max_compression = None
+        for segment in segments or ():
+            temperature = getattr(segment, "temperature", None)
+            compression = getattr(segment, "compression_ratio", None)
+            if isinstance(temperature, (int, float)):
+                decode_max_temperature = temperature if decode_max_temperature is None else max(decode_max_temperature, temperature)
+            if isinstance(compression, (int, float)):
+                decode_max_compression = compression if decode_max_compression is None else max(decode_max_compression, compression)
+        if decode_max_temperature is not None:
+            self.max_temperature = decode_max_temperature if self.max_temperature is None else max(self.max_temperature, decode_max_temperature)
+        if decode_max_compression is not None:
+            self.max_compression_ratio = decode_max_compression if self.max_compression_ratio is None else max(self.max_compression_ratio, decode_max_compression)
+        if seconds >= SLOW_DECODE_S:
+            self.slow_decodes += 1
+            if self.slow_decodes <= MAX_SLOW_LOGS:
+                # Numbers only. maxTemperature above 0 means Whisper retried the decode; a high compression
+                # ratio (above 2.4) means the text was repetitive: the usual reasons a decode takes 30 s.
+                self._log.warning(
+                    "live-speech-diag slow-decode %s",
+                    json.dumps(
+                        {
+                            "session": self.session_id,
+                            "kind": kind,
+                            "seconds": round(seconds, 1),
+                            "audioS": round(audio_s, 1),
+                            "segments": len(segments or ()),
+                            "maxTemperature": decode_max_temperature,
+                            "maxCompressionRatio": None if decode_max_compression is None else round(decode_max_compression, 2),
+                            "streamS": round(self.stream_s, 1),
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                )
         if kind == "final":
             self.finals.add(seconds, audio_s)
             for segment in segments or ():
@@ -222,9 +268,16 @@ class SessionDiagnostics:
                 "p99": self._level_percentile(0.99),
             },
             "noiseFloorDbfs": r(self.noise_floor_dbfs, 1),
+            "forcedCuts": self.forced_cuts,
             "longestQuietS": r(self.longest_quiet_s, 1),
             "longestQuietInUtteranceS": r(self.longest_quiet_in_utterance_s, 1),
-            "decodes": {"preview": self.previews.as_dict(), "final": self.finals.as_dict()},
+            "decodes": {
+                "preview": self.previews.as_dict(),
+                "final": self.finals.as_dict(),
+                "slow": self.slow_decodes,
+                "maxTemperature": r(self.max_temperature, 2),
+                "maxCompressionRatio": r(self.max_compression_ratio, 2),
+            },
             "lagS": {"last": r(self.lag_last_s), "max": r(self.lag_max_s)},
             "confidence": {
                 "finalSegments": self.final_segments,

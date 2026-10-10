@@ -69,6 +69,13 @@ class Endpointer:
         self._last_speech_at = None
         self._silence_since = None
 
+    def continue_from(self, start_s: float, now_s: float):
+        """The utterance was cut at the length limit at `start_s` and goes on from there: the next limit is
+        counted from the cut, and the turn is still open."""
+        self._utterance_start = start_s
+        self._last_speech_at = now_s
+        self._silence_since = None
+
     def in_progress(self) -> bool:
         return self._utterance_start is not None
 

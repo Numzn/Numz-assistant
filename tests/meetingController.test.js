@@ -61,6 +61,7 @@ function fakeClients({ startError } = {}) {
       },
       async stop() {
         live.stopCalls += 1
+        await live.whileStopping?.() // the speech service keeps sending lines until it has finished
       },
       setOnReady: (fn) => (handlers.ready = fn),
       setOnPartial: (fn) => (handlers.partial = fn),
@@ -100,6 +101,35 @@ function build({ api = fakeApi(), clients = fakeClients(), storage = createMemor
   })
   return { controller, api, clients, storage, sleeps, phases }
 }
+
+test('lines decoded while Stop waits for the speech service are shown and counted (the last words were missing)', async () => {
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(3)] }) })
+  await controller.start({ code: 'the-code', title: '' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.final(seg(1, 'first'), 'INSERTED')
+  live.emit.final(seg(2, 'second'), 'INSERTED')
+  live.whileStopping = async () => {
+    live.emit.partial('provisional') // Stop cleared the provisional text; it must not come back
+    live.emit.final(seg(3, 'last words'), 'INSERTED') // decoded after Stop was pressed, saved on the server
+  }
+  await controller.stop()
+  const done = controller.getState()
+  assert.deepEqual(done.lines.map((line) => line.text), ['first', 'second', 'last words'])
+  assert.deepEqual(done.counts, { saved: 3, waiting: 0, notSaved: 0 }, 'the counter agrees with the 3 lines the server stored')
+  assert.equal(done.partial, '', 'no provisional text after Stop')
+})
+
+test('lines from a client that is no longer the current one are still ignored once it has finished stopping', async () => {
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(1)] }) })
+  await controller.start({ code: 'the-code', title: '' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.final(seg(1, 'kept'), 'INSERTED')
+  await controller.stop()
+  live.emit.final(seg(2, 'a straggler after the meeting ended'), 'INSERTED')
+  assert.deepEqual(controller.getState().lines.map((line) => line.text), ['kept'])
+})
 
 test('the happy path: launch, connect with the ticket, show saved lines, stop, end, verified', async () => {
   const { controller, api, clients, storage, phases } = build({ api: fakeApi({ end: [completed(2)] }) })
