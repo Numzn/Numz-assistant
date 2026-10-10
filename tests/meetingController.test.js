@@ -491,3 +491,81 @@ test('storage that throws never breaks the meeting', () => {
   const wrongShape = createMeetingStorage({ getItem: () => JSON.stringify({ meetingId: 5 }), setItem() {}, removeItem() {} })
   assert.equal(wrongShape.read(), null)
 })
+
+// ---- Error frames from the speech service: which ones end the recording --------------------------------------
+
+/** What liveSpeechClient hands over for a server `error` frame: an Error that carries the frame's code. */
+const frame = (code, message = 'something happened') => Object.assign(new Error(`[${code}] ${message}`), { code })
+
+test('a line that could not be saved yet does not end the recording: the service keeps it and retries', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'the-code', title: '' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.final(seg(1, 'first'), 'INSERTED')
+  live.emit.error(frame('persistence-failure', 'Segment seg_2 is not saved yet (http-503); it is queued and will be retried'))
+  live.emit.final(seg(2, 'second'), 'FAILED')
+  live.emit.final(seg(3, 'third'), 'INSERTED')
+
+  const state = controller.getState()
+  assert.equal(state.phase, 'live', 'still recording')
+  assert.equal(live.stopCalls, 0, 'the microphone was not released')
+  assert.deepEqual(state.lines.map((line) => line.text), ['first', 'second', 'third'], 'and later lines keep arriving')
+  assert.deepEqual(state.counts, { saved: 2, waiting: 1, notSaved: 0 })
+  assert.equal(state.tone, 'warn', 'but the person is told something needs watching')
+  assert.match(state.message, /recording (continues|carries on)/i)
+})
+
+test('every per-line or per-decode problem is survivable: none of them stops the microphone', async () => {
+  for (const code of ['segment-rejected', 'persistence-failure', 'asr-failure', 'outbox-unavailable', 'finalize-failure', 'transcript-invalid', 'malformed-audio']) {
+    const { controller, clients } = build()
+    await controller.start({ code: 'the-code', title: '' })
+    const live = clients.made[0]
+    live.emit.ready()
+    live.emit.error(frame(code))
+    assert.equal(controller.getState().phase, 'live', `${code} must not end the recording`)
+    assert.equal(live.stopCalls, 0, `${code} must not release the microphone`)
+  }
+})
+
+test('a problem that makes saving impossible still stops the recording and offers to reconnect', async () => {
+  for (const code of ['unsupported-format', 'persistence-unconfigured', 'persistence-unauthorized', 'persistence-rejected', 'persistence-unavailable', 'invalid-meeting-id']) {
+    const { controller, clients } = build()
+    await controller.start({ code: 'the-code', title: '' })
+    const live = clients.made[0]
+    live.emit.error(frame(code))
+    const state = controller.getState()
+    assert.equal(state.phase, 'problem', `${code} is fatal`)
+    assert.equal(state.canReconnect, true)
+    assert.equal(live.stopCalls, 1, `${code} releases the microphone`)
+  }
+})
+
+test('an error with no code (the connection dropped, the microphone failed) is treated as fatal, as before', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'the-code', title: '' })
+  clients.made[0].emit.error(new Error('Live speech connection closed unexpectedly'))
+  assert.equal(controller.getState().phase, 'problem')
+})
+
+test('an unrecognised code is fatal: unknown problems are never assumed harmless', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'the-code', title: '' })
+  clients.made[0].emit.error(frame('something-new'))
+  assert.equal(controller.getState().phase, 'problem')
+})
+
+test('lines that were refused are counted as not saved and the meeting is not reported verified', async () => {
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(1, { verified: false, unverified: 1 })] }) })
+  await controller.start({ code: 'the-code', title: '' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.final(seg(1, 'saved'), 'INSERTED')
+  live.emit.error(frame('segment-rejected', 'The meeting API rejected segment seg_2: segment-id-conflict'))
+  live.emit.final(seg(2, 'refused'), 'REJECTED')
+  await controller.stop()
+  const done = controller.getState()
+  assert.deepEqual(done.counts, { saved: 1, waiting: 0, notSaved: 1 })
+  assert.equal(done.result.verified, false)
+  assert.equal(done.tone, 'warn')
+})

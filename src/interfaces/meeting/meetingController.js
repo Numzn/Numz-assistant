@@ -23,6 +23,22 @@ export const LIVE_SPEECH_PATH = '/api/v1/live-speech'
 const MAX_LINES = 500
 const DEFAULT_RETRY_DELAYS_MS = [1500, 2000, 3000, 4000, 5000, 5000]
 const RETRYABLE_END = new Set(['speech-session-active', 'transcript-incomplete'])
+
+/**
+ * Error frames from the speech service that concern ONE line or ONE piece of audio. The service keeps (or
+ * quarantines) what it could not deliver and carries on, so the recording must too: stopping the microphone
+ * because a single line was refused would lose everything said afterwards. Anything not listed here, and
+ * anything with no code at all (the connection dropped, the microphone failed), ends the recording.
+ */
+const RECOVERABLE_CODES = new Map([
+  ['segment-rejected', 'A line was refused by the server and is not saved.'],
+  ['persistence-failure', 'A line could not be saved yet; the speech service keeps it and will retry.'],
+  ['asr-failure', 'The recognizer failed on a piece of audio.'],
+  ['outbox-unavailable', 'The speech service could not keep a line on disk and holds it in memory only.'],
+  ['finalize-failure', 'The last piece of speech could not be finished.'],
+  ['transcript-invalid', 'The summary of the session could not be built; its lines were saved one by one.'],
+  ['malformed-audio', 'A damaged piece of audio was skipped.']
+])
 const SAVED = new Set(['INSERTED', 'ALREADY_EXISTS'])
 const BUSY = new Set(['launching', 'connecting', 'live', 'stopping', 'ending'])
 
@@ -178,7 +194,12 @@ export function createMeetingController({
     // A line decoded while Stop waits for the speech service is saved on the server, so it is shown and counted
     // too (the last thing said used to be missing from the panel). Provisional text is not: Stop clears it.
     live.setOnFinalSegment((segment, persisted) => (client === live || stopping === live) && addLine(segment, persisted))
-    live.setOnError((err) => handleConnectionProblem(live, err))
+    live.setOnError((err) => {
+      const explanation = RECOVERABLE_CODES.get(err?.code)
+      if (!explanation) return handleConnectionProblem(live, err)
+      if (client !== live && stopping !== live) return
+      set({ message: `Recording continues. ${explanation} Check the counts below.`, tone: 'warn' })
+    })
     try {
       await live.start()
     } catch (err) {

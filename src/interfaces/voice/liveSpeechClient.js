@@ -96,7 +96,11 @@ export function createLiveSpeechClient({
       return
     }
     if (type === 'error') {
-      onError(new Error(`[${msg.code}] ${msg.message}`))
+      // The code travels with the error: the caller decides which problems end a recording (see meetingController).
+      const err = new Error(`[${msg.code}] ${msg.message}`)
+      err.code = typeof msg.code === 'string' ? msg.code : undefined
+      if (typeof msg.segmentId === 'string') err.segmentId = msg.segmentId
+      onError(err)
       return
     }
     if (type === 'stopped') {

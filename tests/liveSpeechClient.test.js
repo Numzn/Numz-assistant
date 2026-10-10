@@ -258,3 +258,18 @@ test('meetings can ask for automatic gain control; by default the shared constra
   assert.equal(asked[1].autoGainControl, false)
   await plain.stop()
 })
+
+test('a server error frame reaches the caller with its code, so the caller can tell a survivable problem from a fatal one', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  const seen = []
+  client.setOnError((err) => seen.push(err))
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+  socket.serverSays({ type: 'error', code: 'persistence-failure', message: 'not saved yet', segmentId: 'seg_9' })
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].code, 'persistence-failure')
+  assert.equal(seen[0].segmentId, 'seg_9')
+  assert.match(seen[0].message, /\[persistence-failure\]/)
+  await client.stop()
+})
