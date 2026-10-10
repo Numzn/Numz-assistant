@@ -85,7 +85,8 @@ client  --audio frames-->  LiveSpeechSession  --FINAL-->  drain_committed()
               or any 2xx without an explicit status -> FAILED          (kept in the outbox, retried)
           client  <-- FINAL frame with "persisted": INSERTED | ALREADY_EXISTS | REJECTED | FAILED
 client  --stop-->  drain, flush the outbox, POST .../sessions/:sid/end {reason, committedSegments}
-          <-- stopped {transcript, persistence: {committed, inserted, alreadyExists, rejected, failed, durable}}
+          <-- stopped {transcript, persistence: {committed, inserted, alreadyExists, rejected, failed, durable},
+                       diagnostics: {levels, gate, decodes, lag, confidence counts; numbers and ids only} | null}
 operator, or the launching browser with its ticket
          --end-->  POST .../meetings/:id/end   refused with 409 while committed segments are missing
 ```

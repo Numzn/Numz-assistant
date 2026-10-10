@@ -8,11 +8,12 @@ microphones; the tests vary its level, its alignment to the 100 ms frames and th
 """
 
 import os
-import re
 import time
 import wave
 
 import numpy as np
+
+from speech import scoring
 
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 1600  # 100 ms, the browser worklet's frame size
@@ -58,56 +59,17 @@ def mains_hum(samples, hum_dbfs, hiss_dbfs, hz=50, seed=7):
 
 
 def words(text):
-    return re.sub(r"[^a-z' ]+", " ", text.lower()).split()
+    return scoring.words(text)
 
 
 def word_errors(hypothesis, reference=JFK_REFERENCE):
-    """Word error rate with its parts, by minimum edit distance: substitutions, deletions, insertions."""
-    h, r = words(hypothesis), words(reference)
-    # cost[i][j] = (edits, substitutions, deletions, insertions) turning r[:i] into h[:j]
-    cost = [[None] * (len(h) + 1) for _ in range(len(r) + 1)]
-    cost[0][0] = (0, 0, 0, 0)
-    for i in range(1, len(r) + 1):
-        e = cost[i - 1][0]
-        cost[i][0] = (e[0] + 1, e[1], e[2] + 1, e[3])
-    for j in range(1, len(h) + 1):
-        e = cost[0][j - 1]
-        cost[0][j] = (e[0] + 1, e[1], e[2], e[3] + 1)
-    for i in range(1, len(r) + 1):
-        for j in range(1, len(h) + 1):
-            e = cost[i - 1][j - 1]
-            sub = (e[0] + (r[i - 1] != h[j - 1]), e[1] + (r[i - 1] != h[j - 1]), e[2], e[3])
-            e = cost[i - 1][j]
-            dele = (e[0] + 1, e[1], e[2] + 1, e[3])
-            e = cost[i][j - 1]
-            ins = (e[0] + 1, e[1], e[2], e[3] + 1)
-            cost[i][j] = min(sub, dele, ins)
-    edits, subs, dels, inss = cost[len(r)][len(h)]
-    return {
-        "wer": round(edits / len(r), 3),
-        "substitutions": subs,
-        "deletions": dels,
-        "insertions": inss,
-        "reference_words": len(r),
-    }
+    """Word error rate with its parts (substitutions, deletions, insertions); see speech/scoring.py."""
+    return scoring.word_errors(hypothesis, reference)
 
 
 def excess_repeats(hypothesis, reference=JFK_REFERENCE, size=3):
-    """Word sequences of `size` words that the hypothesis says at least twice AND more often than the
-    reference does: the symptom of a decoding loop. (The clip itself says "can do for" twice, so that is not
-    one; and a word the recognizer missed leaves a sequence the reference lacks, said once, which is a
-    deletion, not a repeat.)"""
-
-    def counts(text):
-        tokens = words(text)
-        found = {}
-        for i in range(len(tokens) - size + 1):
-            gram = tuple(tokens[i : i + size])
-            found[gram] = found.get(gram, 0) + 1
-        return found
-
-    expected, heard = counts(reference), counts(hypothesis)
-    return [" ".join(gram) for gram, n in sorted(heard.items()) if n >= 2 and n > expected.get(gram, 0)]
+    """Phrases the hypothesis says more often than the reference does: the symptom of a decoding loop."""
+    return scoring.excess_repeats(hypothesis, reference, size)
 
 
 def run_stream(stream, clip_start_s=None, clip_end_s=None, language="en", **session_args):

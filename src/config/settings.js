@@ -121,6 +121,12 @@ export const settings = {
     enabled: true,
     lang: 'en-US',
     /**
+     * Ask the speech service to save each meeting's audio on the server, for measuring recognition on real
+     * meetings. Off. It also takes the operator's LIVE_RECORDINGS_DIR; without both nothing is recorded.
+     * `?saveAudio=1` in the page address turns it on for that page load only.
+     */
+    saveMeetingAudio: false,
+    /**
      * Audio pipeline:
      * - `local`: Porcupine wake + local Python STT (Whisper VAD + faster-whisper)
      * - `legacy`: Web Speech and/or cloud STT (previous behavior)

@@ -16,6 +16,11 @@ data/
 audio/outbox/
 lectures/
 
+# Opt-in meeting audio and the recordings used to measure recognition: private, never committed
+audio/recordings/
+audio/tests/fixtures/meetings/*
+!audio/tests/fixtures/meetings/README.md
+
 # Python
 audio/.venv/
 audio/models/
