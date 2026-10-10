@@ -301,6 +301,22 @@ test('a provider that fails is a 502 with a stable code; an unconfigured server 
     await a.close()
   }
 
+  const unset = buildApp({
+    generateNotes: async () => {
+      throw Object.assign(new Error('deepseek provider requires AI_API_KEY'), { statusCode: 503 })
+    }
+  })
+  const c = await serve(unset.app)
+  try {
+    const { meetingId } = await meetingWith(c.base, 'verified')
+    const res = await call(c.base, 'POST', `/${meetingId}/intelligence/notes`, { token: ADMIN, body: {} })
+    assert.equal(res.status, 503, 'a provider that says it is not set up is a configuration problem, not a retry')
+    assert.equal(res.json.code, 'notes-unavailable')
+    assert.match(res.json.error, /AI_API_KEY/)
+  } finally {
+    await c.close()
+  }
+
   const none = buildApp({ generateNotes: undefined })
   const b = await serve(none.app)
   try {

@@ -220,6 +220,7 @@ then keep streaming. `RECOVERING` can also be ended directly.
 | Admin token | `MEETING_API_TOKEN` (≥ 32 chars) | Everything: create, lifecycle, reads, ticket minting |
 | Meeting ticket | HMAC-SHA256 with `MEETING_TICKET_SECRET` (≥ 32 chars), bound to one meeting, expires after `MEETING_TICKET_TTL_S` (default 43200 s) | For that one meeting: attach/end its speech sessions, append its segments, and **end the meeting**. Nothing else |
 | Launch code | `MEETING_LAUNCH_CODE` (≥ 12 chars), sent as `X-Meeting-Launch-Code` | **Start a new meeting** (`POST /launch`) and receive its ticket. Nothing else: it is not an admin token or a ticket, and cannot read, list or end anything |
+| Launch session | cookie `numz_launch_session`, set by the server after a correct launch code (`MEETING_LAUNCH_SESSION_TTL_S`, default 8 h) | The same one thing as the code: **start a new meeting**. `HttpOnly`, `SameSite=Strict`, `Path=/api/v1/meetings`, `Secure` over https. Signed with a key derived from the launch code **and** the ticket secret, so rotating either ends every session. Carries no code and no identity |
 
 - Fails closed: when a credential type is not configured, its routes answer **503**
   (`auth-not-configured`, or `launch-not-configured` for the launch code). Nothing is allowed by default.
@@ -228,6 +229,16 @@ then keep streaming. `RECOVERING` can also be ended directly.
 - The launch code is the only thing a browser needs to type. Ten wrong codes in a minute lock the
   endpoint for everyone for the rest of that minute (429 `too-many-attempts`, with `Retry-After`), even
   for the right code, so the code cannot be guessed at speed. Correct launches never count.
+- **Launch session.** Once a correct code has been accepted, the browser does not ask for it again: the
+  server's cookie is enough for `POST /launch`. Page scripts never hold the code (an older version kept it in
+  `sessionStorage`; the panel now clears that). `GET /launch/session` reports `{ available, authenticated }`,
+  `POST /launch/session` (code required) starts one without starting a meeting, `DELETE /launch/session` ends
+  it. The cookie is **not** a way around the lockout: a wrong code is throttled exactly as before, and a
+  forged, expired or rotated cookie is simply not a session. **Remaining risk:** a session cannot be revoked
+  individually; a copied cookie can start meetings (and nothing else) until it expires or a secret is rotated.
+- **Repeat protection.** `POST /launch` takes an optional `Idempotency-Key` (16 to 64 of `A-Za-z0-9_-`). A
+  repeat of the same key while that meeting is still being captured returns the same meeting with a fresh
+  ticket (200, `reused: true`) instead of starting a second one; a finished meeting is never handed out again.
 - Provider boundary: `server/auth/meetingAuth.js` is the only module that knows the provider.
   Routes use `requireAdmin`, `requireMeetingWriter`, `requireLaunchCode` and `issueTicket`; the
   live-speech relay uses `authenticateToken` because a browser WebSocket cannot send headers.
@@ -267,7 +278,12 @@ act on it. Stacks are never returned.
 | Method and path | Credential | Success | Notable errors |
 |---|---|---|---|
 | `POST /` | admin | 201 meeting + `ticket` | 400 `invalid-metadata` |
-| `POST /launch` | launch code | 201 LIVE meeting + `ticket` (creates, starts and tickets in one step; body `{ title? }`, metadata gets `source: "browser"`) | 401 `launch-code-required` / `launch-code-invalid`, 429 `too-many-attempts`, 503 `launch-not-configured`, 400 `invalid-title`. Nothing is created on any error; a meeting that cannot be started is cancelled |
+| `POST /launch` | launch code, or launch session cookie | 201 LIVE meeting + `ticket` (creates, starts and tickets in one step; body `{ title? }`, metadata gets `source: "browser"`); 200 `reused: true` for a repeated `Idempotency-Key` | 401 `launch-code-required` / `launch-code-invalid`, 429 `too-many-attempts`, 503 `launch-not-configured`, 400 `invalid-title` / `invalid-idempotency-key`. Nothing is created on any error; a meeting that cannot be started is cancelled |
+| `GET /launch/session` | none | 200 `{ available, authenticated }` | |
+| `POST /launch/session` | launch code | 200 `{ authenticated, expiresAt }` + cookie | as `POST /launch` |
+| `DELETE /launch/session` | none | 204, cookie cleared | |
+| `GET /:id/intelligence` | admin | 200 findings from the saved transcript, with the transcript's state | see [meeting-intelligence.md](meeting-intelligence.md) |
+| `POST /:id/intelligence/notes` | admin | 200 grounded model notes | 409 `transcript-not-final` / `transcript-empty`, 413, 502 `notes-provider-failed`, 503 `notes-unavailable` |
 | `GET /:id` | admin | 200 | 400 `invalid-meeting-id`, 404 |
 | `POST /:id/ticket` | admin | 201 `{ticket}` | 503 if tickets unconfigured |
 | `POST /:id/start` | admin | 200 meeting (creates no session) | 409 `invalid-meeting-transition` |
@@ -284,16 +300,30 @@ act on it. Stacks are never returned.
 
 The **Meeting** button on the assistant screen opens a panel. The flow, in order:
 
-1. **Launch.** The user types the launch code (kept for the tab's session only) and an optional title.
-   The page checks the browser can record (a secure page with a microphone and AudioWorklet) *before*
+1. **Launch.** The user types the launch code once (the server then sets its launch session; the page does
+   not keep the code) and an optional title, and picks the audio source. The page checks the browser can record
+   (a secure page with a microphone and AudioWorklet; sharing a tab also needs `getDisplayMedia`) *before*
    creating anything, then calls `POST /api/v1/meetings/launch` and receives the meeting and its own ticket.
+   An unlocked browser can also be told to **"start the meeting"** by voice or text: that starts it with the
+   microphone, with no code, and the reply says only what the controller's state confirms. A lapsed session,
+   a blocked microphone or a browser that holds audio back until a click are reported as problems with
+   Reconnect, never as a recording.
 2. **Stand down.** From launch until the meeting is finished or forgotten, the assistant is suspended: it
    stops listening, cuts any speech that is playing, and never speaks a reply that was already on its way
    (on 2026-10-09 such a reply was recorded into a meeting). The hands-free assistant
    stops listening, the wake word is disarmed and its buttons are inert, so it cannot answer meeting
    speech aloud. It comes back afterwards.
-3. **Stream.** The page opens `wss://<app>/api/v1/live-speech` (the **relay**) and streams the
-   microphone. Each finished line is shown with whether the server stored it: saved, waiting, or not saved.
+3. **Stream.** The page opens `wss://<app>/api/v1/live-speech` (the **relay**) and streams the audio source.
+   Each finished line is shown with whether the server stored it: saved, waiting, or not saved. A line the
+   server refuses or cannot save yet is shown and counted, and does not stop the recording.
+   **Sources** (`src/interfaces/voice/captureSources.js`): *microphone* (default; also what a voice start uses),
+   *shared tab or system audio* (`getDisplayMedia`; the browser's picker decides what is shared and a page cannot
+   capture sound silently; whole-system audio is only offered by some browsers, otherwise share a tab), or
+   *both*, mixed into the one stream. Each source is shown as `sound heard`, `quiet`, `no sound yet`, `ended`
+   or `NOT recorded`; where one of two is refused or ends, the other carries on and the message says which is
+   missing. If every source ends the meeting shows a problem with Reconnect. Audio the connection cannot carry is
+   dropped once its backlog passes about a minute and **counted** (`about N s of audio dropped`): the
+   transcript has a gap there. With speakers, use headphones when mixing, or the same voices are recorded twice.
 4. **Stop and save.** The page stops the microphone, tells the speech service to stop and **waits until it
    reports that it has finished** (it may still be decoding queued audio; up to 45 s), then calls
    `POST /:id/end` with its ticket. The server
@@ -328,6 +358,9 @@ and `meetings.launch.enabled` in `/api/v1/health` is `false`.
 **Validated in a real browser (Chrome, against the dev server):** the panel, wrong and right launch codes,
 the assistant standing down and returning, the ticket subprotocol through Vite's proxy and the relay to the
 real speech service, ending with the ticket, and the "Leave site?" guard.
+**Not validated in a real browser:** the launch session cookie, the source selector, and `getDisplayMedia`
+(picker, tab or system audio, dropping the video track). They are covered by tests against fakes and, for the
+cookie, over real HTTP with a cookie jar (`server/api/meetingLaunchClient.test.js`).
 **Requires manual validation:** a recording with a real microphone, saved end to end. The speech service
 reports to `MEETING_API_URL`; in development that is the production API, which does not know a meeting made
 by the dev server, so the speech service answers `persistence-rejected: meeting-not-found`. Run it from the

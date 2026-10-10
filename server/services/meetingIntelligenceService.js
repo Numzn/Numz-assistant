@@ -108,7 +108,16 @@ export function createMeetingIntelligenceService({ meetingService, generateNotes
       try {
         generated = await generateNotes({ schemaVersion: SCHEMA_VERSION, segments })
       } catch (err) {
-        throw new MeetingDomainError(`The notes provider failed: ${err?.message ?? 'unknown error'}`, {
+        const reason = String(err?.message ?? 'unknown error').slice(0, 200)
+        // The provider itself says it is not set up (missing key, model or URL): that is a 503 to act on, not a
+        // failure to retry.
+        if (err?.statusCode === 503) {
+          throw new MeetingDomainError(`Notes generation is not configured: ${reason}`, {
+            statusCode: 503,
+            code: 'notes-unavailable'
+          })
+        }
+        throw new MeetingDomainError(`The notes provider failed: ${reason}`, {
           statusCode: 502,
           code: 'notes-provider-failed'
         })
