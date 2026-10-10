@@ -31,8 +31,9 @@ import { describeTranscript } from './meetingIntelligenceService.js'
 const SCHEMA_VERSION = '1.0'
 
 const DEFAULTS = Object.freeze({
-  debounceMs: 8_000, // the first pending segment starts a clock; the update runs when it elapses
-  flushAtSegments: 12, // ...or at once when this many are waiting
+  debounceMs: 15_000, // the first pending segment starts a clock; the update runs when it elapses
+  flushAtSegments: 15, // ...or at once when this many are waiting
+  modelEnabled: true, // false: no transcript is ever sent to a model; only what the words state is reported
   retryBackoffMs: [15_000, 30_000, 60_000],
   refreshTimeoutMs: 30_000, // how long a forced refresh waits for the model
   finalAttempts: 2,
@@ -153,7 +154,7 @@ export function createLiveMeetingIntelligence({
 
   /** The first pending segment starts a clock; later ones do not move it, so latency is bounded under continuous talk. */
   function schedule(rt, delayMs = config.debounceMs) {
-    if (rt.timer || rt.closed || rt.flushing) return
+    if (!config.modelEnabled || rt.timer || rt.closed || rt.flushing) return
     rt.timer = timers.setTimeout(() => {
       rt.timer = null
       flush(rt).catch(() => {})
@@ -170,7 +171,7 @@ export function createLiveMeetingIntelligence({
   function flush(rt) {
     if (rt.flushing) return rt.flushing
     clearTimer(rt)
-    if (!rt.tracker.hasPending()) return Promise.resolve(rt)
+    if (!config.modelEnabled || !rt.tracker.hasPending()) return Promise.resolve(rt)
     rt.lastAttemptAt = clock()
     bump(rt) // "updating" is a state worth reporting
     rt.flushing = (async () => {
@@ -283,6 +284,8 @@ export function createLiveMeetingIntelligence({
           rt.final = { status: 'withheld', reason: `transcript-${transcript.state}`, at: iso(clock()), transcript }
         } else if (segments.length > config.maxSegmentsForFinal) {
           rt.final = { status: 'withheld', reason: 'transcript-too-long', at: iso(clock()), transcript }
+        } else if (!config.modelEnabled) {
+          rt.final = { status: 'withheld', reason: 'model-disabled', at: iso(clock()), transcript }
         } else if (typeof generateFinal !== 'function') {
           rt.final = { status: 'failed', reason: 'final-summary-not-configured', at: iso(clock()), transcript }
         } else {
@@ -329,7 +332,8 @@ export function createLiveMeetingIntelligence({
   function analysisOf(rt, transcript) {
     const pending = rt.tracker.pendingCount()
     let status = 'current'
-    if (rt.flushing) status = 'updating'
+    if (!config.modelEnabled) status = 'off'
+    else if (rt.flushing) status = 'updating'
     else if (rt.error && pending > 0) status = 'error'
     else if (pending > 0) status = 'behind'
     else if (transcript.segmentCount === 0) status = 'idle'

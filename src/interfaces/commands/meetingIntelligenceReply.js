@@ -81,7 +81,9 @@ export function describeProvenance(intel) {
     }
     if (final.status === 'withheld') {
       const why =
-        final.reason === 'transcript-unverified'
+        final.reason === 'model-disabled'
+          ? 'model-written summaries are turned off on this server'
+          : final.reason === 'transcript-unverified'
           ? 'its transcript could not be verified as complete'
           : final.reason === 'transcript-too-long'
           ? 'it is too long to summarise in one pass'
@@ -121,6 +123,9 @@ export function describeProvenance(intel) {
   } else if (a.status === 'behind') {
     how = `${plural(pending, 'newer line is', 'newer lines are')} not analysed yet${updated ? `; last update ${updated}` : ''}.`
     spoken = `${plural(pending, 'newer line is', 'newer lines are')} not analysed yet.`
+  } else if (a.status === 'off') {
+    how = 'Model-written notes are turned off on this server, so only what the transcript states outright is shown.'
+    spoken = 'Model-written notes are turned off, so only what the transcript states is shown.'
   } else if (a.status === 'idle') {
     how = 'Nothing has been said and saved yet.'
     spoken = 'Nothing has been said and saved yet.'

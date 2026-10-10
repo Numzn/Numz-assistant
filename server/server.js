@@ -60,9 +60,18 @@ const meetingService = createMeetingSessionService({
 const requireAi = () => {
   if (!aiConfig.configured) throw Object.assign(new Error('The AI provider is not configured'), { statusCode: 503 })
 }
+// MEETING_LIVE_INTELLIGENCE=off keeps every meeting's transcript away from the model provider: findings are then
+// only what the words state outright. (On, a meeting's saved lines are sent to the AI provider while it runs.)
+const liveIntelligenceOn = !['off', '0', 'false', 'no'].includes(String(process.env.MEETING_LIVE_INTELLIGENCE ?? 'on').trim().toLowerCase())
+console.log(`[meetings] live intelligence model updates are ${liveIntelligenceOn ? 'ON' : 'OFF'}`)
 const liveMeetingIntelligence = createLiveMeetingIntelligence({
   meetingService,
   eventBus: meetingEvents,
+  modelEnabled: liveIntelligenceOn,
+  // How long after the first unanalysed line the model is asked (default 15 s): the latency/cost dial.
+  ...(Number.parseInt(process.env.MEETING_INTELLIGENCE_DEBOUNCE_MS ?? '', 10) > 0
+    ? { debounceMs: Number.parseInt(process.env.MEETING_INTELLIGENCE_DEBOUNCE_MS, 10) }
+    : {}),
   generateRolling: async (messages) => {
     requireAi()
     return generateResponse(messages)

@@ -210,7 +210,7 @@ test('a persisted segment reaches that meeting\'s tracker, is merged after the d
     assert.equal(state.analysis.pendingSegments, 2)
     assert.equal(h.model.calls.length, 0)
     assert.deepEqual(state.findings.decisions.map((d) => [d.status, d.source.segmentIds[0]]), [['confirmed', 'seg_0001']])
-    assert.deepEqual(h.timers.waiting(), [8000], 'one update is scheduled, not one per segment')
+    assert.deepEqual(h.timers.waiting(), [h.live.config.debounceMs], 'one update is scheduled, not one per segment')
 
     await h.timers.fire()
     state = (await getLive(base, m.meetingId, m.ticket)).json
@@ -640,6 +640,32 @@ test('more segments than one prompt should hold are worked off in batches, none 
     assert.equal(state.analysis.pendingSegments, 0)
     const sent = model.calls.map((prompt) => (prompt.split('New segments:\n')[1].match(/\[seg_/g) ?? []).length)
     assert.deepEqual(sent, [3, 3, 1])
+  } finally {
+    await close()
+  }
+})
+
+test('with model updates switched off no transcript is sent anywhere, and only the stated findings remain', async () => {
+  const h = harness({ options: { modelEnabled: false } })
+  const { base, close } = await serve(h.app)
+  try {
+    const m = await liveMeeting(base)
+    await m.put(seg(1, LINES[0]))
+    await m.put(seg(2, LINES[1]))
+    assert.deepEqual(h.timers.waiting(), [])
+    const state = (await getLive(base, m.meetingId, m.ticket)).json
+    assert.equal(state.analysis.status, 'off')
+    assert.equal(state.findings.decisions[0].status, 'confirmed')
+    await call(base, 'POST', `/${m.meetingId}/intelligence/refresh`, { token: m.ticket, body: {} })
+    await m.finish({ committed: 2 })
+    await settle()
+    await settle()
+    const closed = (await getLive(base, m.meetingId, m.ticket)).json
+    assert.equal(h.model.calls.length, 0, 'the model was never called')
+    assert.equal(closed.final.status, 'withheld')
+    assert.equal(closed.final.reason, 'model-disabled')
+    assert.equal(closed.transcript.state, 'verified')
+    assert.equal(closed.provisional, true)
   } finally {
     await close()
   }
