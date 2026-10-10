@@ -19,7 +19,8 @@ Wire protocol:
     {"type": "pause"} / {"type": "resume"} / {"type": "stop"}
 
   Server -> client:
-    {"type": "ready", "sessionId", "meetingId", "persistence": "meeting" | "standalone", "timelineOffsetMs"}
+    {"type": "ready", "sessionId", "meetingId", "persistence": "meeting" | "standalone", "timelineOffsetMs",
+                      "recording": true | false}   (true only when this session's audio is being saved)
     {"type": "transcript", "state": "PARTIAL" | "STABILIZING", "text": "..."}
     {"type": "transcript", "state": "FINAL", "segment": {id, start, end, speaker, text},
                            "persisted": "INSERTED" | "ALREADY_EXISTS" | "REJECTED" | "FAILED" | "NOT_PERSISTED"}
@@ -47,7 +48,7 @@ import numpy as np
 from flask_sock import Sock
 from simple_websocket import ConnectionClosed
 
-from speech.audio_io import write_wav
+from speech.audio_io import WavWriter
 from speech.live.events import TranscriptStage
 from speech.live.health import PersistenceMonitor
 from speech.live.ids import require_uuid
@@ -72,8 +73,8 @@ SUPPORTED_FORMAT = "f32le"
 BYTES_PER_SAMPLE = 4
 IDLE_TIMEOUT_S = 30
 
-# Empty by default: audio is kept in memory for one connection only when asked for, and
-# written to disk only when an operator sets this directory AND the client asks to save.
+# Empty by default. Audio is written to disk only when an operator sets this directory AND the client asks
+# to save (two opt-ins). It is streamed to the file as it arrives, never held in memory.
 RECORDINGS_DIR = os.environ.get("LIVE_RECORDINGS_DIR", "")
 MEETING_API_URL = os.environ.get("MEETING_API_URL", "").rstrip("/")
 OUTBOX_DIR = os.environ.get("LIVE_OUTBOX_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "outbox"))
@@ -116,6 +117,8 @@ class LiveConnection:
         self.stream_position_s = 0.0
         self.paused = False
         self.save_recording = False
+        self.recorder = None  # a WavWriter while this session's audio is being saved
+        self.recording_path = None
         self.committed = 0  # final segments this connection produced, whatever happened to them next
         self.counts = {state: 0 for state in OUTCOMES}
         self.unkeyed_rejections = []  # refused before the outbox could key them (no id to retry or quarantine)
@@ -208,7 +211,8 @@ class LiveConnection:
             self.speech_session_id = str(uuid.uuid4())
 
         # With a meeting, the server owns the transcript: reprocessing would make a second, different one.
-        keep_audio = self.save_recording or (bool(control.get("reprocessOnStop")) and not meeting_id)
+        # (A saved recording is streamed to disk; it does not need the in-memory copy.)
+        keep_audio = bool(control.get("reprocessOnStop")) and not meeting_id
         self.session = _make_session(
             speech_session_id=self.speech_session_id,
             language=str(control.get("language") or ""),
@@ -217,6 +221,7 @@ class LiveConnection:
         )
         self.session.on_transcript_event(self._on_event)
         self.stream_position_s = 0.0
+        self._open_recorder()
         self.send(
             {
                 "type": "ready",
@@ -224,8 +229,42 @@ class LiveConnection:
                 "meetingId": self.meeting_id or None,
                 "persistence": "meeting" if self.meeting_id else "standalone",
                 "timelineOffsetMs": opened.get("timelineOffsetMs") if opened else None,
+                "recording": self.recorder is not None,
             }
         )
+
+    # ---- optional audio capture ----------------------------------------------------
+    # A diagnostic aid, so it must never disturb the meeting: a problem here is logged and shown in the
+    # `recording` flag of `ready`, and is NOT sent as an `error` frame (the browser treats those as fatal).
+
+    def _open_recorder(self):
+        if not self.save_recording:
+            return
+        try:
+            os.makedirs(RECORDINGS_DIR, mode=0o700, exist_ok=True)
+            path = os.path.join(RECORDINGS_DIR, f"{self.speech_session_id}.wav")
+            self.recorder = WavWriter(path, SUPPORTED_SAMPLE_RATE)
+            self.recording_path = path
+        except OSError:
+            logger.exception("live-speech: cannot save this session's audio; the session continues without it")
+            self.save_recording = False
+
+    def _record(self, frame: np.ndarray):
+        if self.recorder is None:
+            return
+        try:
+            self.recorder.write(frame)
+        except (OSError, ValueError):
+            logger.exception("live-speech: saving the audio failed; the session continues without a recording")
+            self._close_recorder()
+
+    def _close_recorder(self):
+        recorder, self.recorder = self.recorder, None
+        if recorder is not None:
+            try:
+                recorder.close()
+            except OSError:
+                logger.exception("live-speech: closing the recording failed")
 
     def send_final(self, seg: dict, persisted: str):
         """A committed segment, with the explicit persistence state at the top level of the frame."""
@@ -254,6 +293,7 @@ class LiveConnection:
 
         frame = np.frombuffer(message, dtype="<f4")
         self.stream_position_s += len(frame) / SUPPORTED_SAMPLE_RATE
+        self._record(frame)  # exactly what the recognizer is given, so a replay reproduces the session
         try:
             self.session.ingest_audio_frame(frame, timestamp_s=self.stream_position_s)
         except Exception as err:
@@ -344,6 +384,7 @@ class LiveConnection:
             self.error("finalize-failure", f"The last utterance could not be flushed: {err}")
         finally:
             self.persist_committed()
+            self._close_recorder()
 
         if self.persistence is not None:
             try:
@@ -358,13 +399,8 @@ class LiveConnection:
         transcript_error = None
         try:
             transcript = self.session.transcript(reprocess=False)
-            if self.save_recording:
-                pcm = self.session.get_raw_audio_pcm()
-                if pcm is not None and RECORDINGS_DIR:
-                    os.makedirs(RECORDINGS_DIR, exist_ok=True)
-                    wav_path = os.path.join(RECORDINGS_DIR, f"{self.speech_session_id}.wav")
-                    write_wav(wav_path, pcm, SUPPORTED_SAMPLE_RATE)
-                    transcript.setdefault("meta", {})["recordingPath"] = wav_path
+            if self.recording_path and os.path.exists(self.recording_path):
+                transcript.setdefault("meta", {})["recordingPath"] = self.recording_path
         except Exception:
             # The segments were already persisted one by one; only the summary document failed.
             logger.exception("live-speech: building the session transcript failed")
