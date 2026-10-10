@@ -11,6 +11,10 @@ function createUnsupportedError() {
 /**
  * Local audio input: Porcupine wake + MediaRecorder utterance + local STT POST.
  */
+// Readings of the assistant's own voice needed before an interruption can be told from it (200 ms at the loop's
+// normal 50 ms tick).
+const MIN_ECHO_SAMPLES = 4
+
 export function createVoiceInputLocal({
   endpoint = '/api/v1/assistant/stt',
   lang = 'en-US',
@@ -144,6 +148,7 @@ export function createVoiceInputLocal({
   let speakingStartedAt = 0
   let playbackAudibleAt = 0
   let echoLevel = 0
+  let echoSamples = 0 // how many microphone readings the loudness above is based on
   let settleUntil = 0
   let bargeInReported = false // an interruption is reported once per playback, however long the person talks
   // The capture in progress (or the last one): who it is, when it began, and whether it must be thrown away.
@@ -239,8 +244,12 @@ export function createVoiceInputLocal({
       // while it starts (the sound is only counted from when it is audible), then ask an interruption to be
       // clearly louder than that as well as louder than the fixed floor.
       const audibleSince = Math.max(speakingStartedAt, playbackAudibleAt)
-      if (t - audibleSince < vadBargeInGuardMs) {
+      // Measured from readings, not from the clock alone. A hidden or covered browser window ticks this loop about
+      // once a second, so a 500 ms window can hold no reading at all, and with nothing measured the fixed floor
+      // alone applied again: its own voice was heard as an interruption.
+      if (t - audibleSince < vadBargeInGuardMs || echoSamples < MIN_ECHO_SAMPLES) {
         echoLevel = Math.max(echoLevel, rms)
+        echoSamples += 1
         bargeStartAt = 0
         return
       }
@@ -670,6 +679,7 @@ export function createVoiceInputLocal({
           speakingStartedAt = now()
           playbackAudibleAt = 0
           echoLevel = 0
+          echoSamples = 0
           bargeInReported = false
         }
         // Anything being recorded now will contain the assistant.
