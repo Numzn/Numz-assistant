@@ -69,6 +69,11 @@
       <div id="composerWrap">
         <p id="composerNotice" role="status" aria-live="polite" hidden></p>
         <form id="composer" autocomplete="off">
+          <div id="composerChips" aria-label="Attached files" hidden></div>
+          <button id="attachButton" type="button" class="round" aria-label="Attach a text file" title="Attach a text file (text only)">
+            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 4.5v11M4.5 10h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+          </button>
+          <input id="attachInput" type="file" multiple hidden />
           <label for="composerInput" class="sr-only">Message NUMZ</label>
           <textarea
             id="composerInput"

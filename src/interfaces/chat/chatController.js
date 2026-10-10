@@ -10,6 +10,8 @@
  * to the assistant; a handled command never reaches the backend.
  */
 
+import { composeMessage } from './attachments.js'
+
 const OPEN = new Set(['thinking', 'streaming'])
 export const ERROR_TEXT = 'Something went wrong, so there is no reply. Try again.'
 export const EMPTY_REPLY_TEXT = 'No reply came back. Try again.'
@@ -31,6 +33,10 @@ export function createChatController({
   let messages = []
   let busy = false
   let lastUserText = ''
+  let lastDisplay = null
+  // What the thread shows for the user's next turn ({ text, attachments: [{ name, size }] }). The assistant is
+  // sent the composed text (typed text plus the file contents); the thread must not show the file contents.
+  let pendingDisplay = null
   let skipNextUserBubble = false
   const listeners = new Set()
 
@@ -72,10 +78,12 @@ export function createChatController({
     offs.push(
       eventBus.on('turn:start', (event) => {
         const text = String(event?.payload?.text ?? '')
+        const display = pendingDisplay
         busy = true
         lastUserText = text
+        lastDisplay = display
         if (skipNextUserBubble) skipNextUserBubble = false
-        else push({ role: 'user', text })
+        else push({ role: 'user', text: display ? display.text : text, attachments: display?.attachments ?? [] })
         push({ role: 'assistant', status: 'thinking' })
         emit()
       }),
@@ -92,7 +100,7 @@ export function createChatController({
         if (open) {
           if (typeof reply === 'string' && reply.trim()) update(open, { status: 'done', text: reply })
           else if (open.text.trim()) update(open, { status: 'done' })
-          else update(open, { status: 'error', text: EMPTY_REPLY_TEXT, retryText: lastUserText })
+          else update(open, { status: 'error', text: EMPTY_REPLY_TEXT, retryText: lastUserText, retryDisplay: lastDisplay })
         }
         endTurn()
         emit()
@@ -108,7 +116,7 @@ export function createChatController({
       }),
       eventBus.on('error:recoverable', () => {
         const open = openAssistant()
-        if (open) update(open, { status: 'error', text: ERROR_TEXT, retryText: lastUserText })
+        if (open) update(open, { status: 'error', text: ERROR_TEXT, retryText: lastUserText, retryDisplay: lastDisplay })
         endTurn()
         emit()
       }),
@@ -124,25 +132,26 @@ export function createChatController({
 
   // ---- actions -------------------------------------------------------------------------------------------
 
-  async function send(text) {
-    const trimmed = typeof text === 'string' ? text.trim() : ''
-    if (!trimmed) return { ok: false, reason: 'empty' }
+  async function send(text, { attachments = [] } = {}) {
+    const typed = typeof text === 'string' ? text.trim() : ''
+    if (!typed && attachments.length === 0) return { ok: false, reason: 'empty' }
     if (busy) return { ok: false, reason: 'busy' }
 
-    // Meeting commands first: they must work even while a meeting blocks ordinary messages.
-    if (commands) {
+    // Meeting commands first: they must work even while a meeting blocks ordinary messages. A message with a
+    // file attached is never a command.
+    if (commands && attachments.length === 0) {
       let handled = null
       try {
-        handled = await commands.handle(trimmed)
+        handled = await commands.handle(typed)
       } catch (err) {
         console.error('[chat] command failed', err)
-        push({ role: 'user', text: trimmed })
+        push({ role: 'user', text: typed })
         push({ role: 'assistant', status: 'error', text: 'That command did not work. Try again.' })
         emit()
         return { ok: false, reason: 'command-error' }
       }
       if (handled) {
-        push({ role: 'user', text: trimmed })
+        push({ role: 'user', text: typed })
         push({ role: 'assistant', text: handled.reply, tone: handled.tone })
         emit()
         return { ok: true, handled: true }
@@ -156,16 +165,26 @@ export function createChatController({
       return { ok: false, reason: blocked }
     }
 
+    return deliver(composeMessage(typed, attachments), {
+      text: typed,
+      attachments: attachments.map(({ name, size }) => ({ name, size }))
+    })
+  }
+
+  async function deliver(composed, display) {
     busy = true
+    pendingDisplay = display
     emit()
     try {
-      await assistantController.submitText(trimmed)
+      await assistantController.submitText(composed)
     } catch (err) {
       console.error('[chat] send failed', err)
       const open = openAssistant()
-      if (open) update(open, { status: 'error', text: ERROR_TEXT, retryText: trimmed })
-      else push({ role: 'assistant', status: 'error', text: ERROR_TEXT, retryText: trimmed })
+      const failure = { status: 'error', text: ERROR_TEXT, retryText: composed, retryDisplay: display }
+      if (open) update(open, failure)
+      else push({ role: 'assistant', ...failure })
     } finally {
+      pendingDisplay = null
       endTurn()
       emit()
     }
@@ -181,10 +200,16 @@ export function createChatController({
   async function retry(messageId) {
     const failed = messages.find((m) => m.id === messageId)
     if (!failed || failed.status !== 'error' || !failed.retryText || busy) return { ok: false }
+    const blocked = isBlocked()
+    if (blocked) {
+      push({ role: 'notice', text: blockedText(blocked) })
+      emit()
+      return { ok: false, reason: blocked }
+    }
     messages = messages.filter((m) => m.id !== messageId)
-    skipNextUserBubble = true
+    skipNextUserBubble = true // the question is already in the thread
     emit()
-    const result = await send(failed.retryText)
+    const result = await deliver(failed.retryText, failed.retryDisplay ?? { text: failed.retryText, attachments: [] })
     skipNextUserBubble = false
     return result
   }

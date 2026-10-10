@@ -1,3 +1,4 @@
+import { ACCEPT, checkRoom, formatSize, readTextFile } from './attachments.js'
 import { renderMarkdown } from './markdownView.js'
 
 /**
@@ -24,12 +25,65 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
   const voiceButton = $('voiceModeButton')
   const newChatButton = $('newChatButton')
   const notice = $('composerNotice')
+  const attachButton = $('attachButton')
+  const attachInput = $('attachInput')
+  const chipsEl = $('composerChips')
+  attachInput.accept = ACCEPT
 
   const items = new Map() // message id -> <li>
   const rendered = new WeakMap() // reply body -> the text last drawn into it
   let composing = false
   let noticeTimer = null
   let stickToBottom = true
+  let files = [] // attached, read and checked: { name, size, text }
+
+  function chip(file, removable) {
+    const element = doc.createElement('span')
+    element.className = 'chip'
+    const name = doc.createElement('span')
+    name.className = 'name'
+    name.textContent = file.name
+    const size = doc.createElement('span')
+    size.className = 'size'
+    size.textContent = formatSize(file.size)
+    element.append(name, size)
+    if (removable) {
+      const remove = doc.createElement('button')
+      remove.type = 'button'
+      remove.className = 'remove'
+      remove.textContent = '×'
+      remove.setAttribute('aria-label', `Remove ${file.name}`)
+      remove.addEventListener('click', () => {
+        files = files.filter((candidate) => candidate !== file)
+        renderChips()
+        input.focus({ preventScroll: true })
+      })
+      element.append(remove)
+    }
+    return element
+  }
+
+  function renderChips() {
+    chipsEl.replaceChildren(...files.map((file) => chip(file, true)))
+    chipsEl.hidden = files.length === 0
+    autosize()
+  }
+
+  async function addFiles(list) {
+    clearNotice()
+    const problems = []
+    for (const candidate of Array.from(list ?? [])) {
+      try {
+        const read = await readTextFile(candidate)
+        checkRoom(files, read)
+        files = [...files, read]
+      } catch (err) {
+        problems.push(err?.message || `${candidate?.name ?? 'That file'} could not be attached.`)
+      }
+    }
+    renderChips()
+    if (problems.length) notify(problems.join(' '))
+  }
 
   function nearBottom() {
     return main.scrollHeight - main.scrollTop - main.clientHeight < NEAR_BOTTOM_PX
@@ -60,7 +114,13 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
   function patchItem(li, message) {
     li.dataset.status = message.status
     if (message.role === 'user') {
-      ensure(li, 'bubble').textContent = message.text
+      const bubble = ensure(li, 'bubble')
+      bubble.textContent = message.text
+      bubble.hidden = !message.text
+      const attached = message.attachments ?? []
+      const list = li.querySelector('.files')
+      if (attached.length) ensure(li, 'files').replaceChildren(...attached.map((file) => chip(file, false)))
+      else list?.remove()
       return
     }
     if (message.role === 'notice') {
@@ -141,7 +201,7 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
   function autosize() {
     input.style.height = 'auto'
     input.style.height = `${Math.min(input.scrollHeight, 200)}px`
-    sendButton.disabled = !input.value.trim() || chat.getState().busy
+    sendButton.disabled = (!input.value.trim() && files.length === 0) || chat.getState().busy
   }
 
   function clearNotice() {
@@ -159,17 +219,20 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
 
   async function submit() {
     const text = input.value
-    if (!text.trim()) return
+    const attachments = files
+    if (!text.trim() && attachments.length === 0) return
     clearNotice()
     input.value = ''
-    autosize()
+    files = []
+    renderChips()
     stickToBottom = true
-    const result = await chat.send(text)
+    const result = await chat.send(text, { attachments })
     stickToBottom = nearBottom()
-    // A refusal (busy, voice mode, a meeting) keeps what was typed, so nothing is lost.
-    if (!result.ok && ['busy', 'meeting', 'voice'].includes(result.reason) && !input.value) {
+    // A refusal (busy, voice mode, a meeting) keeps what was typed and attached, so nothing is lost.
+    if (!result.ok && ['busy', 'meeting', 'voice'].includes(result.reason) && !input.value && files.length === 0) {
       input.value = text
-      autosize()
+      files = attachments
+      renderChips()
     }
   }
 
@@ -191,6 +254,23 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
   form.addEventListener('submit', (event) => {
     event.preventDefault()
     submit()
+  })
+  attachButton.addEventListener('click', () => attachInput.click())
+  attachInput.addEventListener('change', async () => {
+    await addFiles(attachInput.files)
+    attachInput.value = '' // the same file can be chosen again after removing it
+  })
+  form.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer?.types?.includes('Files')) return
+    event.preventDefault()
+    form.classList.add('dragging')
+  })
+  form.addEventListener('dragleave', () => form.classList.remove('dragging'))
+  form.addEventListener('drop', (event) => {
+    if (!event.dataTransfer?.files?.length) return
+    event.preventDefault()
+    form.classList.remove('dragging')
+    addFiles(event.dataTransfer.files)
   })
   stopButton.addEventListener('click', () => chat.cancel())
   newChatButton.addEventListener('click', async () => {

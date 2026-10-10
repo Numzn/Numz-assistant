@@ -277,3 +277,70 @@ test('subscribers get snapshots they cannot use to change the thread', async () 
   await r.chat.send('again')
   assert.equal(seen.length, count, 'unsubscribed')
 })
+
+// ---- attachments -------------------------------------------------------------------------------------------
+
+const csv = { name: 'prices.csv', size: 12, text: 'item,price\nwidget,5' }
+
+test('a message with a file sends the composed text but the thread shows only the typed text and the file name', async () => {
+  const r = rig()
+  await r.chat.send('Summarise this', { attachments: [csv] })
+  assert.match(r.calls.submit[0], /^Summarise this\n\n\[Attached file: prices\.csv\]\n```\nitem,price\nwidget,5\n```$/)
+  const [user] = r.chat.getState().messages
+  assert.equal(user.text, 'Summarise this')
+  assert.deepEqual(user.attachments, [{ name: 'prices.csv', size: 12 }])
+  assert.ok(!JSON.stringify(r.chat.getState().messages).includes('widget,5'), 'the file contents are not in the thread')
+})
+
+test('a file alone is a valid message', async () => {
+  const r = rig()
+  assert.deepEqual(await r.chat.send('', { attachments: [csv] }), { ok: true })
+  assert.match(r.calls.submit[0], /^\[Attached file: prices\.csv\]/)
+  assert.equal(r.chat.getState().messages[0].text, '')
+})
+
+test('no text and no file is still empty', async () => {
+  const r = rig()
+  assert.deepEqual(await r.chat.send('  ', { attachments: [] }), { ok: false, reason: 'empty' })
+})
+
+test('a meeting command phrase with a file attached is an ordinary message, not a command', async () => {
+  let handled = 0
+  const r = rig({ commands: { handle: async () => { handled += 1; return { reply: 'x' } } } })
+  await r.chat.send('start a meeting', { attachments: [csv] })
+  assert.equal(handled, 0)
+  assert.equal(r.calls.submit.length, 1)
+})
+
+test('retry resends the same file and shows the same message, once', async () => {
+  const eventBus = createEventBus()
+  let attempt = 0
+  const submitted = []
+  const assistantController = {
+    async submitText(text) {
+      attempt += 1
+      submitted.push(text)
+      eventBus.emit('turn:start', { text })
+      if (attempt === 1) {
+        eventBus.emit('error:recoverable', {})
+        return null
+      }
+      eventBus.emit('ai:response', { reply: 'Done.' })
+      return 'Done.'
+    }
+  }
+  const chat = createChatController({ assistantController, assistantClient: {}, eventBus })
+  await chat.send('Summarise this', { attachments: [csv] })
+  await chat.retry(chat.getState().messages[1].id)
+  assert.equal(submitted.length, 2)
+  assert.equal(submitted[0], submitted[1], 'the same composed text, file included')
+  const rows = chat.getState().messages
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows[0].attachments, [{ name: 'prices.csv', size: 12 }])
+})
+
+test('files are refused while a meeting blocks messages, and nothing is sent', async () => {
+  const r = rig({ isBlocked: () => 'meeting' })
+  assert.deepEqual(await r.chat.send('hi', { attachments: [csv] }), { ok: false, reason: 'meeting' })
+  assert.deepEqual(r.calls.submit, [])
+})
