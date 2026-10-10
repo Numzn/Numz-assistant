@@ -11,6 +11,8 @@ const MAX_RENDERED_LINES = 500
 const NOT_CONFIGURED =
   'Meetings cannot be started from here yet: the server has no launch code set (MEETING_LAUNCH_CODE), or it cannot be reached.'
 
+import { findingLabel, isSettledFinal, provenanceText, selectFindings, timestamp } from '../commands/meetingIntelligenceReply.js'
+
 const SOURCE_STATES = {
   active: 'sound heard',
   quiet: 'quiet',
@@ -100,12 +102,24 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   const stopButton = $('meetingStop')
   const message = $('meetingMessage')
   const actions = $('meetingActions')
+  const intel = $('meetingIntel')
+  const intelStatus = $('meetingIntelStatus')
+  const intelSummaryBox = $('meetingIntelSummaryBox')
+  const intelSummary = $('meetingIntelSummary')
+  const intelRefresh = $('meetingIntelRefresh')
+  const intelLists = {
+    decisions: $('meetingIntelDecisions'),
+    actions: $('meetingIntelActions'),
+    questions: $('meetingIntelQuestions'),
+    notes: $('meetingIntelNotes')
+  }
   panel.tabIndex = -1
 
   let launchAvailable = null // null until the server has been asked
   let renderedLastKey = null
   let actionsSignature = ''
   let sourcesSignature = ''
+  let intelSignature = ''
   let previousPhase = 'idle'
   let lastActive = false
 
@@ -178,6 +192,70 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
         return item
       })
     )
+  }
+
+  // The same state, the same wording and the same selection rule as NUMZ AI chat (commands/meetingIntelligenceReply.js).
+  function intelItem(item, { owner = false, settled = false } = {}) {
+    const li = doc.createElement('li')
+    li.dataset.status = item.status
+    const text = doc.createElement('span')
+    text.textContent = item.text
+    const meta = doc.createElement('span')
+    meta.className = 'meta'
+    const bits = []
+    if (owner && item.kind === 'actionItem') {
+      bits.push(item.owner?.name ? `owner: ${item.owner.name}` : 'owner not stated')
+      bits.push(item.due ? `due: ${item.due}` : 'no deadline stated')
+    }
+    bits.push(findingLabel(item, settled))
+    bits.push(`at ${timestamp(item.source?.start)}`)
+    meta.textContent = bits.join(' · ')
+    li.title = (item.evidence ?? []).map((e) => `"${e.text}"`).join(' ')
+    li.append(text, meta)
+    return li
+  }
+
+  function fillList(list, items, empty, options) {
+    if (!items || items.length === 0) {
+      const none = doc.createElement('li')
+      none.className = 'none'
+      none.textContent = empty
+      list.replaceChildren(none)
+      return
+    }
+    list.replaceChildren(...items.map((item) => intelItem(item, options)))
+  }
+
+  function renderIntelligence(state) {
+    const data = state.intelligence
+    intel.hidden = !data
+    if (!data) {
+      intelSignature = ''
+      return
+    }
+    const signature = JSON.stringify([data.revision, state.intelligenceError?.code ?? null, data.final?.status])
+    if (signature === intelSignature) return
+    intelSignature = signature
+    const settled = isSettledFinal(data)
+    const f = selectFindings(data)
+    let status = provenanceText(data)
+    if (state.intelligenceError) status += ` — ${state.intelligenceError.message}`
+    intelStatus.textContent = status
+    intelStatus.dataset.tone = settled && !state.intelligenceError ? 'ok' : data.analysis?.status === 'current' && !state.intelligenceError ? 'info' : 'warn'
+
+    const summary = data.final?.status === 'ready' ? data.final.summary : null
+    intelSummaryBox.hidden = !summary
+    intelSummary.textContent = summary?.text ?? ''
+
+    fillList(intelLists.decisions, f.decisions, 'None stated yet.', { settled })
+    fillList(intelLists.actions, f.actionItems, 'None stated yet.', { owner: true, settled })
+    const open = f.openQuestions ?? []
+    fillList(intelLists.questions, open.length ? open : f.questionsAsked, open.length ? 'None found.' : 'None asked yet.', { settled })
+    fillList(intelLists.notes, [...(f.topics ?? []), ...(f.notes ?? [])], 'Nothing yet.', { settled })
+
+    const failedFinal = data.final?.status === 'failed'
+    intelRefresh.textContent = failedFinal ? 'Retry the final summary' : 'Update now'
+    intelRefresh.hidden = settled || data.final?.status === 'withheld' || data.final?.status === 'empty'
   }
 
   function renderSourceHint() {
@@ -254,6 +332,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
       : ''
     renderLines(state.lines)
     renderSources(state)
+    renderIntelligence(state)
 
     const notConfigured = state.phase === 'idle' && !state.message && launchAvailable === false
     message.textContent = notConfigured ? NOT_CONFIGURED : state.message
@@ -282,6 +361,14 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     if (event.key === 'Escape') closePanel()
   })
   stopButton.addEventListener('click', () => controller.stop())
+  intelRefresh.addEventListener('click', async () => {
+    intelRefresh.disabled = true
+    try {
+      await controller.refreshIntelligence({ final: controller.getIntelligence()?.final?.status === 'failed' })
+    } finally {
+      intelRefresh.disabled = false
+    }
+  })
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
     await controller.start({ code: codeInput.value, title: titleInput.value, capture: sourceSelect.value })

@@ -135,6 +135,31 @@ export function describeProvenance(intel) {
   }
 }
 
+/** The label a finding carries, shared by the chat reply and the meeting panel so they cannot disagree. */
+export function findingLabel(item, settled = false) {
+  return (settled ? SETTLED_LABELS : LABELS)[item.status] ?? item.status
+}
+
+/** m:ss on the meeting timeline. */
+export function timestamp(seconds) {
+  return mmss(seconds)
+}
+
+/** The provenance paragraph without Markdown, for the panel. */
+export function provenanceText(intel) {
+  return describeProvenance(intel).text.replace(/\*\*/g, '').replace(/_/g, '')
+}
+
+/** Which findings to show: the final record's when it is ready, the live ones otherwise. One rule for every reader. */
+export function selectFindings(intel) {
+  return findingsOf(intel)
+}
+
+/** Whether what is shown is a verified final record (no "provisional" wording applies). */
+export function isSettledFinal(intel) {
+  return intel?.final?.status === 'ready' && intel?.transcript?.state === 'verified'
+}
+
 function findingsOf(intel) {
   const final = intel.final ?? {}
   if (final.status === 'ready' && final.findings) return { ...intel.findings, ...final.findings, notes: intel.findings?.notes ?? [] }

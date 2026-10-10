@@ -146,6 +146,18 @@
         <ol id="meetingLines" aria-live="polite" aria-relevant="additions"></ol>
         <div id="meetingCounts"></div>
         <button id="meetingStop" type="button" data-primary="true">Stop and save</button>
+        <div id="meetingIntel" hidden>
+          <p id="meetingIntelStatus" role="status" aria-live="polite"></p>
+          <section id="meetingIntelSummaryBox" hidden>
+            <h3>Summary</h3>
+            <p id="meetingIntelSummary"></p>
+          </section>
+          <section data-intel="decisions"><h3>Decisions</h3><ul id="meetingIntelDecisions"></ul></section>
+          <section data-intel="actions"><h3>Action items</h3><ul id="meetingIntelActions"></ul></section>
+          <section data-intel="questions"><h3>Open questions</h3><ul id="meetingIntelQuestions"></ul></section>
+          <section data-intel="notes"><h3>Notes</h3><ul id="meetingIntelNotes"></ul></section>
+          <button id="meetingIntelRefresh" type="button">Update now</button>
+        </div>
       </div>
       <p id="meetingMessage" role="status" aria-live="polite" data-tone="info"></p>
       <div id="meetingActions"></div>

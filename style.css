@@ -975,6 +975,7 @@ body[data-page="history"] a.ghost {
   font-size: 14px;
   line-height: 1.4;
   user-select: text;
+  overflow-y: auto;
 }
 
 #meetingPanel[hidden],
@@ -1172,6 +1173,63 @@ body[data-page="history"] a.ghost {
 
 #meetingMessage[data-tone="error"] {
   color: var(--danger);
+}
+
+#meetingIntel {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-strong);
+}
+
+#meetingIntel h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+#meetingIntel ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#meetingIntel li {
+  display: grid;
+  gap: 1px;
+  word-break: break-word;
+}
+
+#meetingIntel li .meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+#meetingIntel li[data-status="confirmed"] .meta {
+  color: var(--ok);
+}
+
+#meetingIntel li[data-status="uncertain"] .meta {
+  color: var(--warn);
+}
+
+#meetingIntel .none {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+#meetingIntelStatus {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+#meetingIntelStatus[data-tone="warn"] {
+  color: var(--warn);
 }
 
 #meetingActions {
