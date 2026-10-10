@@ -283,6 +283,8 @@ act on it. Stacks are never returned.
 | `POST /launch/session` | launch code | 200 `{ authenticated, expiresAt }` + cookie | as `POST /launch` |
 | `DELETE /launch/session` | none | 204, cookie cleared | |
 | `GET /:id/intelligence` | admin | 200 findings from the saved transcript, with the transcript's state | see [meeting-intelligence.md](meeting-intelligence.md) |
+| `GET /:id/intelligence/live` | admin, or the meeting's own ticket | 200 the meeting's live intelligence state (`?since=` revision), see [live-meeting-intelligence.md](live-meeting-intelligence.md) | 400 `invalid-since`, 403 another meeting's ticket |
+| `POST /:id/intelligence/refresh` | admin, or the meeting's own ticket | 200 state after an update (open meeting) or a final-record attempt (closed) | |
 | `POST /:id/intelligence/notes` | admin | 200 grounded model notes | 409 `transcript-not-final` / `transcript-empty`, 413, 502 `notes-provider-failed`, 503 `notes-unavailable` |
 | `GET /:id` | admin | 200 | 400 `invalid-meeting-id`, 404 |
 | `POST /:id/ticket` | admin | 201 `{ticket}` | 503 if tickets unconfigured |

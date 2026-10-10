@@ -145,6 +145,16 @@ export function findingLabel(item, settled = false) {
   return (settled ? SETTLED_LABELS : LABELS)[item.status] ?? item.status
 }
 
+/** A summary is a model's paraphrase: say so when it names things the transcript never contains. -> string | null */
+export function summaryCaution(summary) {
+  if (!summary) return null
+  if (summary.unsupportedTerms?.length) {
+    return `Check this summary: it mentions ${summary.unsupportedTerms.join(', ')}, which do not appear in the transcript.`
+  }
+  if (summary.status === 'uncertain') return 'Check this summary: some of it is weakly supported by the transcript.'
+  return null
+}
+
 /** m:ss on the meeting timeline. */
 export function timestamp(seconds) {
   return mmss(seconds)
@@ -207,11 +217,8 @@ export function formatIntelligenceReply(topic, intel) {
     if (finalReady) {
       const summary = intel.final.summary
       parts.push(`**Summary**\n${summary.text}`)
-      if (summary.status === 'uncertain' || summary.unsupportedTerms?.length) {
-        parts.push(
-          `_Check this summary: ${summary.unsupportedTerms?.length ? `it mentions ${summary.unsupportedTerms.join(', ')}, which do not appear in the transcript` : 'some of it is weakly supported by the transcript'}._`
-        )
-      }
+      const caution = summaryCaution(summary)
+      if (caution) parts.push(`_${caution}_`)
       spoken.push(summary.text)
     }
   }

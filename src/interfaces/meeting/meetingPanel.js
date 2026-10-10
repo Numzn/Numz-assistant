@@ -11,7 +11,7 @@ const MAX_RENDERED_LINES = 500
 const NOT_CONFIGURED =
   'Meetings cannot be started from here yet: the server has no launch code set (MEETING_LAUNCH_CODE), or it cannot be reached.'
 
-import { findingLabel, isSettledFinal, provenanceText, selectFindings, timestamp } from '../commands/meetingIntelligenceReply.js'
+import { findingLabel, isSettledFinal, provenanceText, selectFindings, summaryCaution, timestamp } from '../commands/meetingIntelligenceReply.js'
 
 const SOURCE_STATES = {
   active: 'sound heard',
@@ -106,6 +106,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   const intelStatus = $('meetingIntelStatus')
   const intelSummaryBox = $('meetingIntelSummaryBox')
   const intelSummary = $('meetingIntelSummary')
+  const intelCaution = $('meetingIntelCaution')
   const intelRefresh = $('meetingIntelRefresh')
   const intelLists = {
     decisions: $('meetingIntelDecisions'),
@@ -246,6 +247,9 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     const summary = data.final?.status === 'ready' ? data.final.summary : null
     intelSummaryBox.hidden = !summary
     intelSummary.textContent = summary?.text ?? ''
+    const caution = summaryCaution(summary)
+    intelCaution.hidden = !caution
+    intelCaution.textContent = caution ?? ''
 
     fillList(intelLists.decisions, f.decisions, 'None stated yet.', { settled })
     fillList(intelLists.actions, f.actionItems, 'None stated yet.', { owner: true, settled })

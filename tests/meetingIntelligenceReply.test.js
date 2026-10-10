@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { describeProvenance, formatIntelligenceReply, noIntelligenceReply } from '../src/interfaces/commands/meetingIntelligenceReply.js'
+import { describeProvenance, formatIntelligenceReply, noIntelligenceReply, summaryCaution } from '../src/interfaces/commands/meetingIntelligenceReply.js'
 
 const at = (start) => ({ segmentIds: ['seg_1'], start, end: start + 5 })
 const item = (kind, text, extra = {}) => ({
@@ -221,4 +221,11 @@ test('no meeting, nothing yet, and an error each have their own plain reply', ()
   const failed = noIntelligenceReply({ error: { message: 'Could not reach the server for the meeting notes.' } })
   assert.match(failed.reply, /Could not reach the server/)
   assert.equal(failed.tone, 'error')
+})
+
+test('the summary caution is one rule, used by chat and the panel', () => {
+  assert.equal(summaryCaution(null), null)
+  assert.equal(summaryCaution({ text: 'ok', status: 'inferred', unsupportedTerms: [] }), null)
+  assert.match(summaryCaution({ text: 'x', status: 'uncertain', unsupportedTerms: ['Marcus', '40000'] }), /mentions Marcus, 40000/)
+  assert.match(summaryCaution({ text: 'x', status: 'uncertain', unsupportedTerms: [] }), /weakly supported/)
 })

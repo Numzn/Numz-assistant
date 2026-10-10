@@ -61,7 +61,5 @@ cited segment carries that label.
 - Whether the model's notes are *good* has not been measured; only that they cannot cite what does not exist.
 - A meeting recorded through a microphone that hears everyone has no speaker labels (the live path does not run
   diarization), so owners are rare by design.
-- Rolling (during the meeting) notes: `rollingIntelligenceService.js` still exists only as a library. Its data-loss
-  bug (segments ingested while the model was working were discarded) is fixed and tested, but nothing feeds it
-  from a live meeting and no route exposes it. That is deliberate: notes from a transcript that is still being
-  persisted are provisional at best.
+- Rolling (during the meeting) notes are now wired: see [live-meeting-intelligence.md](live-meeting-intelligence.md).
+  Everything here (admin routes, grounding, evidence labels) is the same machinery that pipeline uses.
