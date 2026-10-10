@@ -95,6 +95,8 @@ function scriptedModel() {
   return model
 }
 
+const clock = { t: 1_800_000_000_000, advance(ms) { this.t += ms }, now() { return this.t } }
+
 function harness({ model = scriptedModel(), options = {} } = {}) {
   const database = createDatabase({ filename: ':memory:' })
   const eventBus = new EventEmitter()
@@ -111,6 +113,7 @@ function harness({ model = scriptedModel(), options = {} } = {}) {
     generateRolling: (m) => model.rolling(m),
     generateFinal: (t) => model.final(t),
     timers,
+    clock: () => clock.now(),
     logger: quiet,
     ...options
   })
@@ -554,6 +557,10 @@ test('a failed final is reported, and asking again recovers it', async () => {
     assert.equal(state.transcript.state, 'verified', 'the transcript itself is fine and still verified')
 
     model.finalMode = 'good'
+    // asked again at once: not re-attempted so soon (each attempt is a model call)
+    const tooSoon = await call(base, 'POST', `/${m.meetingId}/intelligence/refresh`, { token: m.ticket, body: {} })
+    assert.equal(tooSoon.json.final.status, 'failed')
+    clock.advance(31_000)
     const refreshed = await call(base, 'POST', `/${m.meetingId}/intelligence/refresh`, { token: m.ticket, body: {} })
     assert.equal(refreshed.status, 200)
     assert.equal(refreshed.json.final.status, 'ready')
@@ -666,6 +673,29 @@ test('with model updates switched off no transcript is sent anywhere, and only t
     assert.equal(closed.final.reason, 'model-disabled')
     assert.equal(closed.transcript.state, 'verified')
     assert.equal(closed.provisional, true)
+  } finally {
+    await close()
+  }
+})
+
+test('a ready final record is never regenerated on request, however often it is asked', async () => {
+  const h = harness()
+  const { base, close } = await serve(h.app)
+  try {
+    const m = await liveMeeting(base)
+    await m.put(seg(1, LINES[0]))
+    await m.put(seg(2, LINES[1]))
+    await m.finish({ committed: 2 })
+    await settle()
+    await settle()
+    const finals = () => h.model.calls.filter((c) => c === 'FINAL').length
+    assert.equal(finals(), 1)
+    for (let i = 0; i < 3; i++) {
+      clock.advance(60_000)
+      const res = await call(base, 'POST', `/${m.meetingId}/intelligence/refresh`, { token: m.ticket, body: { final: true } })
+      assert.equal(res.json.final.status, 'ready')
+    }
+    assert.equal(finals(), 1, 'no extra model calls')
   } finally {
     await close()
   }

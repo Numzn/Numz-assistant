@@ -38,6 +38,7 @@ const DEFAULTS = Object.freeze({
   refreshTimeoutMs: 30_000, // how long a forced refresh waits for the model
   finalAttempts: 2,
   maxModelBatch: 60, // segments per model call; a backlog is worked off a batch at a time
+  finalRetryMs: 30_000, // a failed or withheld final record is not re-attempted more often than this
   maxSegmentsForFinal: 2000,
   keepFinishedMs: 6 * 60 * 60 * 1000,
   maxRuntimes: 30
@@ -443,7 +444,12 @@ export function createLiveMeetingIntelligence({
         })
       ])
     if (meeting.status === 'COMPLETED') {
-      const needs = !rt.final || ['failed'].includes(rt.final.status) || final
+      // A final record that is READY is never regenerated on request (each attempt is a model call, and a ticket
+      // holder could repeat it). Missing, failed, or withheld-and-asked-again are attempted, at most every 30 s.
+      const last = rt.final?.at ? Date.parse(rt.final.at) : 0
+      const recent = clock() - last < config.finalRetryMs
+      const needs =
+        !rt.final || (['failed'].includes(rt.final.status) && !recent) || (final && ['withheld', 'empty'].includes(rt.final.status) && !recent)
       if (needs && !rt.finalizing) await wait(finalize(meetingId, { force: true }))
       else if (rt.finalizing) await wait(rt.finalizing)
     } else {
