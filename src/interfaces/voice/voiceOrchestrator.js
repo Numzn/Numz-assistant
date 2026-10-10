@@ -881,6 +881,9 @@ export function createVoiceOrchestrator({
     return eventBus.on('assistant:token', (event) => {
       const token = event?.payload?.token ?? ''
       if (!token) return
+      // Only a turn this orchestrator started is spoken. A typed message streams the same events, and its
+      // reply must stay silent.
+      if (!busy) return
       if (!markedFirstToken) {
         markedFirstToken = true
         voiceDebug.mark('first_token')

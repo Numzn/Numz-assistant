@@ -122,3 +122,12 @@ test('while suspended nothing new is even asked; after resume the assistant answ
   assert.equal(r.counts.requests, 1)
   assert.ok(r.spoken.join(' ').includes('I am here'))
 })
+
+test('a typed message streams the same events but its reply is never spoken aloud', async () => {
+  const r = rig()
+  // No spoken turn is in flight: this is what a reply to a typed message looks like to the orchestrator.
+  r.streamToken('This reply belongs to a typed message. ')
+  r.streamToken('It must stay silent.')
+  await tick()
+  assert.deepEqual(r.spoken, [])
+})
