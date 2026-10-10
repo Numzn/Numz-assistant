@@ -1,21 +1,22 @@
 export const settings = {
   colors: {
-    core: 0xd8f0ff,
-    coreOuter: 0x4ab8ff,
-    background: 0x020617
+    // A quiet steel blue on charcoal. The earlier cyan glow on navy read as neon.
+    core: 0xdfe6ee,
+    coreOuter: 0x9fb6cf,
+    // Tone mapping darkens what the scene draws: this renders as the charcoal (#212121) of the Home screen.
+    background: 0x333333
   },
   assistantVisual: {
     /** Seconds to ease between state visual profiles. */
-    stateTransitionSeconds: 0.22,
+    stateTransitionSeconds: 0.35,
     /**
-     * Production defaults for state-driven behavior.
-     * - Colors are in hex (THREE.Color-compatible).
-     * - Multipliers modulate the base settings below.
+     * State-driven look. Colours are hex (THREE.Color); multipliers modulate the base settings below.
+     * Deliberately close to one another: the state is told in words too, and the orb should stay calm.
      */
     states: {
       IDLE: {
-        coreColor: 0xd8f0ff,
-        outerColor: 0x4ab8ff,
+        coreColor: 0xdfe6ee,
+        outerColor: 0x9fb6cf,
         pulseSpeedMult: 1.0,
         pulseStrengthMult: 1.0,
         bloomStrengthMult: 1.0,
@@ -25,48 +26,48 @@ export const settings = {
         flareOpacityMult: 1.0
       },
       LISTENING: {
-        coreColor: 0xeaffff,
-        outerColor: 0x2ff0ff,
-        pulseSpeedMult: 1.15,
-        pulseStrengthMult: 1.35,
-        bloomStrengthMult: 1.12,
-        haloOpacityMult: 1.18,
-        fieldOpacityMult: 1.12,
-        ringOpacityMult: 1.08,
-        flareOpacityMult: 1.1
-      },
-      PROCESSING: {
-        coreColor: 0xffffff,
-        outerColor: 0x7cc6ff,
-        pulseSpeedMult: 1.6,
-        pulseStrengthMult: 1.75,
-        bloomStrengthMult: 1.28,
-        haloOpacityMult: 1.25,
-        fieldOpacityMult: 1.2,
-        ringOpacityMult: 1.22,
-        flareOpacityMult: 1.25
-      },
-      SPEAKING: {
-        coreColor: 0xf6fbff,
-        outerColor: 0x6ae4ff,
-        pulseSpeedMult: 3.15,
-        pulseStrengthMult: 1.55,
-        bloomStrengthMult: 1.18,
-        haloOpacityMult: 1.1,
-        fieldOpacityMult: 1.05,
-        ringOpacityMult: 1.35,
-        flareOpacityMult: 1.35
-      },
-      ERROR: {
-        coreColor: 0xffeef0,
-        outerColor: 0xff3355,
-        pulseSpeedMult: 1.85,
-        pulseStrengthMult: 1.45,
+        coreColor: 0xeef3f8,
+        outerColor: 0x9cc4e4,
+        pulseSpeedMult: 1.1,
+        pulseStrengthMult: 1.3,
         bloomStrengthMult: 1.05,
         haloOpacityMult: 1.1,
-        fieldOpacityMult: 0.85,
-        ringOpacityMult: 1.15,
+        fieldOpacityMult: 1.1,
+        ringOpacityMult: 1.05,
         flareOpacityMult: 1.05
+      },
+      PROCESSING: {
+        coreColor: 0xf4f6f8,
+        outerColor: 0xb7c4d6,
+        pulseSpeedMult: 1.5,
+        pulseStrengthMult: 1.5,
+        bloomStrengthMult: 1.08,
+        haloOpacityMult: 1.12,
+        fieldOpacityMult: 1.1,
+        ringOpacityMult: 1.15,
+        flareOpacityMult: 1.1
+      },
+      SPEAKING: {
+        coreColor: 0xf4f8fb,
+        outerColor: 0xa9d2ea,
+        pulseSpeedMult: 2.4,
+        pulseStrengthMult: 1.4,
+        bloomStrengthMult: 1.08,
+        haloOpacityMult: 1.08,
+        fieldOpacityMult: 1.05,
+        ringOpacityMult: 1.2,
+        flareOpacityMult: 1.15
+      },
+      ERROR: {
+        coreColor: 0xf3e9e9,
+        outerColor: 0xd49a9a,
+        pulseSpeedMult: 1.4,
+        pulseStrengthMult: 1.2,
+        bloomStrengthMult: 1.0,
+        haloOpacityMult: 1.05,
+        fieldOpacityMult: 0.9,
+        ringOpacityMult: 1.1,
+        flareOpacityMult: 1.0
       }
     }
   },
@@ -80,12 +81,13 @@ export const settings = {
     haloLiveDepth: 0.12
   },
   bloom: {
-    strength: 0.88,
-    radius: 0.52,
-    threshold: 0.4,
+    // Barely there: enough to soften the edge of the orb, not to glow.
+    strength: 0.3,
+    radius: 0.4,
+    threshold: 0.55,
     resolutionScale: 0.5,
     /** Subtle live variation on bloom strength (fraction, e.g. 0.06 = ±6%). */
-    liveModulation: 0.055
+    liveModulation: 0.03
   },
   animation: {
     rotationSpeed: 0.072,
@@ -97,15 +99,16 @@ export const settings = {
     pulseSecondaryFactor: 0.58,
     flareSlowHz: 0.52,
     flareFastHz: 1.28,
-    flareOpacityBase: 0.66,
-    flareOpacitySwing: 0.11
+    flareOpacityBase: 0.4,
+    flareOpacitySwing: 0.06
   },
   camera: {
     fov: 40,
     near: 0.1,
     far: 100,
     positionY: 0.18,
-    positionZ: 3.95
+    // Closer than before: the orb is the subject of voice mode, the only place it is drawn.
+    positionZ: 2.45
   },
   renderer: {
     antialias: true,
@@ -142,7 +145,9 @@ export const settings = {
      * - `hideHoldToTalkButton`: hide the legacy hold-to-talk mic button
      */
     conversationMode: true,
-    autoStartOnLoad: true,
+    // The microphone is only opened when the user starts voice mode (a permission prompt on page load, and
+    // a hot microphone nobody asked for, do not belong on a quiet Home screen).
+    autoStartOnLoad: false,
     hideHoldToTalkButton: true,
     /** Client-side energy VAD tuning (browser AnalyserNode RMS). */
     vadSilenceMs: 1800,

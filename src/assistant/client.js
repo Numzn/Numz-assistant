@@ -33,6 +33,19 @@ function parseSseBlock(block) {
 
 export function createAssistantClient() {
   let sessionId = null
+  // Bumped whenever a session is chosen on purpose (useSession), so a createSession that was already in flight
+  // cannot overwrite that choice when its answer arrives late (page load creates a session while a saved
+  // conversation is being fetched).
+  let chosen = 0
+
+  /**
+   * A server answer echoes the session it was for. It may become the current session only if no session has been
+   * chosen on purpose since the request started: otherwise a slow answer to a request made on the old session
+   * (the app's startup state calls) would undo the choice.
+   */
+  function adopt(data, epoch) {
+    if (typeof data?.sessionId === 'string' && epoch === chosen) sessionId = data.sessionId
+  }
   const realtime = createAssistantRealtimeClient()
 
   function sessionPath(path) {
@@ -56,7 +69,15 @@ export function createAssistantClient() {
       return sessionId
     },
 
+    /** Carries on in an existing session (a saved conversation reopened from history). */
+    useSession(id) {
+      if (typeof id !== 'string' || !id) return
+      sessionId = id
+      chosen += 1
+    },
+
     async createSession(metadata = {}) {
+      const choiceWhenAsked = chosen
       const res = await fetch(`${BASE}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -66,11 +87,12 @@ export function createAssistantClient() {
       if (!res.ok) {
         throw new Error(data.error ?? `POST session failed: ${res.status}`)
       }
-      if (typeof data.sessionId === 'string') sessionId = data.sessionId
+      adopt(data, choiceWhenAsked)
       return data
     },
 
     async getState() {
+      const epoch = chosen
       const res = await fetch(sessionPath('/state'))
       const data = await parseJson(res)
       if (!res.ok && isMissingSession(res, data)) {
@@ -80,11 +102,12 @@ export function createAssistantClient() {
       if (!res.ok) {
         throw new Error(data.error ?? `GET state failed: ${res.status}`)
       }
-      if (typeof data.sessionId === 'string') sessionId = data.sessionId
+      adopt(data, epoch)
       return data
     },
 
     async setState(state) {
+      const epoch = chosen
       const res = await fetch(sessionPath('/state'), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -98,11 +121,12 @@ export function createAssistantClient() {
       if (!res.ok) {
         throw new Error(data.error ?? `PATCH state failed: ${res.status}`)
       }
-      if (typeof data.sessionId === 'string') sessionId = data.sessionId
+      adopt(data, epoch)
       return data
     },
 
     async sendMessage(message) {
+      const epoch = chosen
       const res = await fetch(sessionPath('/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -116,11 +140,12 @@ export function createAssistantClient() {
       if (!res.ok) {
         throw new Error(data.error ?? `POST chat failed: ${res.status}`)
       }
-      if (typeof data.sessionId === 'string') sessionId = data.sessionId
+      adopt(data, epoch)
       return data
     },
 
     async streamMessage(message, { signal, onEvent } = {}) {
+      const epoch = chosen
       // Prefer WebSocket streaming when available; fall back to SSE — but
       // only when the WS attempt never produced any output. Once it has
       // relayed even one token, the voice UI may already be speaking it
@@ -183,7 +208,7 @@ export function createAssistantClient() {
 
         for (const block of blocks) {
           const parsed = parseSseBlock(block)
-          if (typeof parsed.data?.sessionId === 'string') sessionId = parsed.data.sessionId
+          adopt(parsed.data, epoch)
           if (parsed.event === 'message') finalMessage = parsed.data
           onEvent?.(parsed)
         }
@@ -191,7 +216,7 @@ export function createAssistantClient() {
 
       if (buffer.trim()) {
         const parsed = parseSseBlock(buffer)
-        if (typeof parsed.data?.sessionId === 'string') sessionId = parsed.data.sessionId
+        adopt(parsed.data, epoch)
         if (parsed.event === 'message') finalMessage = parsed.data
         onEvent?.(parsed)
       }

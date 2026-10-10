@@ -1,6 +1,6 @@
 import { WebSocketServer } from 'ws'
 import { createAssistantOrchestrator } from '../orchestrator/assistantOrchestrator.js'
-import { createUpgradeRouter } from './upgradeRouter.js'
+import { createUpgradeRouter, rejectUpgrade } from './upgradeRouter.js'
 
 function safeJsonParse(text) {
   try {
@@ -26,12 +26,15 @@ function safeSend(ws, payload) {
  * Server -> client:
  * - { type: 'AI_RESPONSE_STARTED' | 'AI_TOKEN' | 'AI_RESPONSE_FINISHED' | 'AI_RESPONSE_ERROR' | 'STATE' | 'token' | 'state' | 'message' | 'done', ...data }
  */
-export function attachSocketServer(httpServer, { path = '/api/v1/assistant/ws', upgrades } = {}) {
+export function attachSocketServer(httpServer, { path = '/api/v1/assistant/ws', upgrades, authorize = null } = {}) {
   const orchestrator = createAssistantOrchestrator()
   // Upgrades are routed by path through one dispatcher, so other WebSocket endpoints can share this server.
   const wss = new WebSocketServer({ noServer: true })
   const router = upgrades ?? createUpgradeRouter(httpServer)
   router.add(path, (req, socket, head) => {
+    // Same access rule as the HTTP routes: no session cookie, no socket.
+    const verdict = authorize ? authorize(req) : { ok: true }
+    if (!verdict.ok) return rejectUpgrade(socket, verdict.status, verdict.code)
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
   })
 

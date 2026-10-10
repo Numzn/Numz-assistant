@@ -104,7 +104,7 @@ export function createCore() {
     map: fieldTexture ?? undefined,
     color: settings.colors.coreOuter,
     transparent: true,
-    opacity: 0.12,
+    opacity: 0.05,
     depthWrite: false,
     blending: THREE.AdditiveBlending
   })

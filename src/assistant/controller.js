@@ -11,6 +11,17 @@ export function createAssistantController({ stateMachine, client, eventBus }) {
     await client.setState(state)
   }
 
+  /** Back to IDLE from anywhere. Typed turns never pass through SPEAKING, so the normal path is not open. */
+  async function forceIdle() {
+    if (stateMachine.getState() === STATES.IDLE) return
+    try {
+      stateMachine.setState(STATES.IDLE, { force: true, source: 'text' })
+      await syncServerState(STATES.IDLE)
+    } catch (err) {
+      console.warn('[assistant] could not return to idle', err)
+    }
+  }
+
   function isLocalGenerationState(state) {
     return (
       state === STATES.THINKING ||
@@ -237,6 +248,27 @@ export function createAssistantController({ stateMachine, client, eventBus }) {
         })
         await this.setError()
         return null
+      }
+    },
+
+    /**
+     * A typed message, through the same request path as a spoken one (requestReply: streaming first, JSON
+     * fallback, same session, same events). The reply is not spoken, so the turn never enters SPEAKING and
+     * the state is put back to IDLE however it ended. A previous error or interruption is cleared first, or
+     * the new turn could not start. Returns the reply text, or null (empty, failed or interrupted).
+     */
+    async submitText(text) {
+      const trimmed = typeof text === 'string' ? text.trim() : ''
+      if (!trimmed) return null
+
+      const state = stateMachine.getState()
+      if (state === STATES.ERROR || state === STATES.ERROR_RECOVERY || state === STATES.INTERRUPTED) {
+        await forceIdle()
+      }
+      try {
+        return await this.requestReply(trimmed)
+      } finally {
+        await forceIdle()
       }
     },
 

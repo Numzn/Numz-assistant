@@ -12,6 +12,12 @@ export default defineConfig(({ mode }) => {
   return {
     root: '.',
     publicDir: 'public',
+    // Two pages: the Home screen and the conversation history screen.
+    build: {
+      rollupOptions: {
+        input: { main: 'index.html', history: 'history.html' }
+      }
+    },
     server: {
       host: '0.0.0.0',
       port: 5173,

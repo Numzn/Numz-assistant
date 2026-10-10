@@ -24,6 +24,12 @@ import { createMeetingController, LIVE_SPEECH_PATH } from './interfaces/meeting/
 import { createMeetingStorage } from './interfaces/meeting/meetingStorage.js'
 import { createMeetingPanel } from './interfaces/meeting/meetingPanel.js'
 import { checkLiveSpeechSupport } from './interfaces/meeting/liveSupport.js'
+import { createChatController } from './interfaces/chat/chatController.js'
+import { createChatView } from './interfaces/chat/chatView.js'
+import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
+import { createHistoryApi } from './interfaces/history/historyApi.js'
+import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
+import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 
 const canvas = document.querySelector('#canvas')
 if (!canvas) {
@@ -50,24 +56,43 @@ const assistantController = createAssistantController({
   eventBus
 })
 
-const animator = createAnimator({ core, bloomPass, stateMachine: assistantStateMachine })
+// Declared up here because the animator and the meeting callbacks below read them as the page goes on.
+let voiceApi = null
+let voiceModeActive = false
+let chatView = null
+let meetingPanel = null
+// Meeting commands are answered by one router for typed and spoken input; it is created once the meeting
+// controller exists, and until then (or if the meeting panel failed to start) nothing is treated as a command.
+let commandRouter = null
+const commandHook = { handle: (text) => (commandRouter ? commandRouter.handle(text) : null) }
+const motionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null
+
+const animator = createAnimator({
+  core,
+  bloomPass,
+  stateMachine: assistantStateMachine,
+  // Only the user's real microphone level, only in voice mode. Playback has no level to read.
+  getLevel: () => (voiceModeActive ? voiceApi?.getInputLevel?.() ?? 0 : 0),
+  reducedMotion: () => motionQuery?.matches === true
+})
 
 assistantStateMachine.subscribe((next, prev) => {
   console.log('[assistant:visual]', prev, '->', next)
 })
 
+// Five words for the voice-mode status; every internal state maps onto one of them.
 const STATE_LABELS = {
   IDLE: 'Ready',
   LISTENING: 'Listening',
-  TRANSCRIBING: 'Transcribing',
+  TRANSCRIBING: 'Thinking',
   PROCESSING: 'Thinking',
   THINKING: 'Thinking',
   RETRIEVING_MEMORY: 'Thinking',
-  TOOL_EXECUTION: 'Working',
+  TOOL_EXECUTION: 'Thinking',
   GENERATING: 'Thinking',
   SPEAKING: 'Speaking',
-  INTERRUPTED: 'Listening',
-  ERROR_RECOVERY: 'Recovering',
+  INTERRUPTED: 'Ready',
+  ERROR_RECOVERY: 'Error',
   ERROR: 'Error'
 }
 
@@ -82,12 +107,21 @@ if (stateBadgeEl) {
   assistantStateMachine.subscribe((next) => updateBadge(next))
 }
 
+// The assistant may need an access code (the server says so). Asked before anything else is requested; a refusal
+// later (the login expired) shows the same card. Unlocking reloads the page, so everything starts fresh.
+const accessController = createAccessController({
+  api: createAccessApi(),
+  onUnlocked: () => globalThis.location?.reload()
+})
+createAccessGateView({ controller: accessController })
+watchForUnauthorized(globalThis, () => accessController.require())
+accessController.start()
+
 assistantController.init().catch((err) => {
   console.error('[assistant] init failed', err)
 })
 
 // Shared with the meeting panel further down: the assistant steps aside while a meeting is open.
-let voiceApi = null
 let preferredMicId = () => ''
 
 if (settings.voice?.enabled) {
@@ -104,7 +138,8 @@ if (settings.voice?.enabled) {
   const responseEl = document.querySelector('#assistantResponse')
   const latencyEl = document.querySelector('#latencyFooter')
 
-  if (latencyEl && settings.voice?.latencyAuditEnabled) {
+  const debugRequested = globalThis.location?.search?.includes('debug') === true
+  if (latencyEl && debugRequested && settings.voice?.latencyAuditEnabled) {
     latencyEl.hidden = false
     latencyEl.removeAttribute('aria-hidden')
   }
@@ -165,6 +200,7 @@ if (settings.voice?.enabled) {
     voiceInput,
     voiceOutput,
     deviceManager,
+    commands: commandHook,
     ui: {
       buttonEl,
       wakeButtonEl,
@@ -228,9 +264,10 @@ function meetingSocketUrl() {
   return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}${LIVE_SPEECH_PATH}`
 }
 
+let meetingController = null
 try {
   const meetingApi = createMeetingApi()
-  const meetingController = createMeetingController({
+  meetingController = createMeetingController({
     api: meetingApi,
     storage: createMeetingStorage(),
     checkSupport: checkLiveSpeechSupport,
@@ -245,11 +282,14 @@ try {
         ...options
       })
   })
-  const meetingPanel = createMeetingPanel({
+  meetingPanel = createMeetingPanel({
     controller: meetingController,
     api: meetingApi,
     onActiveChange: (active) => {
       setAssistantVoiceAvailable(!active)
+      // The meeting owns the microphone now (setAssistantVoiceAvailable already stopped the listening).
+      if (active && voiceModeActive) showVoiceMode(false)
+      refreshVoiceButton()
     }
   })
   meetingController.restore()
@@ -259,11 +299,195 @@ try {
   console.error('[meeting] panel failed to start', err)
 }
 
+// ---- Settings popover: the voice engine toggles it; this keeps it accessible and easy to dismiss ----
+{
+  const button = document.querySelector('#micSettingsButton')
+  const panel = document.querySelector('#micSettingsPanel')
+  const wrap = document.querySelector('#settingsWrap')
+  if (button && panel && wrap) {
+    const sync = () => button.setAttribute('aria-expanded', String(!panel.hidden))
+    const close = () => {
+      panel.hidden = true
+      sync()
+    }
+    button.addEventListener('click', () => queueMicrotask(sync)) // after the engine's own toggle
+    document.addEventListener('pointerdown', (event) => {
+      if (!panel.hidden && !wrap.contains(event.target)) close()
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !panel.hidden) {
+        close()
+        button.focus()
+      }
+    })
+    sync()
+  }
+}
+
+// ---- Home: the conversation and its composer ----
+// A meeting uses the microphone and the assistant stands down for it (see setAssistantVoiceAvailable), so
+// ordinary messages wait until it is finished. Same definition of "open" as the meeting panel uses.
+const meetingIsOpen = () => {
+  const meeting = meetingController?.getState?.()
+  return Boolean(meeting && (meeting.open || meeting.phase === 'launching'))
+}
+if (meetingController) {
+  commandRouter = createCommandRouter({
+    meeting: meetingController,
+    openPanel: ({ title } = {}) => {
+      // The launch code is typed by a person in the panel; a title only saves a step.
+      const titleInput = document.querySelector('#meetingTitleInput')
+      if (title && titleInput) titleInput.value = title
+      meetingPanel?.open()
+    }
+  })
+}
+
+const chat = createChatController({
+  assistantController,
+  assistantClient,
+  eventBus,
+  commands: commandHook,
+  isBlocked: () => (voiceModeActive ? 'voice' : meetingIsOpen() ? 'meeting' : null),
+  // One stop for everything in flight: the stream and, in voice mode, the speech and the listening loop.
+  interrupt: () => (voiceModeActive && voiceApi?.interrupt ? voiceApi.interrupt() : assistantController.interrupt())
+})
+chatView = createChatView({ chat, onVoiceMode: () => enterVoiceMode() })
+
+// ---- Saved conversations: reopen one from the history screen, and show its link only when history is on ----
+{
+  const historyApi = createHistoryApi()
+  const wanted = new URLSearchParams(globalThis.location?.search ?? '').get('conversation')
+  if (wanted) {
+    historyApi
+      .get(wanted)
+      .then((conversation) => {
+        // Used: leave the address bar clean, so a reload starts fresh instead of reopening it again.
+        globalThis.history?.replaceState(null, '', globalThis.location.pathname)
+        return chat.open(conversation)
+      })
+      .catch((err) => {
+        // A refusal means the access code is being asked for; the link stays so it opens right after unlocking.
+        if (err?.status === 401) return
+        globalThis.history?.replaceState(null, '', globalThis.location.pathname)
+        console.warn('[history] could not open the conversation', err)
+        chatView?.notify(
+          err?.code === 'not-found' ? 'That conversation no longer exists.' : 'That conversation could not be opened. Check the connection and try again.'
+        )
+      })
+  }
+  const link = document.querySelector('#historyLink')
+  if (link) {
+    historyApi
+      .list({ limit: 1 })
+      .then((result) => {
+        link.hidden = !result?.enabled
+      })
+      .catch(() => {})
+  }
+}
+
+// ---- Voice mode: the orb, a status in words, and a way out ----
+const VOICE_ERRORS = {
+  'permission-denied': "Microphone access is blocked. Allow it in your browser's site settings, then try again.",
+  'no-microphone': 'No microphone was found. Connect one and try again.',
+  'needs-gesture': 'The browser needs another tap to start listening. Press the microphone button again.',
+  suspended: 'A meeting is recording, so voice mode is unavailable until it ends.',
+  unsupported: 'Voice mode is not available in this browser.',
+  error: 'Voice mode could not start. Check the microphone and try again.'
+}
+const RESPONDING = new Set(['PROCESSING', 'THINKING', 'RETRIEVING_MEMORY', 'TOOL_EXECUTION', 'GENERATING', 'SPEAKING'])
+const voiceModeEl = document.querySelector('#voiceMode')
+const voiceInterruptEl = document.querySelector('#voiceInterruptButton')
+const voiceEndEl = document.querySelector('#voiceEndButton')
+
+function refreshVoiceButton() {
+  if (!chatView) return
+  const open = meetingIsOpen()
+  chatView.setVoiceButton({
+    available: Boolean(voiceApi?.startConversation),
+    disabled: open,
+    title: open ? 'Voice mode is unavailable while a meeting is open' : 'Start voice mode'
+  })
+}
+
+function syncVoiceControls() {
+  if (voiceInterruptEl) {
+    voiceInterruptEl.hidden = !(voiceModeActive && RESPONDING.has(assistantStateMachine.getState()))
+  }
+}
+
+function showVoiceMode(on) {
+  voiceModeActive = on
+  document.body.dataset.mode = on ? 'voice' : 'chat'
+  if (voiceModeEl) voiceModeEl.hidden = !on
+  syncVoiceControls()
+  if (on) voiceEndEl?.focus({ preventScroll: true })
+  else chatView?.focusInput()
+}
+
+let startingVoiceMode = false
+
+async function enterVoiceMode() {
+  if (voiceModeActive || !voiceApi?.startConversation) return
+  if (meetingIsOpen()) {
+    chatView.notify(VOICE_ERRORS.suspended)
+    return
+  }
+  if (chat.getState().busy) {
+    chatView.notify('Wait for the reply to finish, or press Stop, then start voice mode.')
+    return
+  }
+  if (startingVoiceMode) return
+  startingVoiceMode = true
+  // The browser may be asking for the microphone right now; say so instead of looking frozen.
+  chatView.notify('Allow the microphone if your browser asks…')
+  try {
+    // The click that got us here is the user gesture the microphone needs; the result says exactly what failed.
+    const result = await voiceApi.startConversation()
+    if (!result?.ok) {
+      chatView.notify(VOICE_ERRORS[result?.reason] ?? VOICE_ERRORS.error)
+      return
+    }
+    chatView.clearNotice()
+    showVoiceMode(true)
+  } finally {
+    startingVoiceMode = false
+  }
+}
+
+async function exitVoiceMode() {
+  if (!voiceModeActive) return
+  showVoiceMode(false) // the screen never waits on the microphone
+  try {
+    await voiceApi.stopConversation()
+  } catch (err) {
+    console.error('[voice] could not stop voice mode', err)
+  }
+}
+
+voiceEndEl?.addEventListener('click', () => exitVoiceMode())
+voiceInterruptEl?.addEventListener('click', () => voiceApi?.interrupt?.())
+assistantStateMachine.subscribe(syncVoiceControls)
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !voiceModeActive) return
+  // Escape stops a reply first; with nothing to stop it leaves voice mode.
+  if (voiceInterruptEl && !voiceInterruptEl.hidden) voiceApi?.interrupt?.()
+  else exitVoiceMode()
+})
+meetingController?.subscribe?.(refreshVoiceButton)
+refreshVoiceButton()
+
+// The orb is only drawn in voice mode (the Home screen covers it), so it costs nothing the rest of the time.
 const clock = new THREE.Clock()
 
 function tick() {
   requestAnimationFrame(tick)
-  animator.update(clock.getElapsedTime(), clock.getDelta())
+  // One clock read per frame: getElapsedTime() already advances the clock, so a getDelta() after it returned
+  // about zero and the orb's state transitions never visibly happened.
+  const delta = clock.getDelta()
+  if (document.body.dataset.mode !== 'voice') return
+  animator.update(clock.elapsedTime, delta)
   composer.render()
 }
 
