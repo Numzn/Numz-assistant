@@ -296,9 +296,145 @@ body[data-has-messages="true"] #thread {
 }
 
 .msg[data-role="assistant"] .body {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.65;
+}
+
+/* Markdown inside a reply */
+.body > :first-child {
+  margin-top: 0;
+}
+
+.body > :last-child {
+  margin-bottom: 0;
+}
+
+.body p,
+.body ul,
+.body ol,
+.body blockquote,
+.body .code-block,
+.body .table-wrap {
+  margin: 0 0 0.9em;
+}
+
+.body ul,
+.body ol {
+  padding-left: 1.5em;
+}
+
+.body li + li {
+  margin-top: 0.25em;
+}
+
+.body li > ul,
+.body li > ol {
+  margin: 0.25em 0 0;
+}
+
+.body h3,
+.body h4,
+.body h5,
+.body h6 {
+  margin: 1.1em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.body h3 {
+  font-size: 1.15em;
+}
+
+.body h4 {
+  font-size: 1.05em;
+}
+
+.body h5,
+.body h6 {
+  font-size: 1em;
+}
+
+.body a {
+  color: var(--focus);
+  text-underline-offset: 2px;
+}
+
+.body hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px solid var(--border-strong);
+}
+
+.body blockquote {
+  padding: 0 0 0 14px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.body code.inline {
+  padding: 0.12em 0.4em;
+  border-radius: 6px;
+  background: var(--surface-raised);
+  font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.code-block {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.code-head .copy {
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.code-head .copy:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.body table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.body th,
+.body td {
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  text-align: left;
+}
+
+.body th {
+  background: var(--surface);
+  font-weight: 600;
 }
 
 .msg[data-role="assistant"][data-status="thinking"] .body,

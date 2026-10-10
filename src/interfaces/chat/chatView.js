@@ -1,3 +1,5 @@
+import { renderMarkdown } from './markdownView.js'
+
 /**
  * Draws the Home conversation and runs the composer. All behaviour lives in chatController.js; this file only
  * turns its state into DOM and key presses into calls. Text is always set with textContent, never as HTML.
@@ -24,6 +26,7 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
   const notice = $('composerNotice')
 
   const items = new Map() // message id -> <li>
+  const rendered = new WeakMap() // reply body -> the text last drawn into it
   let composing = false
   let noticeTimer = null
   let stickToBottom = true
@@ -66,7 +69,17 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
     }
 
     const bodyEl = ensure(li, 'body')
-    bodyEl.textContent = message.status === 'thinking' ? 'Thinking…' : message.text
+    if (message.status === 'thinking') {
+      bodyEl.textContent = 'Thinking…'
+      rendered.delete(bodyEl)
+    } else if (message.status === 'error') {
+      bodyEl.textContent = message.text
+      rendered.delete(bodyEl)
+    } else if (rendered.get(bodyEl) !== message.text) {
+      // A reply (finished, still arriving, or stopped) is drawn as Markdown, only when its text changed.
+      renderMarkdown(bodyEl, message.text, doc)
+      rendered.set(bodyEl, message.text)
+    }
 
     const meta = li.querySelector('.meta')
     if (message.status === 'stopped') ensure(li, 'meta', 'span').textContent = 'Stopped'
