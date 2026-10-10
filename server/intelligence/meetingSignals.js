@@ -19,8 +19,14 @@ const DEADLINE = new RegExp(
   'i'
 )
 
-const INTERROGATIVE_OPENING =
-  /^(?:what|who|whom|whose|when|where|why|how|which|can|could|should|would|will|do|does|did|is|are|am|was|were|have|has|shall)\b/i
+// A question with no question mark: an auxiliary verb first ("can we ...", "is it ..."), or a question word
+// followed by one ("what is ...", "how do we ..."). A bare question word is not enough: "What your country can
+// do for you" and "When the team ships" are statements.
+const AUX = '(?:can|could|should|would|will|do|does|did|is|are|am|was|were|have|has|shall|may|might)'
+const INTERROGATIVE_OPENING = new RegExp(
+  `^(?:${AUX}\\b|(?:what|who|whom|whose|when|where|why|how|which)\\s+${AUX}\\b)`,
+  'i'
+)
 
 const ACTION_PATTERNS = [
   { name: 'first-person-commitment', status: 'confirmed', first: true, re: /\bI(?:'ll|’ll| will| am going to|'m going to|’m going to| can take| will take)\b/ },

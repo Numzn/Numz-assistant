@@ -20,7 +20,7 @@ const seg = (n, text, extra = {}) => ({
 test('a question mark is a confirmed question; a bare interrogative is only inferred', () => {
   const found = extractSignals([
     seg(1, 'When does the new build ship?'),
-    seg(2, 'what time does the build ship tomorrow'),
+    seg(2, 'when does the build ship tomorrow'),
     seg(3, 'The build ships on Friday.'),
     seg(4, 'Why?')
   ])
@@ -29,6 +29,26 @@ test('a question mark is a confirmed question; a bare interrogative is only infe
     ['seg_0002', 'inferred', 'interrogative-opening'],
     ['seg_0004', 'confirmed', 'question-mark']
   ])
+})
+
+test('a sentence that merely starts with a question word is not a question without a question mark (a real false positive)', () => {
+  // From the first real run through the dev stack: Whisper transcribed this without a question mark.
+  const found = extractSignals([
+    seg(1, 'What your country can do for you, ask what you can do for your country.'),
+    seg(2, 'How the model works is described in the appendix and the notes that follow.'),
+    seg(3, 'When the team ships the build we will tell everyone.'),
+    seg(4, 'what is the plan for the launch'),
+    seg(5, 'how do we get the numbers by Friday'),
+    seg(6, 'can we move the review')
+  ])
+  assert.deepEqual(
+    found.questions.map((q) => [q.source.segmentIds[0], q.status]),
+    [
+      ['seg_0004', 'inferred'],
+      ['seg_0005', 'inferred'],
+      ['seg_0006', 'inferred']
+    ]
+  )
 })
 
 test('an explicit commitment is confirmed, a suggestion is inferred, and the deadline is quoted verbatim', () => {
