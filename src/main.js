@@ -183,6 +183,7 @@ if (settings.voice?.enabled) {
           vadBargeInSettleMs: settings.voice?.vadBargeInSettleMs,
           vadBargeInEchoRatio: settings.voice?.vadBargeInEchoRatio,
           vadBargeInGuardMs: settings.voice?.vadBargeInGuardMs,
+          autoGainControl: settings.voice?.autoGainControl,
           getDeviceId: () => deviceManager.getPreferredDeviceId?.() ?? ''
         })
       : sttMode === 'server'

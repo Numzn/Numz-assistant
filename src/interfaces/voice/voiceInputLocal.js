@@ -45,6 +45,9 @@ export function createVoiceInputLocal({
   vadBargeInEchoRatio = 1.8,
   //  - The first part of the playback is spent measuring that loudness; nothing counts as an interruption then.
   vadBargeInGuardMs = 500,
+  // Let the browser level the microphone. Off, a quiet voice (a laptop's array microphone) can sit below the
+  // fixed detection floor and never start a capture; see settings.voice.autoGainControl.
+  autoGainControl = false,
   getDeviceId = () => ''
 } = {}) {
   let onPartial = () => {}
@@ -430,7 +433,7 @@ export function createVoiceInputLocal({
     if (stream?.active) return stream
 
     const deviceId = typeof getDeviceId === 'function' ? getDeviceId() : ''
-    const audio = speechAudioConstraints({ deviceId })
+    const audio = speechAudioConstraints({ deviceId, autoGainControl: Boolean(autoGainControl) })
     try {
       stream = await mediaDevices.getUserMedia({ audio, video: false })
     } catch (err) {

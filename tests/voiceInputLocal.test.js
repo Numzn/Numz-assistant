@@ -36,6 +36,7 @@ let recorders
 let sttCalls
 let sttHold // when set, the STT request waits for it
 let originals
+let requestedAudio // the constraints the input asked the browser for, one entry per getUserMedia call
 
 class FakeAnalyser {
   constructor() {
@@ -101,6 +102,7 @@ beforeEach(() => {
   level = 0
   recorders = []
   sttCalls = []
+  requestedAudio = []
   sttHold = null
   originals = {
     window: Object.getOwnPropertyDescriptor(globalThis, 'window'),
@@ -114,7 +116,14 @@ beforeEach(() => {
   const stream = { active: true, getTracks: () => [track] }
   globalThis.window = { AudioContext: FakeAudioContext, MediaRecorder: FakeMediaRecorder }
   Object.defineProperty(globalThis, 'navigator', {
-    value: { mediaDevices: { getUserMedia: async () => stream } },
+    value: {
+      mediaDevices: {
+        getUserMedia: async (constraints) => {
+          requestedAudio.push(constraints?.audio)
+          return stream
+        }
+      }
+    },
     configurable: true,
     writable: true
   })
@@ -383,5 +392,31 @@ test('a meeting still asks for levelling and one channel on top of them, and a c
     autoGainControl: true,
     channelCount: 1,
     deviceId: { exact: 'mic-1' }
+  })
+})
+
+// ---- a quiet microphone: the browser is asked to level it only when told to ------------------------------------
+
+test('by default the input asks for the same microphone processing as before: gain control off', async () => {
+  const { input } = rig()
+  await input.startContinuous()
+  assert.equal(requestedAudio.length, 1)
+  assert.deepEqual(requestedAudio[0], { echoCancellation: true, noiseSuppression: true, autoGainControl: false })
+})
+
+test('with autoGainControl on, only that one constraint changes', async () => {
+  const { input } = rig({ autoGainControl: true })
+  await input.startContinuous()
+  assert.deepEqual(requestedAudio[0], { echoCancellation: true, noiseSuppression: true, autoGainControl: true })
+})
+
+test('a chosen microphone is still requested exactly, with gain control as configured', async () => {
+  const { input } = rig({ autoGainControl: true, getDeviceId: () => 'mic-7' })
+  await input.startContinuous()
+  assert.deepEqual(requestedAudio[0], {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    deviceId: { exact: 'mic-7' }
   })
 })
