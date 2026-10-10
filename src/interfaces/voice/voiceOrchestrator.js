@@ -15,7 +15,10 @@ export function createVoiceOrchestrator({
   deviceManager,
   ui,
   config,
-  eventBus
+  eventBus,
+  // Optional { handle(text) -> Promise<{ reply } | null> }: a command heard by voice (a meeting command) is
+  // answered here, out loud, and never sent to the assistant.
+  commands = null
 }) {
   let pressed = false
   let busy = false
@@ -252,6 +255,17 @@ export function createVoiceOrchestrator({
     }
   }
 
+  async function answerCommand(text) {
+    if (!commands || typeof commands.handle !== 'function') return null
+    try {
+      const answer = await commands.handle(text)
+      return answer && typeof answer.reply === 'string' && answer.reply ? answer : null
+    } catch (err) {
+      console.error('[voice] command handling failed; sending it to the assistant instead', err)
+      return null
+    }
+  }
+
   async function handleAssistantPrompt(text) {
     const cleaned = typeof text === 'string' ? text.trim() : ''
     if (!cleaned || suspended) return
@@ -271,6 +285,29 @@ export function createVoiceOrchestrator({
     markedFirstToken = false
     speechBuffer = ''
     setUiResponse('')
+
+    const local = await answerCommand(cleaned)
+    if (local) {
+      setUiResponse(local.reply)
+      eventBus?.emit?.('command:handled', { text: cleaned, reply: local.reply })
+      try {
+        // Speaking goes through the same states as a reply (LISTENING cannot go straight to SPEAKING).
+        await assistantController.setProcessing()
+        await speakReply(local.reply)
+      } catch (err) {
+        console.error('[voice] speaking a command reply failed', err)
+        await assistantController.setError()
+        await safeSetIdle()
+        if (conversationActive) await stopConversation()
+      } finally {
+        busy = false
+        setBusyUi(false)
+        voiceDebug.setPhase('idle')
+      }
+      if (conversationActive) await afterTurnComplete()
+      return
+    }
+
     voiceDebug.mark('llm_start')
     voiceDebug.setPhase('thinking')
     setUiStatus('Thinking…')

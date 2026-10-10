@@ -26,6 +26,7 @@ import { createMeetingPanel } from './interfaces/meeting/meetingPanel.js'
 import { checkLiveSpeechSupport } from './interfaces/meeting/liveSupport.js'
 import { createChatController } from './interfaces/chat/chatController.js'
 import { createChatView } from './interfaces/chat/chatView.js'
+import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 
 const canvas = document.querySelector('#canvas')
 if (!canvas) {
@@ -56,6 +57,11 @@ const assistantController = createAssistantController({
 let voiceApi = null
 let voiceModeActive = false
 let chatView = null
+let meetingPanel = null
+// Meeting commands are answered by one router for typed and spoken input; it is created once the meeting
+// controller exists, and until then (or if the meeting panel failed to start) nothing is treated as a command.
+let commandRouter = null
+const commandHook = { handle: (text) => (commandRouter ? commandRouter.handle(text) : null) }
 const motionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null
 
 const animator = createAnimator({
@@ -181,6 +187,7 @@ if (settings.voice?.enabled) {
     voiceInput,
     voiceOutput,
     deviceManager,
+    commands: commandHook,
     ui: {
       buttonEl,
       wakeButtonEl,
@@ -262,7 +269,7 @@ try {
         ...options
       })
   })
-  const meetingPanel = createMeetingPanel({
+  meetingPanel = createMeetingPanel({
     controller: meetingController,
     api: meetingApi,
     onActiveChange: (active) => {
@@ -311,10 +318,23 @@ const meetingIsOpen = () => {
   const meeting = meetingController?.getState?.()
   return Boolean(meeting && (meeting.open || meeting.phase === 'launching'))
 }
+if (meetingController) {
+  commandRouter = createCommandRouter({
+    meeting: meetingController,
+    openPanel: ({ title } = {}) => {
+      // The launch code is typed by a person in the panel; a title only saves a step.
+      const titleInput = document.querySelector('#meetingTitleInput')
+      if (title && titleInput) titleInput.value = title
+      meetingPanel?.open()
+    }
+  })
+}
+
 const chat = createChatController({
   assistantController,
   assistantClient,
   eventBus,
+  commands: commandHook,
   isBlocked: () => (voiceModeActive ? 'voice' : meetingIsOpen() ? 'meeting' : null),
   // One stop for everything in flight: the stream and, in voice mode, the speech and the listening loop.
   interrupt: () => (voiceModeActive && voiceApi?.interrupt ? voiceApi.interrupt() : assistantController.interrupt())

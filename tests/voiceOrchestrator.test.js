@@ -134,11 +134,14 @@ test('a typed message streams the same events but its reply is never spoken alou
 
 // ---- Voice mode: explicit start results, interrupt, and the real input level ------------------------------
 
-function voiceRig({ start = async () => {}, level = 0.4, conversationMode = true } = {}) {
-  const counts = { cancel: 0, startContinuous: 0, stopContinuous: 0, interrupt: 0, idle: 0, error: 0, listening: 0 }
+function voiceRig({ start = async () => {}, level = 0.4, conversationMode = true, commands = null } = {}) {
+  const counts = { cancel: 0, startContinuous: 0, stopContinuous: 0, interrupt: 0, idle: 0, error: 0, listening: 0, processing: 0, requests: 0 }
+  const callbacks = {}
+  const spoken = []
+  const events = []
   const voiceInput = {
     isSupported: () => true,
-    setOnFinal() {},
+    setOnFinal: (fn) => (callbacks.final = fn),
     setOnPartial() {},
     setOnError() {},
     start() {},
@@ -158,11 +161,15 @@ function voiceRig({ start = async () => {}, level = 0.4, conversationMode = true
     setOnError() {},
     cancel: () => (counts.cancel += 1),
     beginStream() {},
-    enqueueChunk: async () => {},
+    enqueueChunk: async (text) => spoken.push(text),
     endStream: async () => {}
   }
   const assistantController = {
-    requestReply: async () => null,
+    requestReply: async () => {
+      counts.requests += 1
+      return 'The assistant answered.'
+    },
+    setProcessing: async () => (counts.processing += 1),
     setListening: async () => (counts.listening += 1),
     setSpeaking: async () => {},
     setIdle: async () => (counts.idle += 1),
@@ -178,9 +185,10 @@ function voiceRig({ start = async () => {}, level = 0.4, conversationMode = true
     deviceManager: {},
     ui: {},
     config: { audioMode: 'local', conversationMode },
-    eventBus: { on: () => () => {}, emit() {} }
+    commands,
+    eventBus: { on: () => () => {}, emit: (type, payload) => events.push({ type, payload }) }
   })
-  return { api: orchestrator.init(), counts, voiceInput }
+  return { api: orchestrator.init(), counts, voiceInput, spoken, events, hear: (text) => callbacks.final(text) }
 }
 
 const named = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra })
@@ -271,4 +279,47 @@ test('the input level is the real microphone level, and 0 when the input cannot 
   assert.equal(r.api.getInputLevel(), 0.37)
   delete r.voiceInput.getInputLevel
   assert.equal(r.api.getInputLevel(), 0)
+})
+
+// ---- Meeting commands heard by voice ---------------------------------------------------------------------
+
+test('a spoken command is answered out loud and never sent to the assistant', async () => {
+  const commands = { handle: async (text) => (text === 'start a meeting' ? { reply: 'I opened the meeting panel.' } : null) }
+  const r = voiceRig({ commands })
+  await r.hear('start a meeting')
+  await tick()
+  assert.equal(r.counts.requests, 0, 'the assistant was not asked')
+  assert.deepEqual(r.spoken, ['I opened the meeting panel.'])
+  assert.deepEqual(
+    r.events.filter((event) => event.type === 'command:handled').map((event) => event.payload),
+    [{ text: 'start a meeting', reply: 'I opened the meeting panel.' }],
+    'the conversation thread is told'
+  )
+  assert.equal(r.counts.processing, 1, 'speaking goes through the normal states')
+})
+
+test('ordinary speech still reaches the assistant when a command handler is present', async () => {
+  const r = voiceRig({ commands: { handle: async () => null } })
+  await r.hear('what is the weather')
+  await tick()
+  assert.equal(r.counts.requests, 1)
+  assert.equal(r.events.some((event) => event.type === 'command:handled'), false)
+})
+
+test('a command handler that fails does not lose the turn: it goes to the assistant', async () => {
+  const r = voiceRig({ commands: { handle: async () => { throw new Error('boom') } } })
+  await silenced(async () => {
+    await r.hear('start a meeting')
+    await tick()
+  })
+  assert.equal(r.counts.requests, 1)
+})
+
+test('after a spoken command in a conversation, listening resumes', async () => {
+  const r = voiceRig({ commands: { handle: async () => ({ reply: 'Done.' }) } })
+  await r.api.startConversation()
+  const before = r.counts.startContinuous
+  await r.hear('start a meeting')
+  await tick()
+  assert.equal(r.counts.startContinuous, before + 1)
 })
