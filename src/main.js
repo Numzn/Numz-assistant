@@ -28,6 +28,8 @@ import { createChatController } from './interfaces/chat/chatController.js'
 import { createChatView } from './interfaces/chat/chatView.js'
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 import { createHistoryApi } from './interfaces/history/historyApi.js'
+import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
+import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 
 const canvas = document.querySelector('#canvas')
 if (!canvas) {
@@ -104,6 +106,16 @@ if (stateBadgeEl) {
   updateBadge(assistantStateMachine.getState())
   assistantStateMachine.subscribe((next) => updateBadge(next))
 }
+
+// The assistant may need an access code (the server says so). Asked before anything else is requested; a refusal
+// later (the login expired) shows the same card. Unlocking reloads the page, so everything starts fresh.
+const accessController = createAccessController({
+  api: createAccessApi(),
+  onUnlocked: () => globalThis.location?.reload()
+})
+createAccessGateView({ controller: accessController })
+watchForUnauthorized(globalThis, () => accessController.require())
+accessController.start()
 
 assistantController.init().catch((err) => {
   console.error('[assistant] init failed', err)
@@ -347,12 +359,17 @@ chatView = createChatView({ chat, onVoiceMode: () => enterVoiceMode() })
   const historyApi = createHistoryApi()
   const wanted = new URLSearchParams(globalThis.location?.search ?? '').get('conversation')
   if (wanted) {
-    // Leave the address bar clean; a reload then starts fresh instead of reopening it again.
-    globalThis.history?.replaceState(null, '', globalThis.location.pathname)
     historyApi
       .get(wanted)
-      .then((conversation) => chat.open(conversation))
+      .then((conversation) => {
+        // Used: leave the address bar clean, so a reload starts fresh instead of reopening it again.
+        globalThis.history?.replaceState(null, '', globalThis.location.pathname)
+        return chat.open(conversation)
+      })
       .catch((err) => {
+        // A refusal means the access code is being asked for; the link stays so it opens right after unlocking.
+        if (err?.status === 401) return
+        globalThis.history?.replaceState(null, '', globalThis.location.pathname)
         console.warn('[history] could not open the conversation', err)
         chatView?.notify(
           err?.code === 'not-found' ? 'That conversation no longer exists.' : 'That conversation could not be opened. Check the connection and try again.'

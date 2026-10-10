@@ -53,6 +53,7 @@
               </div>
               <div id="micDeviceHint"></div>
               <a id="historyLink" href="/history.html" hidden>Conversation history</a>
+              <button id="lockButton" type="button" class="link-quiet" hidden>Lock the assistant</button>
               <div id="wakeRow">
                 <span>Wake word</span>
                 <button id="wakeButton" type="button" aria-pressed="false" aria-label="Toggle wake word mode" title="Toggle wake word mode">Wake</button>
@@ -140,6 +141,18 @@
       </div>
       <p id="meetingMessage" role="status" aria-live="polite" data-tone="info"></p>
       <div id="meetingActions"></div>
+    </section>
+
+    <!-- The assistant asks for its access code here when the server requires one. -->
+    <section id="accessGate" role="dialog" aria-modal="true" aria-labelledby="accessTitle" hidden>
+      <form id="accessForm" autocomplete="on">
+        <h2 id="accessTitle">Enter the access code</h2>
+        <p id="accessHint">This assistant is protected. Ask whoever runs it for the code.</p>
+        <label for="accessCode" class="sr-only">Access code</label>
+        <input id="accessCode" name="access-code" type="password" autocomplete="current-password" spellcheck="false" />
+        <p id="accessError" role="alert" hidden></p>
+        <button id="accessSubmit" type="submit" class="pill primary">Unlock</button>
+      </form>
     </section>
 
     <div id="latencyFooter" hidden aria-hidden="true"></div>

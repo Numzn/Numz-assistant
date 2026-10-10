@@ -22,6 +22,7 @@ import { createConversationRepository } from './persistence/conversationReposito
 import { sessionService } from './sessions/sessionService.js'
 import { createMeetingSessionService } from './services/meetingSessionService.js'
 import { createMeetingAuth } from './auth/meetingAuth.js'
+import { createAssistantAuth } from './auth/assistantAuth.js'
 import { logMeetingsConfig, meetingsHealth } from './meetings/meetingHealth.js'
 import { errorHandler, notFoundHandler } from './http/errorHandler.js'
 
@@ -53,6 +54,12 @@ const meetingAuth = createMeetingAuth({
   ticketSecret: process.env.MEETING_TICKET_SECRET ?? '',
   launchCode: process.env.MEETING_LAUNCH_CODE ?? '',
   ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200
+})
+// One shared access code protects the assistant API (HTTP, its WebSocket and the DeepSeek probe). Unset keeps it
+// open exactly as before; see server/auth/assistantAuth.js.
+const assistantAuth = createAssistantAuth({
+  accessCode: process.env.ASSISTANT_ACCESS_CODE ?? '',
+  ttlSeconds: Number.parseInt(process.env.ASSISTANT_SESSION_TTL_S ?? '43200', 10) || 43200
 })
 logMeetingsConfig({ auth: meetingAuth })
 // No live connection survives a process restart: interrupted meetings move to RECOVERING.
@@ -104,16 +111,19 @@ function createApp() {
       aiConfigured: cfg.configured,
       aiModel: cfg.model || null,
       aiBaseUrl: cfg.baseUrl || null,
-      meetings: meetingsHealth({ auth: meetingAuth })
+      meetings: meetingsHealth({ auth: meetingAuth }),
+      assistant: { auth: assistantAuth.status() }
     })
   })
 
-  app.get('/api/v1/health/deepseek', async (_req, res) => {
+  app.get('/api/v1/health/deepseek', assistantAuth.requireAccess, async (_req, res) => {
     const result = await probeDeepSeek()
     res.status(result.ok ? 200 : result.configured ? 502 : 503).json(result)
   })
 
-  app.use('/api/v1/assistant', assistantRouter)
+  // Login, logout and status stay outside the protected area; everything else under /assistant needs the cookie.
+  app.use('/api/v1/assistant/auth', assistantAuth.router())
+  app.use('/api/v1/assistant', assistantAuth.requireAccess, assistantRouter)
   app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth: meetingAuth }))
 
   if (isProd) {
@@ -135,7 +145,7 @@ const listenPort = Number.isFinite(port) ? port : 3001
 const app = createApp()
 const server = http.createServer(app)
 const upgrades = createUpgradeRouter(server)
-attachSocketServer(server, { upgrades })
+attachSocketServer(server, { upgrades, authorize: assistantAuth.authorizeUpgrade })
 attachLiveSpeechRelay({
   upgrades,
   auth: meetingAuth,

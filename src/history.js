@@ -4,11 +4,17 @@
  */
 
 import { createHistoryApi } from './interfaces/history/historyApi.js'
+import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
+import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 
 const PAGE = 50
 const ARM_MS = 4000
 
 const api = createHistoryApi()
+const accessController = createAccessController({ api: createAccessApi(), onUnlocked: () => location.reload() })
+createAccessGateView({ controller: accessController })
+watchForUnauthorized(globalThis, () => accessController.require())
+accessController.start()
 const $ = (id) => document.getElementById(id)
 const list = $('conversationList')
 const status = $('historyStatus')
@@ -113,7 +119,7 @@ async function load(append = false) {
     render()
     if (total > 0) say('')
   } catch (err) {
-    say(`Could not load your conversations: ${err?.message ?? 'try again'}.`)
+    say(err?.status === 401 ? 'Enter the access code to see your conversations.' : `Could not load your conversations: ${err?.message ?? 'try again'}.`)
   }
 }
 
