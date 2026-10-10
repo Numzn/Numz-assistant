@@ -448,7 +448,7 @@ body[data-has-messages="true"] #thread {
   align-items: center;
   justify-content: flex-end;
   gap: 14px;
-  padding: 0 16px max(8vh, env(safe-area-inset-bottom));
+  padding: 0 16px max(4vh, env(safe-area-inset-bottom));
   pointer-events: none;
 }
 
@@ -497,8 +497,11 @@ body[data-has-messages="true"] #thread {
   background: var(--danger);
 }
 
+#voiceStatus:empty {
+  display: none;
+}
+
 #voiceStatus {
-  min-height: 22px;
   margin: 0;
   color: var(--text-muted);
   font-size: 14px;

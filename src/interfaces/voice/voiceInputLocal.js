@@ -571,6 +571,16 @@ export function createVoiceInputLocal({
       return continuousActive
     },
 
+    /**
+     * The microphone level right now, 0..1, read from the analyser the hands-free loop already runs.
+     * 0 when it is not listening, and while the assistant is speaking: the assistant's own voice in the
+     * microphone must never be mistaken for the user's.
+     */
+    getInputLevel() {
+      if (!continuousActive || !analyserNode || speakingPhase) return 0
+      return Math.min(1, readRms() / 0.12)
+    },
+
     async armWake() {
       wakeArmed = true
       await ensureStream()

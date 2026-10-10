@@ -24,7 +24,14 @@ function pickProfile(state) {
   return states?.[state] ?? states?.[aliases[state]] ?? states?.IDLE
 }
 
-export function createAnimator({ core, bloomPass, stateMachine }) {
+/**
+ * getLevel: optional () => 0..1, the REAL microphone level while the assistant is listening. Nothing else is
+ * ever fed in: speech synthesis exposes no playback level, so while the assistant speaks the orb follows the
+ * state only.
+ * reducedMotion: optional () => boolean. When true nothing moves (no rotation, float, pulse or waves); the
+ * state is still shown by colour and brightness.
+ */
+export function createAnimator({ core, bloomPass, stateMachine, getLevel = null, reducedMotion = () => false }) {
   const { animation: anim, core: coreCfg, bloom: bloomCfg, assistantVisual } = settings
   const baseBloomStrength = bloomCfg.strength
 
@@ -51,14 +58,23 @@ export function createAnimator({ core, bloomPass, stateMachine }) {
     ringOpacityMult: 1,
     flareOpacityMult: 1
   }
+  let level = 0
 
   return {
-    update(timeSeconds, deltaSeconds) {
+    update(rawTimeSeconds, deltaSeconds) {
+      const calm = Boolean(reducedMotion?.())
+      // Frozen time stills every sine wave below; the state is still told by colour and brightness.
+      const timeSeconds = calm ? 0 : rawTimeSeconds
       const dt = Math.min(Math.max(deltaSeconds, 0), 0.05)
 
-      core.rotation.y += anim.rotationSpeed * dt
+      if (!calm) core.rotation.y += anim.rotationSpeed * dt
 
       const state = stateMachine?.getState?.() ?? 'IDLE'
+
+      // The user's real voice, while listening: a smoothed level that brightens the halo (and, with motion on,
+      // swells the core a little).
+      const rawLevel = state === 'LISTENING' && typeof getLevel === 'function' ? clamp01(getLevel() || 0) : 0
+      level = lerp(level, rawLevel, clamp01(dt / 0.09))
       const profile = pickProfile(state)
       const tau = Math.max(0.001, assistantVisual?.stateTransitionSeconds ?? 0.22)
       const a = clamp01(dt / tau)
@@ -93,17 +109,17 @@ export function createAnimator({ core, bloomPass, stateMachine }) {
       const beatMix = state === 'SPEAKING' ? 0.35 : 0
       const pulseWave = (1 - beatMix) * breathe + beatMix * speakingBeat
 
-      const corePulse = 1 + pulseWave * coreCfg.pulseStrength * live.pulseStrengthMult
+      const corePulse =
+        (calm ? 1 : 1 + pulseWave * coreCfg.pulseStrength * live.pulseStrengthMult) * (calm ? 1 : 1 + level * 0.1)
       core.scale.setScalar(corePulse)
 
-      core.position.y =
-        Math.sin(timeSeconds * anim.floatSpeed + 0.4) * anim.floatAmplitude
+      core.position.y = calm ? 0 : Math.sin(timeSeconds * anim.floatSpeed + 0.4) * anim.floatAmplitude
 
       if (haloMat) {
         const haloLive =
           1 + Math.sin(timeSeconds * w * 0.85 + 0.6) * coreCfg.haloLiveDepth
         haloMat.opacity = THREE.MathUtils.clamp(
-          baseHaloOpacity * live.haloOpacityMult * haloLive,
+          baseHaloOpacity * live.haloOpacityMult * haloLive * (1 + level * 0.35),
           0.05,
           0.95
         )

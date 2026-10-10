@@ -131,3 +131,144 @@ test('a typed message streams the same events but its reply is never spoken alou
   await tick()
   assert.deepEqual(r.spoken, [])
 })
+
+// ---- Voice mode: explicit start results, interrupt, and the real input level ------------------------------
+
+function voiceRig({ start = async () => {}, level = 0.4, conversationMode = true } = {}) {
+  const counts = { cancel: 0, startContinuous: 0, stopContinuous: 0, interrupt: 0, idle: 0, error: 0, listening: 0 }
+  const voiceInput = {
+    isSupported: () => true,
+    setOnFinal() {},
+    setOnPartial() {},
+    setOnError() {},
+    start() {},
+    stop() {},
+    startContinuous: async () => {
+      counts.startContinuous += 1
+      await start()
+    },
+    stopContinuous: async () => (counts.stopContinuous += 1),
+    setSpeakingPhase() {},
+    getInputLevel: () => level
+  }
+  const voiceOutput = {
+    isSupported: () => true,
+    setOnStart() {},
+    setOnEnd() {},
+    setOnError() {},
+    cancel: () => (counts.cancel += 1),
+    beginStream() {},
+    enqueueChunk: async () => {},
+    endStream: async () => {}
+  }
+  const assistantController = {
+    requestReply: async () => null,
+    setListening: async () => (counts.listening += 1),
+    setSpeaking: async () => {},
+    setIdle: async () => (counts.idle += 1),
+    setError: async () => (counts.error += 1),
+    setTranscribing: async () => {},
+    interrupt: async () => (counts.interrupt += 1)
+  }
+  const orchestrator = createVoiceOrchestrator({
+    stateMachine: { subscribe: () => () => {}, getState: () => 'IDLE' },
+    assistantController,
+    voiceInput,
+    voiceOutput,
+    deviceManager: {},
+    ui: {},
+    config: { audioMode: 'local', conversationMode },
+    eventBus: { on: () => () => {}, emit() {} }
+  })
+  return { api: orchestrator.init(), counts, voiceInput }
+}
+
+const named = (name, extra = {}) => Object.assign(new Error(name), { name, ...extra })
+const silenced = async (fn) => {
+  const original = console.error
+  console.error = () => {}
+  try {
+    return await fn()
+  } finally {
+    console.error = original
+  }
+}
+
+test('voice mode starts and says so', async () => {
+  const r = voiceRig()
+  assert.deepEqual(await r.api.startConversation(), { ok: true })
+  assert.equal(r.api.isConversationActive(), true)
+  assert.equal(r.counts.startContinuous, 1)
+})
+
+test('a blocked microphone is reported as permission-denied, and voice mode is not left half on', async () => {
+  const r = voiceRig({ start: async () => { throw named('NotAllowedError') } })
+  assert.deepEqual(await silenced(() => r.api.startConversation()), { ok: false, reason: 'permission-denied' })
+  assert.equal(r.api.isConversationActive(), false)
+})
+
+test('a missing microphone is reported as no-microphone', async () => {
+  const r = voiceRig({ start: async () => { throw named('NotFoundError') } })
+  assert.deepEqual(await silenced(() => r.api.startConversation()), { ok: false, reason: 'no-microphone' })
+  assert.equal(r.api.isConversationActive(), false)
+})
+
+test('a browser that needs another tap is reported as needs-gesture', async () => {
+  const r = voiceRig({ start: async () => { throw Object.assign(new Error('suspended'), { code: 'audio-context-suspended' }) } })
+  assert.deepEqual(await silenced(() => r.api.startConversation()), { ok: false, reason: 'needs-gesture' })
+})
+
+test('any other start failure is an error, and the assistant is put into its error state', async () => {
+  const r = voiceRig({ start: async () => { throw new Error('boom') } })
+  assert.deepEqual(await silenced(() => r.api.startConversation()), { ok: false, reason: 'error' })
+  assert.equal(r.counts.error, 1)
+  assert.equal(r.api.isConversationActive(), false)
+})
+
+test('voice mode cannot start while a meeting has the microphone, and does not touch it', async () => {
+  const r = voiceRig()
+  await r.api.suspend()
+  const opened = r.counts.startContinuous
+  assert.deepEqual(await r.api.startConversation(), { ok: false, reason: 'suspended' })
+  assert.equal(r.counts.startContinuous, opened)
+})
+
+test('without conversation support voice mode says unsupported', async () => {
+  const r = voiceRig({ conversationMode: false })
+  assert.deepEqual(await r.api.startConversation(), { ok: false, reason: 'unsupported' })
+})
+
+test('interrupt in a conversation cuts speech, aborts the stream and goes back to listening', async () => {
+  const r = voiceRig()
+  await r.api.startConversation()
+  const before = { ...r.counts }
+  await r.api.interrupt()
+  assert.equal(r.counts.cancel, before.cancel + 1, 'speech is cut')
+  assert.equal(r.counts.interrupt, before.interrupt + 1, 'the stream is aborted')
+  assert.equal(r.counts.startContinuous, before.startContinuous + 1, 'listening resumes')
+  assert.equal(r.api.isConversationActive(), true)
+})
+
+test('interrupt outside a conversation cuts speech, aborts the stream and returns to idle', async () => {
+  const r = voiceRig()
+  await r.api.interrupt()
+  assert.equal(r.counts.cancel, 1)
+  assert.equal(r.counts.interrupt, 1)
+  assert.equal(r.counts.idle, 1)
+  assert.equal(r.counts.startContinuous, 0, 'it does not start listening')
+})
+
+test('interrupt does nothing while a meeting has the microphone', async () => {
+  const r = voiceRig()
+  await r.api.suspend()
+  const before = { ...r.counts }
+  await r.api.interrupt()
+  assert.deepEqual(r.counts, before)
+})
+
+test('the input level is the real microphone level, and 0 when the input cannot report one', async () => {
+  const r = voiceRig({ level: 0.37 })
+  assert.equal(r.api.getInputLevel(), 0.37)
+  delete r.voiceInput.getInputLevel
+  assert.equal(r.api.getInputLevel(), 0)
+})

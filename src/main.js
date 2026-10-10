@@ -52,7 +52,20 @@ const assistantController = createAssistantController({
   eventBus
 })
 
-const animator = createAnimator({ core, bloomPass, stateMachine: assistantStateMachine })
+// Declared up here because the animator and the meeting callbacks below read them as the page goes on.
+let voiceApi = null
+let voiceModeActive = false
+let chatView = null
+const motionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null
+
+const animator = createAnimator({
+  core,
+  bloomPass,
+  stateMachine: assistantStateMachine,
+  // Only the user's real microphone level, only in voice mode. Playback has no level to read.
+  getLevel: () => (voiceModeActive ? voiceApi?.getInputLevel?.() ?? 0 : 0),
+  reducedMotion: () => motionQuery?.matches === true
+})
 
 assistantStateMachine.subscribe((next, prev) => {
   console.log('[assistant:visual]', prev, '->', next)
@@ -90,7 +103,6 @@ assistantController.init().catch((err) => {
 })
 
 // Shared with the meeting panel further down: the assistant steps aside while a meeting is open.
-let voiceApi = null
 let preferredMicId = () => ''
 
 if (settings.voice?.enabled) {
@@ -255,6 +267,9 @@ try {
     api: meetingApi,
     onActiveChange: (active) => {
       setAssistantVoiceAvailable(!active)
+      // The meeting owns the microphone now (setAssistantVoiceAvailable already stopped the listening).
+      if (active && voiceModeActive) showVoiceMode(false)
+      refreshVoiceButton()
     }
   })
   meetingController.restore()
@@ -300,9 +315,102 @@ const chat = createChatController({
   assistantController,
   assistantClient,
   eventBus,
-  isBlocked: () => (meetingIsOpen() ? 'meeting' : null)
+  isBlocked: () => (voiceModeActive ? 'voice' : meetingIsOpen() ? 'meeting' : null),
+  // One stop for everything in flight: the stream and, in voice mode, the speech and the listening loop.
+  interrupt: () => (voiceModeActive && voiceApi?.interrupt ? voiceApi.interrupt() : assistantController.interrupt())
 })
-const chatView = createChatView({ chat })
+chatView = createChatView({ chat, onVoiceMode: () => enterVoiceMode() })
+
+// ---- Voice mode: the orb, a status in words, and a way out ----
+const VOICE_ERRORS = {
+  'permission-denied': "Microphone access is blocked. Allow it in your browser's site settings, then try again.",
+  'no-microphone': 'No microphone was found. Connect one and try again.',
+  'needs-gesture': 'The browser needs another tap to start listening. Press the microphone button again.',
+  suspended: 'A meeting is recording, so voice mode is unavailable until it ends.',
+  unsupported: 'Voice mode is not available in this browser.',
+  error: 'Voice mode could not start. Check the microphone and try again.'
+}
+const RESPONDING = new Set(['PROCESSING', 'THINKING', 'RETRIEVING_MEMORY', 'TOOL_EXECUTION', 'GENERATING', 'SPEAKING'])
+const voiceModeEl = document.querySelector('#voiceMode')
+const voiceInterruptEl = document.querySelector('#voiceInterruptButton')
+const voiceEndEl = document.querySelector('#voiceEndButton')
+
+function refreshVoiceButton() {
+  if (!chatView) return
+  const open = meetingIsOpen()
+  chatView.setVoiceButton({
+    available: Boolean(voiceApi?.startConversation),
+    disabled: open,
+    title: open ? 'Voice mode is unavailable while a meeting is open' : 'Start voice mode'
+  })
+}
+
+function syncVoiceControls() {
+  if (voiceInterruptEl) {
+    voiceInterruptEl.hidden = !(voiceModeActive && RESPONDING.has(assistantStateMachine.getState()))
+  }
+}
+
+function showVoiceMode(on) {
+  voiceModeActive = on
+  document.body.dataset.mode = on ? 'voice' : 'chat'
+  if (voiceModeEl) voiceModeEl.hidden = !on
+  syncVoiceControls()
+  if (on) voiceEndEl?.focus({ preventScroll: true })
+  else chatView?.focusInput()
+}
+
+let startingVoiceMode = false
+
+async function enterVoiceMode() {
+  if (voiceModeActive || !voiceApi?.startConversation) return
+  if (meetingIsOpen()) {
+    chatView.notify(VOICE_ERRORS.suspended)
+    return
+  }
+  if (chat.getState().busy) {
+    chatView.notify('Wait for the reply to finish, or press Stop, then start voice mode.')
+    return
+  }
+  if (startingVoiceMode) return
+  startingVoiceMode = true
+  // The browser may be asking for the microphone right now; say so instead of looking frozen.
+  chatView.notify('Allow the microphone if your browser asks…')
+  try {
+    // The click that got us here is the user gesture the microphone needs; the result says exactly what failed.
+    const result = await voiceApi.startConversation()
+    if (!result?.ok) {
+      chatView.notify(VOICE_ERRORS[result?.reason] ?? VOICE_ERRORS.error)
+      return
+    }
+    chatView.clearNotice()
+    showVoiceMode(true)
+  } finally {
+    startingVoiceMode = false
+  }
+}
+
+async function exitVoiceMode() {
+  if (!voiceModeActive) return
+  showVoiceMode(false) // the screen never waits on the microphone
+  try {
+    await voiceApi.stopConversation()
+  } catch (err) {
+    console.error('[voice] could not stop voice mode', err)
+  }
+}
+
+voiceEndEl?.addEventListener('click', () => exitVoiceMode())
+voiceInterruptEl?.addEventListener('click', () => voiceApi?.interrupt?.())
+assistantStateMachine.subscribe(syncVoiceControls)
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !voiceModeActive) return
+  // Escape stops a reply first; with nothing to stop it leaves voice mode.
+  if (voiceInterruptEl && !voiceInterruptEl.hidden) voiceApi?.interrupt?.()
+  else exitVoiceMode()
+})
+meetingController?.subscribe?.(refreshVoiceButton)
+refreshVoiceButton()
 
 // The orb is only drawn in voice mode (the Home screen covers it), so it costs nothing the rest of the time.
 const clock = new THREE.Clock()

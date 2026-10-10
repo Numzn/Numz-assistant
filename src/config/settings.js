@@ -3,7 +3,8 @@ export const settings = {
     // A quiet steel blue on charcoal. The earlier cyan glow on navy read as neon.
     core: 0xdfe6ee,
     coreOuter: 0x9fb6cf,
-    background: 0x212121
+    // Tone mapping darkens what the scene draws: this renders as the charcoal (#212121) of the Home screen.
+    background: 0x333333
   },
   assistantVisual: {
     /** Seconds to ease between state visual profiles. */
@@ -106,7 +107,8 @@ export const settings = {
     near: 0.1,
     far: 100,
     positionY: 0.18,
-    positionZ: 3.95
+    // Closer than before: the orb is the subject of voice mode, the only place it is drawn.
+    positionZ: 2.45
   },
   renderer: {
     antialias: true,

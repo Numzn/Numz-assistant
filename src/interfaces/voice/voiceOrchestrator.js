@@ -316,8 +316,14 @@ export function createVoiceOrchestrator({
     if (conversationActive) await afterTurnComplete()
   }
 
+  /**
+   * Starts the hands-free listening loop. Resolves to { ok: true } or { ok: false, reason } so the caller can
+   * tell the user exactly what is wrong: 'permission-denied', 'no-microphone', 'needs-gesture', 'suspended'
+   * (a meeting has the microphone), 'unsupported' or 'error'.
+   */
   async function startConversation() {
-    if (!conversationMode || !supportsContinuous) return
+    if (!conversationMode || !supportsContinuous) return { ok: false, reason: 'unsupported' }
+    if (suspended) return { ok: false, reason: 'suspended' }
     conversationActive = true
     streamingText = ''
     setUiResponse('')
@@ -327,6 +333,7 @@ export function createVoiceOrchestrator({
       await assistantController.setListening()
       voiceInput.setSpeakingPhase(false)
       await voiceInput.startContinuous()
+      return { ok: true }
     } catch (err) {
       console.error('[voice] startConversation failed', err)
       const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : ''
@@ -334,7 +341,15 @@ export function createVoiceOrchestrator({
       if (name === 'NotAllowedError') {
         setUiStatus('Mic blocked — allow microphone in browser settings')
         conversationActive = false
-      } else if (code === 'audio-context-suspended') {
+        return { ok: false, reason: 'permission-denied' }
+      }
+      if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        setUiStatus('No microphone found')
+        conversationActive = false
+        await safeSetIdle()
+        return { ok: false, reason: 'no-microphone' }
+      }
+      if (code === 'audio-context-suspended') {
         // Needs a real user gesture to resume — bindUi()'s mic tap handler
         // retries startConversation() directly when it sees this state.
         // The button may be hidden (hideHoldToTalkButton) since conversation
@@ -346,11 +361,12 @@ export function createVoiceOrchestrator({
         }
         setUiStatus('Tap Mic to start listening')
         conversationActive = false
-      } else {
-        await assistantController.setError()
-        await safeSetIdle()
-        conversationActive = false
+        return { ok: false, reason: 'needs-gesture' }
       }
+      await assistantController.setError()
+      await safeSetIdle()
+      conversationActive = false
+      return { ok: false, reason: 'error' }
     }
   }
 
@@ -416,6 +432,34 @@ export function createVoiceOrchestrator({
       console.warn('[voice] interrupt failed', err)
     }
     await startConversation()
+  }
+
+  /**
+   * Stops the reply in progress: cuts speech, aborts the stream and drops what was queued. In a hands-free
+   * conversation it goes straight back to listening (same as a barge-in); otherwise the assistant returns to
+   * idle. Safe to call when nothing is happening.
+   */
+  async function interrupt() {
+    if (suspended) return
+    if (conversationActive) {
+      await handleBargeIn()
+      return
+    }
+    try {
+      voiceOutput.cancel()
+    } catch {
+      /* nothing was playing */
+    }
+    streamingText = ''
+    speechBuffer = ''
+    speakingStarted = false
+    pendingSpeechChunks = []
+    try {
+      await assistantController.interrupt()
+    } catch (err) {
+      console.warn('[voice] interrupt failed', err)
+    }
+    await safeSetIdle()
   }
 
   async function handleFinalTranscript(text) {
@@ -936,7 +980,8 @@ export function createVoiceOrchestrator({
       const unsubscribe =
         typeof stateMachine?.subscribe === 'function'
           ? stateMachine.subscribe((next) => {
-              if (next === STATES.ERROR) setUiStatus('Error')
+              // The state label already says "Error"; this line says what to do about it.
+              if (next === STATES.ERROR) setUiStatus('Something went wrong. Try again.')
             })
           : () => {}
 
@@ -953,8 +998,12 @@ export function createVoiceOrchestrator({
         voiceDebug,
         startConversation,
         stopConversation,
+        interrupt,
         suspend,
         resume,
+        isConversationActive: () => conversationActive,
+        /** The live microphone level, 0..1 (0 when not listening). Only real input is reported, never playback. */
+        getInputLevel: () => (typeof voiceInput.getInputLevel === 'function' ? voiceInput.getInputLevel() : 0),
         destroy() {
           destroyStreaming?.()
           destroyUi?.()
