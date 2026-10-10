@@ -184,6 +184,14 @@ export const settings = {
     vadBargeInEchoRatio: 1.8,
     /** - The first part of each reply is spent measuring that loudness; nothing counts as an interruption then. */
     vadBargeInGuardMs: 500,
+    /**
+     * Let the browser level the microphone for hands-free listening. Measured on the laptop this runs on
+     * (Realtek array microphone, 2026-10-10): with it OFF a normal speaking voice peaked at about 0.01-0.03 RMS
+     * against the 0.02 detection floor, so most speech never started a capture and what did start lost its
+     * beginning; with it ON the same voice was about three times louder (90th percentile 0.03, 99th 0.067),
+     * which is how meetings record. Turn it off if a very loud room makes the assistant start on noise.
+     */
+    autoGainControl: true,
     vadIdleTimeoutMs: 30000,
     latencyAuditEnabled: true,
     porcupineKeyword: 'numz',

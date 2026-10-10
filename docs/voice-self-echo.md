@@ -66,3 +66,29 @@ console (`?debug` shows the voice timings).
 If step 1 or 2 fails, raise `vadBargeInEchoRatio` (2.2) or `vadPostSpeechSettleMs` (1000) in
 `src/config/settings.js`. If step 4 is hard to do, lower `vadBargeInEchoRatio` (1.5), or use headphones.
 Record what you change.
+
+## Addendum (2026-10-10, same day): the first fix was not enough
+
+The notes above describe the first fix. It missed a second, bigger cause, found when the assistant was observed
+transcribing its own replies ("Want me to look something up?...") after that fix was live.
+
+**The assistant declared itself done as it began to speak.** A reply reaches the speech output a chunk (sentence)
+at a time, and each chunk waits for the one before it to finish. `endStream()` only knows about chunks already
+handed to the browser, so when the reply finished streaming, usually before the first word was audible, there was
+nothing to wait for and the turn ended. Listening restarted over its own voice, and after the settle pause it
+captured and transcribed it. Measured in a real browser: state "Listening" at the same instant the first sentence
+started; a capture 0.7 s later (the settle pause ending) while it was still talking; and only the first sentence
+of the reply spoken (the later ones were dropped by an invalid SPEAKING-after-LISTENING state change).
+
+The earlier tests missed it because their fake speech output covered the whole reply in one promise. The test
+that reproduces it uses the real output module over a browser-like speech queue (`tests/voiceSpeechEnd.test.js`).
+
+**Fix:** a reply is over only when the pending chunks have all been handed over and spoken *and* the output has
+ended (`waitUntilSpoken` in the orchestrator). The tail of a reply goes through the same queue, so it is spoken
+after everything before it.
+
+**Also found: a quiet microphone.** The assistant asks the browser for the microphone with gain control off. On the
+laptop it runs on (Realtek array), a normal speaking voice peaked at about 0.01 to 0.03 RMS against the fixed 0.02
+detection floor: most speech never started a capture, and what did start lost its beginning. With gain control on,
+as meetings record, the same voice was about three times louder. `settings.voice.autoGainControl` (default true)
+now asks for it. Turn it off if a very loud room makes the assistant start on noise.
