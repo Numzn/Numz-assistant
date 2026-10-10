@@ -165,6 +165,19 @@ export const settings = {
     vadCooldownMs: 1200,
     vadBargeInMinMs: 600,
     vadBargeInThreshold: 0.04,
+    /**
+     * The assistant hearing itself. Its voice leaves the speakers and reaches the microphone, and browser echo
+     * cancellation is not guaranteed for speech synthesis. These are conservative starting points, not measured
+     * values: tune them on the real device (docs/voice-self-echo.md).
+     * - Wait this long after the assistant stops before listening again (its last words are still in the room).
+     */
+    vadPostSpeechSettleMs: 700,
+    /** - The same after it was cut off by an interruption: shorter, the person is already talking. */
+    vadBargeInSettleMs: 150,
+    /** - An interruption must be this many times louder than the assistant's own voice in the microphone. */
+    vadBargeInEchoRatio: 1.8,
+    /** - The first part of each reply is spent measuring that loudness; nothing counts as an interruption then. */
+    vadBargeInGuardMs: 500,
     vadIdleTimeoutMs: 30000,
     latencyAuditEnabled: true,
     porcupineKeyword: 'numz',
