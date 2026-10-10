@@ -53,7 +53,9 @@ const meetingAuth = createMeetingAuth({
   adminToken: process.env.MEETING_API_TOKEN ?? '',
   ticketSecret: process.env.MEETING_TICKET_SECRET ?? '',
   launchCode: process.env.MEETING_LAUNCH_CODE ?? '',
-  ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200
+  ticketTtlSeconds: Number.parseInt(process.env.MEETING_TICKET_TTL_S ?? '43200', 10) || 43200,
+  // How long typing the launch code once covers starting further meetings (default 8 h).
+  launchSessionTtlSeconds: Number.parseInt(process.env.MEETING_LAUNCH_SESSION_TTL_S ?? '28800', 10) || 28800
 })
 // One shared access code protects the assistant API (HTTP, its WebSocket and the DeepSeek probe). Unset keeps it
 // open exactly as before; see server/auth/assistantAuth.js.

@@ -52,8 +52,9 @@ async function serve(app) {
   }
 }
 
-async function call(base, method, path, { token, code, body } = {}) {
-  const headers = {}
+async function call(base, method, path, { token, code, body, cookie, headers: extra = {} } = {}) {
+  const headers = { ...extra }
+  if (cookie) headers.Cookie = cookie
   if (token) headers.Authorization = `Bearer ${token}`
   if (code) headers['X-Meeting-Launch-Code'] = code
   let payload
@@ -288,6 +289,247 @@ test('the admin create route still answers as before', async () => {
     assert.equal(created.json.status, 'CREATED')
     assert.equal(typeof created.json.ticket.token, 'string')
     assert.equal((await call(base, 'POST', '/', { code: LAUNCH, body: {} })).status, 401, 'the launch code is not an admin credential')
+  } finally {
+    await close()
+  }
+})
+
+// ---- Launch session: type the code once, then start meetings (by voice or button) without it ----------------
+
+const COOKIE = 'numz_launch_session'
+const cookieFrom = (res) => (res.headers.get('set-cookie') || '').split(';')[0]
+const setCookie = (res) => res.headers.get('set-cookie') || ''
+
+test('a launch with the code also starts a launch session: an HttpOnly, Strict cookie that only the meeting API sees', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const res = await call(base, 'POST', '/launch', { code: LAUNCH, body: {} })
+    assert.equal(res.status, 201)
+    const header = setCookie(res)
+    assert.match(header, new RegExp(`^${COOKIE}=v1\\.\\d+\\.[0-9a-f]{64};`))
+    assert.match(header, /HttpOnly/i)
+    assert.match(header, /SameSite=Strict/i)
+    assert.match(header, /Path=\/api\/v1\/meetings/)
+    assert.match(header, /Max-Age=\d+/)
+    assert.doesNotMatch(header, /Secure/i, 'plain http in the test: Secure is only added behind https')
+    assert.equal(JSON.stringify(res.json).includes(LAUNCH), false, 'the code is never echoed back')
+    assert.equal(header.includes(LAUNCH), false, 'and the cookie does not contain it')
+  } finally {
+    await close()
+  }
+})
+
+test('behind https the cookie is also Secure', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const res = await call(base, 'POST', '/launch', { code: LAUNCH, body: {}, headers: { 'X-Forwarded-Proto': 'https' } })
+    assert.match(setCookie(res), /Secure/i)
+  } finally {
+    await close()
+  }
+})
+
+test('with the session cookie a meeting starts without any code, and its ticket is the same narrow ticket', async () => {
+  const { app, database } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const first = await call(base, 'POST', '/launch', { code: LAUNCH, body: {} })
+    const cookie = cookieFrom(first)
+    const second = await call(base, 'POST', '/launch', { cookie, body: { title: 'By voice' } })
+    assert.equal(second.status, 201)
+    assert.equal(second.json.status, 'LIVE')
+    assert.notEqual(second.json.meetingId, first.json.meetingId)
+    assert.equal(meetingCount(database), 2)
+    assert.equal(setCookie(second), '', 'a cookie-only launch does not extend the session')
+
+    // The ticket still cannot do administration or touch another meeting.
+    const ticket = second.json.ticket.token
+    assert.equal((await call(base, 'GET', `/${first.json.meetingId}`, { token: ticket })).status, 403)
+    assert.equal((await call(base, 'POST', `/${first.json.meetingId}/end`, { token: ticket, body: {} })).status, 403)
+    assert.equal((await call(base, 'POST', `/${second.json.meetingId}/sessions`, { token: ticket, body: {} })).status, 201)
+  } finally {
+    await close()
+  }
+})
+
+test('the cookie authorises launching and nothing else', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const cookie = cookieFrom(await call(base, 'POST', '/launch', { code: LAUNCH, body: {} }))
+    const created = await call(base, 'POST', '/launch', { cookie, body: {} })
+    const id = created.json.meetingId
+    for (const [method, path] of [['GET', `/${id}`], ['GET', `/${id}/transcript`], ['POST', `/${id}/ticket`], ['POST', '/'], ['POST', `/${id}/cancel`], ['POST', `/${id}/sessions`], ['POST', `/${id}/end`]]) {
+      const res = await call(base, method, path, { cookie, body: method === 'GET' ? undefined : {} })
+      assert.equal(res.status, 401, `${method} ${path} must not accept the launch cookie`)
+    }
+  } finally {
+    await close()
+  }
+})
+
+test('a forged, tampered, expired or rotated-code cookie is not a launch credential and creates nothing', async () => {
+  const issuedAt = Date.parse('2026-10-10T10:00:00Z')
+  let nowMs = issuedAt
+  const database = createDatabase({ filename: ':memory:' })
+  const meetingService = createMeetingSessionService({
+    meetingRepository: createMeetingRepository(database),
+    speechSessionRepository: createSpeechSessionRepository(database),
+    transcriptRepository: createTranscriptRepository(database)
+  })
+  const makeApp = (launchCode) => {
+    const auth = createMeetingAuth({ adminToken: ADMIN, ticketSecret: SECRET, launchCode, launchSessionTtlSeconds: 3600, clock: () => nowMs, logger: quiet })
+    const app = express()
+    app.use(express.json())
+    app.use((req, _res, next) => ((req.id = 'r'), next()))
+    app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth }))
+    app.use('/api', notFoundHandler)
+    app.use(errorHandler({ logger: quiet }))
+    return app
+  }
+  const a = await serve(makeApp(LAUNCH))
+  try {
+    const good = cookieFrom(await call(a.base, 'POST', '/launch', { code: LAUNCH, body: {} }))
+    const [v, exp, sig] = good.split('=')[1].split('.')
+    const before = meetingCount(database)
+    const forged = [
+      `${COOKIE}=v1.${Number(exp) + 99999}.${sig}`, // expiry changed, signature kept
+      `${COOKIE}=v1.${exp}.${'0'.repeat(64)}`, // signature invented
+      `${COOKIE}=${v}.${exp}`, // truncated
+      `${COOKIE}=garbage`
+    ]
+    for (const cookie of forged) {
+      const res = await call(a.base, 'POST', '/launch', { cookie, body: {} })
+      assert.equal(res.status, 401, cookie)
+      assert.equal(res.json.code, 'launch-code-required')
+    }
+    assert.equal(meetingCount(database), before, 'nothing was created')
+
+    nowMs = issuedAt + 3601 * 1000 // past its lifetime
+    assert.equal((await call(a.base, 'POST', '/launch', { cookie: good, body: {} })).status, 401, 'expired')
+    nowMs = issuedAt
+    assert.equal((await call(a.base, 'POST', '/launch', { cookie: good, body: {} })).status, 201, 'valid again inside its lifetime')
+  } finally {
+    await a.close()
+  }
+  // The launch code is rotated: every session made with the old one is void.
+  const rotated = await serve(makeApp('a-different-launch-code-entirely'))
+  try {
+    const old = await (async () => {
+      const first = await serve(makeApp(LAUNCH))
+      try {
+        return cookieFrom(await call(first.base, 'POST', '/launch', { code: LAUNCH, body: {} }))
+      } finally {
+        await first.close()
+      }
+    })()
+    assert.equal((await call(rotated.base, 'POST', '/launch', { cookie: old, body: {} })).status, 401)
+  } finally {
+    await rotated.close()
+  }
+})
+
+test('the session endpoint reports whether a launch would be accepted, logs in with the code, and logs out', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    assert.deepEqual((await call(base, 'GET', '/launch/session')).json, { available: true, authenticated: false })
+    assert.equal((await call(base, 'POST', '/launch/session', { body: {} })).status, 401, 'no code, no session')
+    assert.equal((await call(base, 'POST', '/launch/session', { code: 'wrong-code-wrong', body: {} })).status, 401)
+
+    const login = await call(base, 'POST', '/launch/session', { code: LAUNCH, body: {} })
+    assert.equal(login.status, 200)
+    assert.equal(login.json.authenticated, true)
+    const cookie = cookieFrom(login)
+    assert.deepEqual((await call(base, 'GET', '/launch/session', { cookie })).json, { available: true, authenticated: true })
+
+    const out = await call(base, 'DELETE', '/launch/session', { cookie })
+    assert.equal(out.status, 204)
+    assert.match(setCookie(out), /Max-Age=0/)
+  } finally {
+    await close()
+  }
+})
+
+test('the launch endpoint reports nothing and allows nothing when no launch code is configured, cookie or not', async () => {
+  const { app, database } = buildApp({ launchCode: '' })
+  const { base, close } = await serve(app)
+  try {
+    assert.deepEqual((await call(base, 'GET', '/launch/session')).json, { available: false, authenticated: false })
+    const res = await call(base, 'POST', '/launch', { cookie: `${COOKIE}=v1.9999999999.${'a'.repeat(64)}`, body: {} })
+    assert.equal(res.status, 503)
+    assert.equal(meetingCount(database), 0)
+  } finally {
+    await close()
+  }
+})
+
+test('the wrong-code lockout still applies to the code, and the cookie does not become a way to guess it', async () => {
+  const { app } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const cookie = cookieFrom(await call(base, 'POST', '/launch', { code: LAUNCH, body: {} }))
+    for (let i = 0; i < 10; i++) await call(base, 'POST', '/launch', { code: `wrong-code-${i}-xxxx`, body: {} })
+    const locked = await call(base, 'POST', '/launch', { code: LAUNCH, body: {} })
+    assert.equal(locked.status, 429, 'the right code is refused while locked')
+    assert.equal((await call(base, 'POST', '/launch/session', { code: LAUNCH, body: {} })).status, 429)
+    assert.equal((await call(base, 'POST', '/launch', { cookie, body: {} })).status, 201, 'a valid session is a different credential and keeps working')
+  } finally {
+    await close()
+  }
+})
+
+// ---- Duplicate starts ------------------------------------------------------------------------------------
+
+test('the same start attempt, repeated, returns the same meeting with a fresh ticket instead of making another', async () => {
+  const { app, database } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const key = 'start-attempt-0001-abcdefgh'
+    const first = await call(base, 'POST', '/launch', { code: LAUNCH, body: { title: 'Standup' }, headers: { 'Idempotency-Key': key } })
+    const again = await call(base, 'POST', '/launch', { code: LAUNCH, body: { title: 'Standup' }, headers: { 'Idempotency-Key': key } })
+    assert.equal(first.status, 201)
+    assert.equal(again.status, 200)
+    assert.equal(again.json.meetingId, first.json.meetingId)
+    assert.equal(again.json.reused, true)
+    assert.equal(meetingCount(database), 1)
+    const session = await call(base, 'POST', `/${first.json.meetingId}/sessions`, { token: again.json.ticket.token, body: {} })
+    assert.equal(session.status, 201, 'the second ticket works for that meeting')
+  } finally {
+    await close()
+  }
+})
+
+test('different attempts make different meetings, and a key can never reach a closed meeting', async () => {
+  const { app, database } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    const a = await call(base, 'POST', '/launch', { code: LAUNCH, body: {}, headers: { 'Idempotency-Key': 'attempt-aaaaaaaaaaaaaaaa' } })
+    const b = await call(base, 'POST', '/launch', { code: LAUNCH, body: {}, headers: { 'Idempotency-Key': 'attempt-bbbbbbbbbbbbbbbb' } })
+    assert.notEqual(a.json.meetingId, b.json.meetingId)
+    assert.equal(meetingCount(database), 2)
+
+    await call(base, 'POST', `/${a.json.meetingId}/cancel`, { token: ADMIN, body: {} })
+    const retry = await call(base, 'POST', '/launch', { code: LAUNCH, body: {}, headers: { 'Idempotency-Key': 'attempt-aaaaaaaaaaaaaaaa' } })
+    assert.equal(retry.status, 201, 'a cancelled meeting is not handed out again')
+    assert.notEqual(retry.json.meetingId, a.json.meetingId)
+  } finally {
+    await close()
+  }
+})
+
+test('a malformed idempotency key is refused rather than ignored', async () => {
+  const { app, database } = buildApp()
+  const { base, close } = await serve(app)
+  try {
+    for (const key of ['short', 'has spaces in it xxxxxxxxxxxx', 'x'.repeat(200), 'ünïcödé-key-0123456789']) {
+      const res = await call(base, 'POST', '/launch', { code: LAUNCH, body: {}, headers: { 'Idempotency-Key': key } })
+      assert.equal(res.status, 400, key)
+      assert.equal(res.json.code, 'invalid-idempotency-key')
+    }
+    assert.equal(meetingCount(database), 0)
   } finally {
     await close()
   }

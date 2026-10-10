@@ -13,6 +13,11 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
  * (MEETING_LAUNCH_CODE, sent as X-Meeting-Launch-Code) that allows exactly one thing, starting a NEW
  * meeting and receiving its ticket. It cannot read, list or end anything. Wrong codes are throttled.
  *
+ * A correct code also starts a LAUNCH SESSION: an HttpOnly, SameSite=Strict cookie, scoped to the meeting API,
+ * signed with a key derived from the launch code and the ticket secret. With it a person is not asked for the
+ * code again (so "start the meeting" can be said, not typed), the browser's JavaScript never holds the code, and
+ * rotating either secret ends every session. It authorises starting a meeting and nothing else.
+ *
  * Fails closed: a route whose credential type is not configured answers 503, never allows.
  *
  * This module is the only place that knows the provider. Routes call requireAdmin,
@@ -26,6 +31,10 @@ const MIN_SECRET_LENGTH = 32
 const MIN_LAUNCH_CODE_LENGTH = 12
 const LAUNCH_FAILURE_LIMIT = 10
 const LAUNCH_FAILURE_WINDOW_MS = 60_000
+export const LAUNCH_COOKIE = 'numz_launch_session'
+export const LAUNCH_SESSION_PATH = '/api/v1/meetings'
+const LAUNCH_SESSION_VERSION = 'v1'
+const DEFAULT_LAUNCH_SESSION_TTL_SECONDS = 8 * 3600
 
 function digest(value) {
   return createHash('sha256').update(String(value), 'utf8').digest()
@@ -47,6 +56,21 @@ function bearerToken(req) {
   return match ? match[1] : null
 }
 
+function readCookie(req, name) {
+  const header = req.headers?.cookie
+  if (typeof header !== 'string') return null
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=')
+    if (index !== -1 && part.slice(0, index).trim() === name) return part.slice(index + 1).trim()
+  }
+  return null
+}
+
+function isHttps(req) {
+  if (req.secure) return true
+  return String(req.headers?.['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase() === 'https'
+}
+
 function deny(res, req, status, code, message) {
   if (status === 401) res.set('WWW-Authenticate', 'Bearer')
   return res.status(status).json({ error: message, code, requestId: req.id })
@@ -57,6 +81,7 @@ export function createMeetingAuth({
   ticketSecret = '',
   launchCode = '',
   ticketTtlSeconds = 12 * 3600,
+  launchSessionTtlSeconds = DEFAULT_LAUNCH_SESSION_TTL_SECONDS,
   clock = () => Date.now(),
   logger = console
 } = {}) {
@@ -83,6 +108,50 @@ export function createMeetingAuth({
 
   function sign(payload) {
     return createHmac('sha256', ticketSecret).update(payload).digest('base64url')
+  }
+
+  // ---- launch session (cookie) -------------------------------------------------------------------------
+  const sessionTtl =
+    Number.isFinite(launchSessionTtlSeconds) && launchSessionTtlSeconds > 0
+      ? Math.floor(launchSessionTtlSeconds)
+      : DEFAULT_LAUNCH_SESSION_TTL_SECONDS
+  // Derived from BOTH secrets: rotating the launch code or the ticket secret voids every session.
+  const sessionKey = launchEnabled
+    ? createHmac('sha256', ticketSecret).update(`numz-launch-session-key-v1:${launchCode}`).digest()
+    : null
+  const signSession = (payload) => createHmac('sha256', sessionKey).update(payload).digest('hex')
+
+  function launchSessionValid(req) {
+    if (!launchEnabled) return false
+    const parts = String(readCookie(req, LAUNCH_COOKIE) ?? '').split('.')
+    if (parts.length !== 3 || parts[0] !== LAUNCH_SESSION_VERSION) return false
+    const expires = Number.parseInt(parts[1], 10)
+    if (!Number.isFinite(expires) || String(expires) !== parts[1] || expires <= nowSeconds()) return false
+    const expected = signSession(`${LAUNCH_SESSION_VERSION}.${expires}`)
+    return parts[2].length === expected.length && timingSafeEqual(Buffer.from(parts[2]), Buffer.from(expected))
+  }
+
+  function launchCookie(req, value, maxAge) {
+    const flags = [`Path=${LAUNCH_SESSION_PATH}`, 'HttpOnly', 'SameSite=Strict', `Max-Age=${maxAge}`]
+    if (isHttps(req)) flags.push('Secure')
+    return `${LAUNCH_COOKIE}=${value}; ${flags.join('; ')}`
+  }
+
+  /** Sets the session cookie on the response. Call only after the launch code has been verified. */
+  function startLaunchSession(req, res) {
+    const expires = nowSeconds() + sessionTtl
+    const token = `${LAUNCH_SESSION_VERSION}.${expires}.${signSession(`${LAUNCH_SESSION_VERSION}.${expires}`)}`
+    res.append('Set-Cookie', launchCookie(req, token, sessionTtl))
+    res.set('Cache-Control', 'no-store')
+    return { expiresAt: new Date(expires * 1000).toISOString() }
+  }
+
+  function endLaunchSession(req, res) {
+    res.append('Set-Cookie', launchCookie(req, '', 0))
+  }
+
+  function launchSessionStatus(req) {
+    return { available: launchEnabled, authenticated: launchSessionValid(req) }
   }
 
   function issueTicket(meetingId) {
@@ -196,10 +265,32 @@ export function createMeetingAuth({
     }
   }
 
+  /**
+   * Starting a meeting: a valid launch session, or else the launch code (throttled as before). Whichever it was
+   * is left in req.launchVia ('session' | 'code'), so the route can start a session after a code.
+   */
+  function requireLaunchAccess() {
+    const codeGate = requireLaunchCode()
+    return (req, res, next) => {
+      if (launchSessionValid(req)) {
+        req.launchVia = 'session'
+        return next()
+      }
+      return codeGate(req, res, () => {
+        req.launchVia = 'code'
+        next()
+      })
+    }
+  }
+
   return {
     requireAdmin,
     requireMeetingWriter,
     requireLaunchCode,
+    requireLaunchAccess,
+    startLaunchSession,
+    endLaunchSession,
+    launchSessionStatus,
     issueTicket,
     /** For connections that cannot send an Authorization header (browser WebSocket): same result as a header. */
     authenticateToken: principalForToken,

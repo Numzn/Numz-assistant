@@ -4,6 +4,7 @@ import { MeetingDomainError } from '../meetings/meetingDomain.js'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_METADATA_BYTES = 16 * 1024
 const MAX_TITLE_LENGTH = 120
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{16,64}$/
 
 /**
  * Meeting API. Credentials per route (see server/auth/meetingAuth.js):
@@ -37,6 +38,16 @@ function metadataFrom(body) {
   return metadata
 }
 
+/** The Idempotency-Key header: absent is fine, present-but-malformed is refused rather than silently ignored. */
+function idempotencyKeyFrom(req) {
+  const raw = req.headers?.['idempotency-key']
+  if (raw === undefined) return null
+  if (typeof raw !== 'string' || !IDEMPOTENCY_KEY_RE.test(raw)) {
+    throw badRequest('Idempotency-Key must be 16 to 64 letters, digits, "_" or "-"', 'invalid-idempotency-key')
+  }
+  return raw
+}
+
 function titleFrom(body) {
   const title = body?.title
   if (title === undefined || title === null || title === '') return null
@@ -55,11 +66,44 @@ export function createMeetingsRouter({ meetingService, auth }) {
     res.status(201).json({ ...meeting, ticket: auth.issueTicket(meeting.meetingId) })
   })
 
+  // Launch session: type the code once and meetings can then be started (by voice or button) without it. The
+  // session is a cookie the browser's JavaScript cannot read, and it authorises starting a meeting only.
+  router.get('/launch/session', (req, res) => {
+    res.json(auth.launchSessionStatus(req))
+  })
+
+  router.post('/launch/session', auth.requireLaunchCode(), (req, res) => {
+    const { expiresAt } = auth.startLaunchSession(req, res)
+    res.json({ authenticated: true, expiresAt })
+  })
+
+  router.delete('/launch/session', (req, res) => {
+    auth.endLaunchSession(req, res)
+    res.status(204).end()
+  })
+
   // The browser's way in: create the meeting, start it and hand back its own ticket in one step.
   // Nothing is created unless a ticket can be issued, and a meeting that cannot be started is cancelled.
-  router.post('/launch', auth.requireLaunchCode(), (req, res) => {
+  // With an Idempotency-Key, repeating the same attempt returns the same meeting (200, `reused`) with a fresh
+  // ticket, so a double trigger or a retry after a lost answer cannot leave two meetings recording.
+  router.post('/launch', auth.requireLaunchAccess(), (req, res) => {
     const title = titleFrom(req.body)
-    const meeting = meetingService.createMeeting({ source: 'browser', ...(title ? { title } : {}) })
+    const launchKey = idempotencyKeyFrom(req)
+    if (req.launchVia === 'code') auth.startLaunchSession(req, res)
+
+    if (launchKey) {
+      const existing = meetingService.findActiveByLaunchKey(launchKey)
+      if (existing) {
+        const ticket = auth.issueTicket(existing.meetingId)
+        if (ticket) return res.status(200).json({ ...existing, ticket, reused: true })
+      }
+    }
+
+    const meeting = meetingService.createMeeting({
+      source: 'browser',
+      ...(title ? { title } : {}),
+      ...(launchKey ? { launchKey } : {})
+    })
     let started
     try {
       started = meetingService.startMeeting(meeting.meetingId)
