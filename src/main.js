@@ -264,6 +264,12 @@ function meetingSocketUrl() {
   return `${protocol === 'https:' ? 'wss:' : 'ws:'}//${host}${LIVE_SPEECH_PATH}`
 }
 
+// Saving a meeting's audio on the server is for measuring recognition, never a default: it needs this flag AND
+// the operator's LIVE_RECORDINGS_DIR on the speech service. The service says whether it is recording.
+const saveMeetingAudio =
+  settings.voice?.saveMeetingAudio === true ||
+  new URLSearchParams(globalThis.location?.search ?? '').get('saveAudio') === '1'
+
 let meetingController = null
 try {
   const meetingApi = createMeetingApi()
@@ -279,6 +285,7 @@ try {
         language: settings.voice?.lang ?? '',
         // A meeting is room audio at varying distances: let the browser level it.
         autoGainControl: true,
+        saveRecording: saveMeetingAudio,
         ...options
       })
   })

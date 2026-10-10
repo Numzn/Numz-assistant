@@ -134,6 +134,19 @@ test('with a meeting, the socket is opened with the ticket subprotocols and the 
   await client.stop()
 })
 
+test('the start message does not ask the server to save the audio unless it was told to', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  const plain = createLiveSpeechClient({ wsUrl: 'ws://localhost:8765/live-speech' })
+  await plain.start()
+  assert.equal(JSON.parse(FakeWebSocket.instances[0].sent[0]).saveRecording, false)
+  await plain.stop()
+
+  const asked = createLiveSpeechClient({ wsUrl: 'ws://localhost:8765/live-speech', saveRecording: true })
+  await asked.start()
+  assert.equal(JSON.parse(FakeWebSocket.instances[1].sent[0]).saveRecording, true)
+  await asked.stop()
+})
+
 test('without protocols the socket is opened exactly as before', async () => {
   install({ getUserMedia: async () => grantedStream() })
   const client = createLiveSpeechClient({ wsUrl: 'ws://localhost:8765/live-speech' })
