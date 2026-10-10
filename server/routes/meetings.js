@@ -57,7 +57,7 @@ function titleFrom(body) {
   return trimmed || null
 }
 
-export function createMeetingsRouter({ meetingService, auth }) {
+export function createMeetingsRouter({ meetingService, auth, intelligenceService = null }) {
   if (!meetingService || !auth) throw new Error('meetingService and auth are required')
   const router = Router()
 
@@ -209,6 +209,25 @@ export function createMeetingsRouter({ meetingService, auth }) {
     const meetingId = meetingIdFrom(req)
     res.json({ meetingId, segments: meetingService.getTranscript(meetingId), integrity: meetingService.getIntegrity(meetingId) })
   })
+
+  // Intelligence is computed from the SAVED transcript of the named meeting: no text is accepted from the caller.
+  if (intelligenceService) {
+    // Questions, action items and decisions found in the words themselves. No model, no cost.
+    router.get('/:meetingId/intelligence', auth.requireAdmin(), (req, res) => {
+      res.json(intelligenceService.signals(meetingIdFrom(req)))
+    })
+
+    // A model's summary and notes, each item checked against the transcript. Sends the transcript to the
+    // configured AI provider, so it is a deliberate request, and refused until the transcript is final.
+    router.post('/:meetingId/intelligence/notes', auth.requireAdmin(), (req, res, next) => {
+      const meetingId = meetingIdFrom(req)
+      const allowUnverified = req.body?.allowUnverified === true
+      intelligenceService
+        .notes(meetingId, { allowUnverified })
+        .then((result) => res.json(result))
+        .catch(next)
+    })
+  }
 
   return router
 }

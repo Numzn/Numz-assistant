@@ -9,6 +9,8 @@ import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
 import { createMeetingsRouter } from './routes/meetings.js'
+import { createMeetingIntelligenceService } from './services/meetingIntelligenceService.js'
+import { generateGroundedNotes } from './services/speechNotesService.js'
 import { attachSocketServer } from './websocket/socketServer.js'
 import { createUpgradeRouter } from './websocket/upgradeRouter.js'
 import { attachLiveSpeechRelay, liveSpeechUpstreamUrl } from './websocket/liveSpeechRelay.js'
@@ -126,7 +128,14 @@ function createApp() {
   // Login, logout and status stay outside the protected area; everything else under /assistant needs the cookie.
   app.use('/api/v1/assistant/auth', assistantAuth.router())
   app.use('/api/v1/assistant', assistantAuth.requireAccess, assistantRouter)
-  app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth: meetingAuth }))
+  app.use(
+    '/api/v1/meetings',
+    createMeetingsRouter({
+      meetingService,
+      auth: meetingAuth,
+      intelligenceService: createMeetingIntelligenceService({ meetingService, generateNotes: generateGroundedNotes })
+    })
+  )
 
   if (isProd) {
     const dist = path.join(rootDir, 'dist')
