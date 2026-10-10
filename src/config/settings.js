@@ -185,7 +185,7 @@ export const settings = {
     /** - The first part of each reply is spent measuring that loudness; nothing counts as an interruption then. */
     vadBargeInGuardMs: 500,
     /**
-     * A transcript that is the assistant's own words coming back (heard while it spoke, or within 1.5 s after) is
+     * A transcript that is the assistant's own words coming back (heard while it spoke, or within 3 s after) is
      * not answered. A person repeating three or more of its words in order, that quickly, is not heard either:
      * measured rates and that cost are in docs/voice-self-echo.md. Set false to turn it off.
      */

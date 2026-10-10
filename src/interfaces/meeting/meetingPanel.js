@@ -54,6 +54,7 @@ function chipFor(state) {
       return ['Unfinished', 'warn']
     case 'done':
       if (state.result?.recordings === 0) return ['Ended, nothing recorded', 'info']
+      if (state.result?.verified && state.result?.storedSegments === 0) return ['Ended, no speech', 'warn']
       return state.result?.verified ? ['Saved and verified', 'ok'] : ['Ended, not verified', 'warn']
     default:
       return ['Not started', 'info']

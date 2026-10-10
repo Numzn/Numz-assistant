@@ -329,7 +329,8 @@ The **Meeting** button on the assistant screen opens a panel. The flow, in order
    `POST /:id/end` with its ticket. The server
    refuses (409) while the recording is still closing or lines are missing, so the page retries for about
    20 seconds, then offers **Try again**. The result is shown plainly: *saved and verified*, *ended but not
-   verified* (a recording never confirmed its line count), or *nothing was recorded*.
+   verified* (a recording never confirmed its line count), *no speech was transcribed* (a recording that produced
+   no lines: a muted microphone, a silent tab), or *nothing was recorded*.
 
 **Recovery.** The meeting id and ticket are kept in the browser (`localStorage`) until the meeting is
 finished. A reloaded or reopened page offers **Finish meeting** or **Forget this meeting**; a dropped

@@ -485,6 +485,22 @@ test('a meeting that never recorded anything says so instead of claiming it is v
   assert.equal(state.result.recordings, 0)
 })
 
+test('a recording that produced no lines is not reported as a success (found in the first real run)', async () => {
+  // Its only source never carried any sound. The server's integrity report is "verified" (0 of 0), which is true
+  // and useless: the person must be told that nothing was heard.
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(0)] }) })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  clients.made[0].emit.sources([{ id: 'microphone', label: 'Microphone', state: 'no-signal', detail: '' }])
+  await controller.stop()
+  const state = controller.getState()
+  assert.equal(state.phase, 'done')
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /No speech was transcribed/)
+  assert.doesNotMatch(state.message, /Saved 0 lines|complete and verified/)
+  assert.deepEqual(state.result, { verified: true, storedSegments: 0, unverifiedSessions: 0, recordings: 1 })
+})
+
 test('after a finished meeting the form comes back with reset', async () => {
   const { controller, clients } = build()
   await controller.start({ code: 'code' })

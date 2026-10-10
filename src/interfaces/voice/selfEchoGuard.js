@@ -8,7 +8,7 @@
  *
  * This keeps a short log of what was handed to the speech output, and answers one question about a transcript:
  * "is this the assistant's own words coming back?" Only when ALL of these hold:
- *   - the capture began while the assistant was speaking, or within `windowMs` after it stopped
+ *   - the capture began while the assistant was speaking, or within `windowMs` (3 s) after it stopped
  *   - the transcript has at least `minTokens` words (a word or two cannot be told apart from a real answer)
  *   - at least `threshold` of its words sit inside runs of three or more words that the assistant just said
  *     (single-word recognition slips and spelling variants are tolerated; common two-word phrases do not count)
@@ -22,7 +22,11 @@
  */
 
 const DEFAULTS = Object.freeze({
-  windowMs: 1500, // how long after it stops the assistant's words can still come back (the input layer settles for 0.7 s)
+  // How long after the assistant's speech ends a capture can still be its own voice coming back. Measured in the
+  // real pipeline (docs/voice-self-echo.md): the input deliberately ignores sound for a settle pause after a reply
+  // and the state has to sync, so the EARLIEST capture can begin is about 2 s after the speech ended. A shorter
+  // window could never have fired.
+  windowMs: 3000,
   memoryMs: 60_000, // how long the log is kept
   openGroupMs: 15_000, // a group that never reported its end is treated as ended this long after its last chunk
   minTokens: 3,

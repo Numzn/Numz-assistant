@@ -302,6 +302,8 @@ export function createMeetingController({
     session = null
     // "Verified" is true of a meeting that never recorded anything, but saying so would mislead.
     const nothingRecorded = recordings === 0
+    // A recording that produced no lines is "verified" (0 of 0) and tells the person nothing they need.
+    const nothingHeard = !nothingRecorded && storedSegments === 0 && verified
     set({
       phase: 'done',
       open: false,
@@ -310,9 +312,12 @@ export function createMeetingController({
       canEnd: false,
       canDiscard: false,
       result: { verified, storedSegments, unverifiedSessions, recordings },
-      tone: nothingRecorded ? 'info' : verified ? 'ok' : 'warn',
+      tone: nothingRecorded ? 'info' : nothingHeard ? 'warn' : verified ? 'ok' : 'warn',
       message: nothingRecorded
         ? 'Meeting ended. Nothing was recorded.'
+        : nothingHeard
+        ? 'Meeting ended. No speech was transcribed, so there is nothing to save. ' +
+          'Check that the microphone is not muted, or that the shared tab was playing sound.'
         : verified
         ? `Saved ${plural(storedSegments, 'line', 'lines')}. The transcript is complete and verified.`
         : `Ended with ${plural(storedSegments, 'line', 'lines')} saved, but NOT verified: ` +

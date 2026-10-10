@@ -245,19 +245,29 @@ function simulate({ windowMs, threshold } = {}) {
     result.overlap.total += 1
     if (guard.check(talkedOver, { capturedAt: speechStart + 2000 }).echo) result.overlap.suppressed.push(talkedOver)
   }
-  // Repeating its instructions straight after it stopped.
-  for (const [reply, text] of [
-    [REPLIES[6], REPEATING[0]],
-    [REPLIES[10], REPEATING[1]],
-    [REPLIES[10], REPEATING[2]]
-  ]) {
-    t += 20_000
-    guard.reset()
-    guard.noteSpoken(reply)
-    t += 4000
-    guard.noteSpeechEnded()
-    result.repeating.total += 1
-    if (guard.check(text, { capturedAt: t + 1000 }).echo) result.repeating.suppressed += 1
+  // Repeating its instructions word for word, at different delays after it stopped.
+  result.repeating.byOffset = {}
+  for (const offset of [1000, 2500, 3500]) {
+    let suppressed = 0
+    let total = 0
+    for (const [reply, text] of [
+      [REPLIES[6], REPEATING[0]],
+      [REPLIES[10], REPEATING[1]],
+      [REPLIES[10], REPEATING[2]]
+    ]) {
+      t += 20_000
+      guard.reset()
+      guard.noteSpoken(reply)
+      t += 4000
+      guard.noteSpeechEnded()
+      total += 1
+      if (guard.check(text, { capturedAt: t + offset }).echo) suppressed += 1
+    }
+    result.repeating.byOffset[offset] = `${suppressed}/${total}`
+    if (offset === 1000) {
+      result.repeating.total = total
+      result.repeating.suppressed = suppressed
+    }
   }
   return result
 }
@@ -288,10 +298,12 @@ test('MEASURED: the assistant\'s own speech is caught, a user\'s speech is not, 
   assert.deepEqual(r.overlap.suppressed, [], 'overlapping speech is kept')
 })
 
-test('MEASURED: repeating the assistant\'s instructions word for word, right after it, is the known cost', () => {
+test('MEASURED: repeating the assistant\'s instructions word for word, right after it, is the known cost', (t) => {
   const r = simulate()
+  t.diagnostic(JSON.stringify(r.repeating))
   // This is the limit of a text-only check, asserted so a change to it is a decision and not an accident.
   assert.equal(r.repeating.suppressed, r.repeating.total)
+  assert.deepEqual(r.repeating.byOffset, { 1000: '3/3', 2500: '3/3', 3500: '0/3' }, 'inside the window dropped, after it heard')
 })
 
 test('MEASURED: the window trades that cost against the late tail, and never against unrelated speech', () => {
@@ -309,8 +321,9 @@ test('a capture that began later than the window is never judged, whatever it sa
   guard.noteSpoken('The time is exactly noon. You have a meeting with the design team.')
   advance(3000)
   guard.noteSpeechEnded()
-  assert.equal(guard.check('the time is exactly noon', { capturedAt: now() + 1000 }).echo, true)
-  assert.equal(guard.check('the time is exactly noon', { capturedAt: now() + 2500 }).echo, false)
+  assert.equal(guard.check('the time is exactly noon', { capturedAt: now() + 2000 }).echo, true, 'the earliest a capture can begin')
+  assert.equal(guard.check('the time is exactly noon', { capturedAt: now() + 2900 }).echo, true)
+  assert.equal(guard.check('the time is exactly noon', { capturedAt: now() + 3500 }).echo, false)
 })
 
 test('MEASURED: how much room there is around the threshold', (t) => {

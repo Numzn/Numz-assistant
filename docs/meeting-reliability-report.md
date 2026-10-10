@@ -1,7 +1,9 @@
 # Meeting reliability: delivery report (2026-10-10)
 
-Branch `feature/meeting-reliability`, 7 commits on top of `main` (`f0ed1f8`), **local only**: not pushed, not merged,
-not deployed. Nothing in production was changed, restarted, migrated or written to.
+Branch `feature/meeting-reliability` on top of `main` (`f0ed1f8`). See `docs/meeting-reliability-dev-run.md` for the
+supervised dev run (real browser, real server and recognizer, synthetic audio streams) that followed this report and
+produced three more fixes (a false-positive question rule, a silent recording reported as success, and an echo
+window that never fired).
 
 Labels used below: **tested** = a test that ran and passed in this session; **observed** = seen directly in a
 real run; **unverified** = code exists, nothing has exercised it for real.
@@ -43,7 +45,7 @@ change and a sidecar restart); reconciliation does not model overlapping speaker
   need concurrent-session semantics on the timeline; not attempted. A refused source in "both" is reported as
   NOT recorded while the other carries on; it is never silently dropped.
 - **No silent degrade, no silent success:** every source state is shown, and every source ending is an error.
-- **Echo guard is text-only and conservative** (threshold 0.7, 1.5 s window, interruption words always kept),
+- **Echo guard is text-only and conservative** (threshold 0.7, 3 s window, interruption words always kept),
   because ignoring a person is a worse failure than answering an echo. It can be switched off.
 - **Intelligence from the saved transcript only, behind the admin token.** The caller names a meeting; text is never
   accepted. Notes are refused until the transcript is `verified`.
@@ -72,7 +74,7 @@ Removed: none. **No Python was changed**, so the sidecar needs no restart for th
 
 | Command | Result |
 |---|---|
-| `npm test` (Node: server/meetings, persistence, auth, websocket, api + tests/) | **526 passed, 0 failed, 0 skipped** |
+| `npm test` (Node: server/meetings, persistence, auth, websocket, api + tests/) | **528 passed, 0 failed, 0 skipped** |
 | `audio/.venv/bin/python -m unittest discover -s tests -t .` (in `audio/`) | **213 tests OK (7 skipped)**; no Python changed, same code as `main` |
 | `npx vite build` | built, no errors (existing chunk-size warning only) |
 
@@ -128,10 +130,11 @@ stored", not "every sound was transcribed". The meeting panel is the only place 
 
 ## 8. Known limitations and unverified scenarios
 
-- **Unverified in a real browser:** the launch cookie, the source selector and indicators, `getDisplayMedia` (the
-  picker, tab and system audio, stopping the video track while keeping audio), AudioContext resume without a
-  gesture, voice start end to end. Chrome here runs on the user's Windows machine, which cannot reach a local
-  server.
+- **Exercised in the user's real Chrome with synthetic streams** (see the dev-run doc): the launch cookie, source
+  selector and indicators, stop-sharing and Reconnect, a refused share, a silent source, typed start, lock, and the
+  echo guard in voice mode. **Not verified:** a real microphone (the prompt was not answered), the browser's real
+  share picker and system-audio capture, AudioContext resume without any prior gesture, a spoken (not typed)
+  start command.
 - **Unverified with real audio:** every threshold in section 5; mixed mic+tab audio quality; duplicate voices with
   speakers.
 - Whole-system audio is only offered by some browsers (Chrome/Edge on Windows); elsewhere only a tab can be shared.
@@ -140,14 +143,14 @@ stored", not "every sound was transcribed". The meeting panel is the only place 
   plausible false one that reuses the cited words).
 - The word-pattern findings are English-only surface patterns.
 - Live transcripts carry no speaker labels, so owners are rare by design; no speaker is ever guessed.
-- The echo guard drops a user who repeats three or more of the assistant's words in order within 1.5 s.
+- The echo guard drops a user who repeats three or more of the assistant's words in order within 3 s.
 - The rolling tracker is fixed but still not fed by any live meeting.
 
 ## 9. Run and test locally
 
 ```bash
 cd /srv/projects/Numz-assistant/.claude/worktrees/meeting-reliability
-npm test                                   # Node suites (526)
+npm test                                   # Node suites (528)
 (cd audio && /srv/projects/Numz-assistant/audio/.venv/bin/python -m unittest discover -s tests -t .)
 npx vite build
 node --test tests/selfEchoGuard.test.js    # prints the measured echo table as diagnostics
