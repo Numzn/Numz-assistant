@@ -18,8 +18,9 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function rig() {
+function rig(config = {}) {
   const callbacks = {}
+  const events = []
   const spoken = []
   const counts = { cancel: 0, requests: 0 }
   const listeners = new Map()
@@ -61,6 +62,7 @@ function rig() {
       return () => listeners.delete(type)
     },
     emit(type, payload) {
+      events.push([type, payload])
       listeners.get(type)?.({ payload })
     }
   }
@@ -71,7 +73,7 @@ function rig() {
     voiceOutput,
     deviceManager: {},
     ui: {},
-    config: {},
+    config,
     eventBus
   })
   const api = orchestrator.init()
@@ -79,7 +81,8 @@ function rig() {
     api,
     spoken,
     counts,
-    hear: (text) => callbacks.final(text),
+    events,
+    hear: (text, meta) => callbacks.final(text, meta),
     streamToken: (token) => eventBus.emit('assistant:token', { token }),
     answer: (text) => pendingReply.resolve(text)
   }
@@ -757,4 +760,87 @@ test('meeting: a final captured before the meeting started is dropped after it, 
   r.hear('are you there')
   await settle()
   assert.equal(r.calls.requests, 1)
+})
+
+// ---- the assistant hearing itself: the transcript-level guard ----------------------------------------------------
+
+async function spokenReply(r, question, reply) {
+  const turn = r.hear(question)
+  await tick()
+  r.streamToken(`${reply} `)
+  r.answer(reply)
+  await turn
+  await tick()
+}
+
+test('its own words coming back right after a reply are not sent to the assistant', async () => {
+  const r = rig()
+  await spokenReply(r, 'what time is it', 'The time is exactly noon and you have a meeting at one thirty.')
+  assert.equal(r.counts.requests, 1)
+  assert.ok(r.spoken.join(' ').includes('exactly noon'), 'the harness spoke it')
+
+  await r.hear('the time is exactly noon and you have a meeting', { captureId: 7, startedAt: performance.now() })
+  await tick()
+  assert.equal(r.counts.requests, 1, 'the echo was not taken for a question')
+  assert.ok(r.events.some(([type]) => type === 'voice:echo-suppressed'))
+})
+
+test('unrelated speech right after a reply is answered as usual', async () => {
+  const r = rig()
+  await spokenReply(r, 'what time is it', 'The time is exactly noon and you have a meeting at one thirty.')
+  const turn = r.hear('set a timer for ten minutes', { captureId: 8, startedAt: performance.now() })
+  await tick()
+  r.answer('Timer set.')
+  await turn
+  assert.equal(r.counts.requests, 2)
+  assert.equal(r.events.filter(([type]) => type === 'voice:echo-suppressed').length, 0)
+})
+
+test('speech that overlaps the reply and adds words of its own is answered', async () => {
+  const r = rig()
+  await spokenReply(r, 'what time is it', 'The time is exactly noon and you have a meeting at one thirty.')
+  const turn = r.hear('exactly noon what about tomorrow morning instead', { captureId: 9, startedAt: performance.now() })
+  await tick()
+  r.answer('Tomorrow is free.')
+  await turn
+  assert.equal(r.counts.requests, 2)
+})
+
+test('the same words said later, as a new capture, are the user\'s', async () => {
+  const r = rig()
+  await spokenReply(r, 'what time is it', 'The time is exactly noon and you have a meeting at one thirty.')
+  const turn = r.hear('the time is exactly noon and you have a meeting', {
+    captureId: 10,
+    startedAt: performance.now() + 20_000
+  })
+  await tick()
+  r.answer('Yes.')
+  await turn
+  assert.equal(r.counts.requests, 2)
+})
+
+test('the guard can be switched off', async () => {
+  const r = rig({ selfEchoGuard: false })
+  await spokenReply(r, 'what time is it', 'The time is exactly noon and you have a meeting at one thirty.')
+  const turn = r.hear('the time is exactly noon and you have a meeting', { captureId: 11, startedAt: performance.now() })
+  await tick()
+  r.answer('Yes.')
+  await turn
+  assert.equal(r.counts.requests, 2)
+})
+
+test('a reply that was cut off is still remembered, so its tail is not answered either', async () => {
+  const r = rig()
+  const turn = r.hear('explain photosynthesis')
+  await tick()
+  r.streamToken('Photosynthesis is the process plants use to turn sunlight into sugar. ')
+  await tick()
+  await r.api.interrupt?.()
+  r.answer('Photosynthesis is the process plants use to turn sunlight into sugar.')
+  await turn
+  await tick()
+  const requestsBefore = r.counts.requests
+  await r.hear('the process plants use to turn sunlight', { captureId: 12, startedAt: performance.now() })
+  await tick()
+  assert.equal(r.counts.requests, requestsBefore)
 })

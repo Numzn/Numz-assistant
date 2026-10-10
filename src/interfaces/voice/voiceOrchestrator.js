@@ -2,6 +2,7 @@ import { STATES } from '../../assistant/stateMachine.js'
 import { describeMicError } from './voiceDeviceManager.js'
 import { createVoiceDebug } from './voiceDebug.js'
 import { matchWakePhrase, normalizeText } from './wakePhrase.js'
+import { createSelfEchoGuard } from './selfEchoGuard.js'
 
 /**
  * Orchestrates STT + assistant request + TTS, mapped onto the state machine.
@@ -23,6 +24,9 @@ export function createVoiceOrchestrator({
   let pressed = false
   let busy = false
   let lastTranscript = ''
+  // What the assistant said, kept for a moment, so its own words coming back through the microphone are not
+  // answered as if the user had said them. Off with config.selfEchoGuard === false. See selfEchoGuard.js.
+  const echoGuard = config?.selfEchoGuard === false ? null : createSelfEchoGuard({ now: () => nowMs() })
   let wakeMode = false
   // While a meeting records, the assistant must neither listen nor speak — not even a reply that was
   // already on its way when the meeting started (it would be recorded into the meeting). See suspend().
@@ -106,6 +110,7 @@ export function createVoiceOrchestrator({
   function abandonTurn() {
     turnId += 1
     staleBefore = nowMs()
+    echoGuard?.noteSpeechEnded() // whatever was being said has stopped (or is being cut)
     if (busy) {
       busy = false
       setBusyUi(false)
@@ -168,6 +173,7 @@ export function createVoiceOrchestrator({
             break
           }
           try {
+            echoGuard?.noteSpoken(text)
             await voiceOutput.enqueueChunk(text, ttsOptions())
           } catch (err) {
             console.error('[voice] streaming speech chunk failed', err)
@@ -187,6 +193,7 @@ export function createVoiceOrchestrator({
       if (turn !== turnId) return
     }
     await voiceOutput.endStream()
+    echoGuard?.noteSpeechEnded()
   }
 
   function queueSpeechChunk(text) {
@@ -640,6 +647,35 @@ export function createVoiceOrchestrator({
     if (wakeMode) await startWakeListening()
   }
 
+  /**
+   * A capture that produced nothing to answer (no speech, or only the assistant's own words): carry on listening.
+   * A capture that comes back while a turn is under way belongs to an earlier moment: it must not stop the capture
+   * now running, nor reset the turn (busy, speaking, listening) in progress.
+   */
+  async function resumeAfterEmptyCapture() {
+    if (conversationActive && busy) return
+    pressed = false
+    try {
+      voiceInput.stop()
+    } catch {
+      /* ignore */
+    }
+    // Conversation mode: a stray trigger that yields nothing quietly loops back to listening rather than
+    // dropping out of the loop.
+    if (conversationActive) {
+      setUiStatus('Listening…')
+      busy = false
+      setBusyUi(false)
+      await afterTurnComplete()
+      return
+    }
+    setUiStatus(
+      wakeMode ? (isLocalMode ? 'Wake armed — say NUMZ' : 'Wake mode armed') : "Didn't catch that"
+    )
+    await safeSetIdle()
+    if (wakeMode) await startWakeListening()
+  }
+
   async function handleFinalTranscript(text, meta = null) {
     const cleaned = typeof text === 'string' ? text.trim() : ''
     if (!cleaned) return
@@ -655,6 +691,18 @@ export function createVoiceOrchestrator({
         if (handledCaptures.size > MAX_REMEMBERED_CAPTURES) {
           handledCaptures.delete(handledCaptures.values().next().value)
         }
+      }
+    }
+
+    // Its own words coming back through the microphone are not a command. Treated like an empty capture:
+    // nothing is answered and listening carries on.
+    if (echoGuard) {
+      const verdict = echoGuard.check(cleaned, { capturedAt: typeof meta?.startedAt === 'number' ? meta.startedAt : undefined })
+      if (verdict.echo) {
+        eventBus?.emit?.('voice:echo-suppressed', { text: cleaned, score: verdict.score })
+        console.warn('[voice] ignored a transcript that is the assistant\'s own speech:', cleaned)
+        await resumeAfterEmptyCapture()
+        return
       }
     }
 
@@ -1017,9 +1065,10 @@ export function createVoiceOrchestrator({
       const name = err && typeof err === 'object' && 'name' in err ? String(err.name) : ''
       const code =
         err && typeof err === 'object' && 'error' in err ? String(err.error) : ''
-      // An empty capture that comes back while a turn is under way belongs to an earlier moment. It must not
-      // stop the capture now running, nor reset the turn (busy, speaking, listening) in progress.
-      if (conversationActive && busy && code === 'no-speech') return
+      if (code === 'no-speech') {
+        await resumeAfterEmptyCapture()
+        return
+      }
       pressed = false
       try {
         voiceInput.stop()
@@ -1027,16 +1076,7 @@ export function createVoiceOrchestrator({
         /* ignore */
       }
 
-      // Conversation mode: a stray VAD trigger that yields no speech should
-      // quietly loop back to listening rather than dropping out of the loop.
       if (conversationActive) {
-        if (code === 'no-speech') {
-          setUiStatus('Listening…')
-          busy = false
-          setBusyUi(false)
-          await afterTurnComplete()
-          return
-        }
         if (name === 'NotAllowedError' || code === 'not-allowed') {
           setUiStatus('Mic blocked — allow microphone in browser settings')
         } else if (code === 'audio-service-offline') {
@@ -1059,19 +1099,6 @@ export function createVoiceOrchestrator({
         await safeSetIdle()
         return
       }
-      if (code === 'no-speech') {
-        setUiStatus(
-          wakeMode
-            ? isLocalMode
-              ? 'Wake armed — say NUMZ'
-              : 'Wake mode armed'
-            : "Didn't catch that"
-        )
-        await safeSetIdle()
-        if (wakeMode) await startWakeListening()
-        return
-      }
-
       if (code === 'audio-service-offline') {
         setUiStatus('Audio service offline — run npm run dev:audio')
         wakeMode = false
@@ -1107,6 +1134,7 @@ export function createVoiceOrchestrator({
     })
 
     voiceOutput.setOnEnd(() => {
+      echoGuard?.noteSpeechEnded()
       voiceDebug.mark('tts_end')
       voiceDebug.measure('tts', 'tts_start', 'tts_end')
       voiceDebug.measure('turn_total', 'utterance_end', 'tts_end')

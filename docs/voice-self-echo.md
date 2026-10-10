@@ -92,3 +92,47 @@ laptop it runs on (Realtek array), a normal speaking voice peaked at about 0.01 
 detection floor: most speech never started a capture, and what did start lost its beginning. With gain control on,
 as meetings record, the same voice was about three times louder. `settings.voice.autoGainControl` (default true)
 now asks for it. Turn it off if a very loud room makes the assistant start on noise.
+
+## Addendum (2026-10-10): a transcript-level guard, and what it was measured to do
+
+The levels above work on sound. What still gets through is transcribed like any other speech, and by then only the
+text is left to compare. The orchestrator keeps what it handed to the speech output (`src/interfaces/voice/selfEchoGuard.js`)
+and asks one question of each transcript: *is this the assistant's own words coming back?*
+
+A transcript is dropped (and listening carries on, exactly as for an empty capture) only when **all** hold:
+
+1. its capture began while the assistant was speaking, or within `windowMs` (1.5 s) after it stopped;
+2. it has at least 3 words;
+3. at least 70 % of its words sit inside runs of 3+ consecutive words the assistant just said (a one-letter
+   recognition slip in a word of 5+ letters, and a single slipped word between two echoed runs, are tolerated;
+   common two-word phrases do not count);
+4. it carries no interruption word the assistant did not say ("stop", "cancel", "wait", …).
+
+Switch off with `settings.voice.selfEchoGuard = false`. A dropped transcript emits `voice:echo-suppressed` on the
+event bus and a console warning with the text.
+
+### Measured (deterministic corpus in `tests/selfEchoGuard.test.js`; re-run with `node --test tests/selfEchoGuard.test.js`)
+
+| What | Result |
+|---|---|
+| The assistant's own speech caught (72 cases: 12 replies × exact, prefix, suffix, middle, noisy, noisy fragment) | **68 / 72 (94 %)**; exact, prefix, suffix and middle 12/12 each; noisy (15 % of words changed or lost) 9/12; noisy fragment 11/12 |
+| Unrelated user speech dropped (36 cases) | **0 / 36** |
+| User speech that overlaps the reply or quotes it, kept (36 cases, including talking over a reply with "wait no actually …") | **0 / 36 dropped** |
+| User repeating the assistant's instructions word for word, 1 s after it stopped (3 cases) | **3 / 3 dropped** — the known cost |
+
+Threshold sweep on the same corpus (echo caught / unrelated dropped): 0.4 → 72/72 / 0; 0.5, 0.6 → 71/72 / 0;
+**0.7 (chosen) → 68/72 / 0**; 0.8 → 66/72 / 0; 0.9 → 63/72 / 0. The corpus cannot tell 0.4 from 0.7 on false
+suppression, so the conservative end was kept: ignoring a person is a worse failure than answering an echo.
+
+### What this does not tell you
+
+- **The corpus is written text with simulated recognition slips.** It is not recordings of a real speaker in a real
+  room. Real recognition errors, a different TTS voice and reverberation will move the numbers; nothing here
+  replaces the manual test above.
+- **The cost is real.** A person who says three or more of the assistant's words in order within 1.5 s of it
+  stopping ("open the settings page", after it said "open the settings page, choose security …") is not heard and
+  has to say it again. A capture that began later than the window is never judged.
+- **Overlap is kept whole, not cleaned.** "…exactly noon what about tomorrow" is passed on with the echoed words in
+  it; the guard never edits a transcript, it only drops or keeps it.
+- **It sees only what this page spoke.** Another tab, another device, or a speaker playing other audio is outside
+  it. In a meeting the assistant does not speak at all (it is suspended), so the guard has nothing to compare there.
