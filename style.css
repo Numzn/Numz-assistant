@@ -1027,13 +1027,53 @@ body[data-page="history"] a.ghost {
   opacity: 0.7;
 }
 
-#meetingForm input {
+#meetingForm input,
+#meetingForm select {
   appearance: none;
   min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--surface);
+  color: var(--text);
+}
+
+#meetingSourceHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+#meetingSources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+#meetingSources:empty {
+  display: none;
+}
+
+#meetingSources li {
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+#meetingSources li[data-state="active"] {
+  color: var(--text);
+}
+
+#meetingSources li[data-state="no-signal"],
+#meetingSources li[data-state="unavailable"],
+#meetingSources li[data-state="ended"] {
+  border-color: var(--danger);
   color: var(--text);
 }
 

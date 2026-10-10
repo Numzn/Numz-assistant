@@ -18,6 +18,7 @@ function deferred() {
 
 class FakeWebSocket {
   static OPEN = 1
+  static bufferedAmount = 0 // what a stalled network looks like
   static instances = []
   static autoOpen = true
   static replyToStop = true // answer 'stop' with 'stopped', as the speech service does when it is done
@@ -28,6 +29,7 @@ class FakeWebSocket {
     this.closed = false
     this.readyState = 0
     this.listeners = {}
+    Object.defineProperty(this, 'bufferedAmount', { get: () => FakeWebSocket.bufferedAmount })
     FakeWebSocket.instances.push(this)
     if (FakeWebSocket.autoOpen) queueMicrotask(() => this.open())
   }
@@ -63,6 +65,7 @@ class FakeWebSocket {
 class FakeAudioContext {
   static initialState = undefined // undefined: a context with no state at all (as the older fakes were)
   static resumeBehaviour = 'works' // works | never (the promise stays pending) | stays-suspended
+  static level = 0.1 // what the analysers see
   constructor({ sampleRate }) {
     this.sampleRate = sampleRate
     this.closed = false
@@ -71,8 +74,25 @@ class FakeAudioContext {
     this.audioWorklet = { addModule: async () => {} }
     log.audioContexts.push(this)
   }
-  createMediaStreamSource() {
-    return { connect() {}, disconnect() {} }
+  createMediaStreamSource(stream) {
+    const node = { stream, connectedTo: [], connect(target) { this.connectedTo.push(target) }, disconnect() {} }
+    log.sourceNodes.push(node)
+    return node
+  }
+  createGain() {
+    const node = { gain: { value: 1 }, connectedTo: [], connect(target) { this.connectedTo.push(target) }, disconnect() {} }
+    log.gainNodes.push(node)
+    return node
+  }
+  createAnalyser() {
+    return {
+      fftSize: 2048,
+      getFloatTimeDomainData(buffer) {
+        buffer.fill(FakeAudioContext.level)
+      },
+      connect() {},
+      disconnect() {}
+    }
   }
   async close() {
     this.closed = true
@@ -89,26 +109,73 @@ class FakeAudioContext {
 class FakeAudioWorkletNode {
   constructor() {
     this.port = { onmessage: null, close() {} }
+    log.worklets.push(this)
   }
   disconnect() {}
 }
 
-function install({ getUserMedia }) {
-  log = { audioContexts: [], tracks: [] }
+function install({ getUserMedia, getDisplayMedia }) {
+  log = { audioContexts: [], tracks: [], sourceNodes: [], gainNodes: [], worklets: [] }
   FakeWebSocket.instances = []
+  FakeWebSocket.bufferedAmount = 0
+  FakeAudioContext.level = 0.1
   FakeWebSocket.autoOpen = true
   FakeWebSocket.replyToStop = true
   FakeAudioContext.initialState = undefined
   FakeAudioContext.resumeBehaviour = 'works'
   globalThis.window = { AudioContext: FakeAudioContext, AudioWorkletNode: FakeAudioWorkletNode, WebSocket: FakeWebSocket }
   globalThis.WebSocket = FakeWebSocket
-  Object.defineProperty(globalThis, 'navigator', { value: { mediaDevices: { getUserMedia } }, configurable: true, writable: true })
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { mediaDevices: { getUserMedia, ...(getDisplayMedia ? { getDisplayMedia } : {}) } },
+    configurable: true,
+    writable: true
+  })
+}
+
+/** An audio track as a browser makes one: live until stopped or ended, and it tells its listeners when it ends. */
+function audioTrack() {
+  const listeners = []
+  return {
+    kind: 'audio',
+    readyState: 'live',
+    stopped: 0,
+    stop() {
+      this.stopped += 1
+      this.readyState = 'ended'
+    },
+    addEventListener(type, fn) {
+      if (type === 'ended') listeners.push(fn)
+    },
+    removeEventListener(type, fn) {
+      const index = listeners.indexOf(fn)
+      if (index !== -1) listeners.splice(index, 1)
+    },
+    end() {
+      this.readyState = 'ended'
+      for (const fn of [...listeners]) fn({ type: 'ended' })
+    }
+  }
 }
 
 function grantedStream() {
-  const track = { stopped: 0, stop() { this.stopped += 1 } }
+  const track = audioTrack()
   log.tracks.push(track)
-  return { getTracks: () => [track] }
+  return { getTracks: () => [track], getAudioTracks: () => [track], getVideoTracks: () => [] }
+}
+
+/** What getDisplayMedia hands back: a picture track (to be dropped) and, if the person ticked it, audio. */
+function sharedStream({ withAudio = true } = {}) {
+  const video = { kind: 'video', readyState: 'live', stopped: 0, stop() { this.stopped += 1; this.readyState = 'ended' } }
+  const audio = withAudio ? audioTrack() : null
+  log.tracks.push(...(audio ? [audio] : []))
+  const tracks = audio ? [video, audio] : [video]
+  return {
+    video,
+    audio,
+    getTracks: () => tracks,
+    getAudioTracks: () => (audio ? [audio] : []),
+    getVideoTracks: () => [video]
+  }
 }
 
 beforeEach(() => {
@@ -329,4 +396,165 @@ test('a context that resumes but stays suspended is refused the same way', async
   const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', resumeTimeoutMs: 20 })
   client.setOnError(() => {})
   await assert.rejects(() => client.start(), (err) => err.code === 'audio-context-suspended')
+})
+
+// ---- capture sources ------------------------------------------------------------------------------------
+
+const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('tab mode records the shared tab\'s audio only, drops the picture, and never touches the microphone', async () => {
+  const shared = (() => {
+    install({ getUserMedia: async () => { throw new Error('the microphone must not be asked for') }, getDisplayMedia: async () => shared.stream })
+    return { stream: sharedStream() }
+  })()
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'tab' })
+  const seen = []
+  client.setOnSources((list) => seen.push(list))
+  await client.start()
+  assert.equal(shared.stream.video.stopped, 1)
+  assert.deepEqual(seen[0].map((s) => [s.id, s.state]), [['tab', 'active']])
+  assert.equal(log.sourceNodes.length, 1)
+  assert.equal(log.gainNodes.length, 0, 'one source needs no mixer')
+  await client.stop()
+  assert.equal(shared.stream.audio.stopped, 1, 'the shared audio is released on stop')
+})
+
+test('both: the two sources are mixed into the one recording stream, with headroom', async () => {
+  const state = { shared: null }
+  install({
+    getUserMedia: async () => grantedStream(),
+    getDisplayMedia: async () => (state.shared = sharedStream())
+  })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  const seen = []
+  client.setOnSources((list) => seen.push(list))
+  await client.start()
+  assert.deepEqual(seen[0].map((s) => [s.id, s.state]), [['microphone', 'active'], ['tab', 'active']])
+  assert.equal(log.sourceNodes.length, 2)
+  assert.equal(log.gainNodes.length, 1)
+  assert.ok(log.gainNodes[0].gain.value < 1 && log.gainNodes[0].gain.value > 0.5, 'two sources are summed with headroom')
+  assert.equal(log.gainNodes[0].connectedTo[0], log.worklets[0], 'the mix goes to the recorder')
+  assert.ok(log.sourceNodes.every((node) => node.connectedTo.includes(log.gainNodes[0])))
+  await client.stop()
+  assert.ok(log.tracks.every((track) => track.stopped >= 1), 'every track of every source is released')
+})
+
+test('both: a refused share does not stop the recording, and the refusal is reported', async () => {
+  install({
+    getUserMedia: async () => grantedStream(),
+    getDisplayMedia: async () => {
+      throw Object.assign(new Error('denied'), { name: 'NotAllowedError' })
+    }
+  })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  const seen = []
+  client.setOnSources((list) => seen.push(list))
+  await client.start()
+  const byId = Object.fromEntries(seen[0].map((s) => [s.id, s]))
+  assert.equal(byId.microphone.state, 'active')
+  assert.equal(byId.tab.state, 'unavailable')
+  assert.ok(byId.tab.detail)
+  assert.equal(FakeWebSocket.instances.length, 1)
+  await client.stop()
+})
+
+test('one source ending is reported and the recording carries on; the last one ending is an error', async () => {
+  let shared
+  let mic
+  install({
+    getUserMedia: async () => {
+      const stream = grantedStream()
+      mic = stream.getAudioTracks()[0]
+      return stream
+    },
+    getDisplayMedia: async () => (shared = sharedStream())
+  })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  const lists = []
+  const errors = []
+  client.setOnSources((list) => lists.push(list))
+  client.setOnError((err) => errors.push(err))
+  await client.start()
+
+  shared.audio.end() // "Stop sharing"
+  assert.equal(lists.at(-1).find((s) => s.id === 'tab').state, 'ended')
+  assert.equal(errors.length, 0, 'the microphone is still recording')
+
+  mic.end() // and then the microphone is unplugged
+  assert.equal(errors.length, 1)
+  assert.equal(errors[0].code, 'capture-ended')
+  await client.stop()
+})
+
+test('a microphone that is silent from the start is flagged instead of looking like a quiet meeting', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  FakeAudioContext.level = 0
+  const client = createLiveSpeechClient({
+    wsUrl: 'ws://x/live-speech',
+    monitorIntervalMs: 5,
+    sourceTiming: { noSignalAfterMs: 20, quietAfterMs: 1000 }
+  })
+  const lists = []
+  client.setOnSources((list) => lists.push(list))
+  await client.start()
+  await settle(60)
+  assert.equal(lists.at(-1)[0].state, 'no-signal')
+  FakeAudioContext.level = 0.2
+  await settle(30)
+  assert.equal(lists.at(-1)[0].state, 'active', 'and cleared as soon as sound arrives')
+  await client.stop()
+})
+
+test('the level meter stops with the recording: nothing is left running after stop', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', monitorIntervalMs: 5 })
+  const lists = []
+  client.setOnSources((list) => lists.push(list))
+  await client.start()
+  await client.stop()
+  const countAtStop = lists.length
+  FakeAudioContext.level = 0
+  await settle(60)
+  assert.equal(lists.length, countAtStop)
+})
+
+test('audio is sent while the connection keeps up, dropped and counted once its backlog passes the bound', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', maxBufferedBytes: 1000 })
+  const dropped = []
+  client.setOnDropped((info) => dropped.push(info))
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+  const [worklet] = log.worklets
+  const frame = new ArrayBuffer(6400)
+  const framesSent = () => socket.sent.filter((m) => typeof m !== 'string').length
+
+  worklet.port.onmessage({ data: frame })
+  assert.equal(framesSent(), 1)
+
+  FakeWebSocket.bufferedAmount = 5000 // the network has stalled
+  worklet.port.onmessage({ data: frame })
+  worklet.port.onmessage({ data: frame })
+  assert.equal(framesSent(), 1, 'nothing more is queued behind a stalled connection')
+  assert.equal(dropped.length, 1, 'the first dropped frame is reported at once, not every one after it')
+  assert.equal(dropped[0].frames, 1)
+  assert.ok(Math.abs(dropped[0].seconds - 0.1) < 1e-9)
+  for (let i = 0; i < 98; i++) worklet.port.onmessage({ data: frame })
+  assert.equal(dropped.length, 2, 'and again after every ten seconds of dropped audio')
+  assert.equal(dropped[1].frames, 100)
+  assert.ok(Math.abs(dropped[1].seconds - 10) < 1e-6)
+
+  FakeWebSocket.bufferedAmount = 0
+  worklet.port.onmessage({ data: frame })
+  assert.equal(framesSent(), 2, 'and it carries on when the backlog clears')
+  await client.stop()
+})
+
+test('a mode this browser cannot offer fails before anything is granted', async () => {
+  install({ getUserMedia: async () => grantedStream() }) // no getDisplayMedia
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'tab' })
+  client.setOnError(() => {})
+  await assert.rejects(() => client.start(), (err) => err.code === 'capture-unsupported')
+  assert.equal(log.tracks.length, 0)
+  assert.equal(FakeWebSocket.instances.length, 0)
 })

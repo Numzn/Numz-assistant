@@ -11,6 +11,25 @@ const MAX_RENDERED_LINES = 500
 const NOT_CONFIGURED =
   'Meetings cannot be started from here yet: the server has no launch code set (MEETING_LAUNCH_CODE), or it cannot be reached.'
 
+const SOURCE_STATES = {
+  active: 'sound heard',
+  quiet: 'quiet',
+  'no-signal': 'no sound yet',
+  ended: 'ended',
+  unavailable: 'NOT recorded'
+}
+
+const SOURCE_HINTS = {
+  microphone: '',
+  tab:
+    'Your browser will ask which tab or screen to share. Tick "Share audio": a page cannot capture sound without ' +
+    'your choice. Whole-system audio is only offered by some browsers (Chrome or Edge on Windows); elsewhere share a ' +
+    "browser tab. This needs a click, so a voice command always uses the microphone.",
+  both:
+    'Your browser will ask which tab or screen to share; tick "Share audio". The microphone and the shared sound are ' +
+    'mixed into one recording. With speakers, use headphones, or the same voices are recorded twice.'
+}
+
 const LINE_LABELS = {
   saved: ['✓ saved', 'The server stored this line'],
   waiting: ['… waiting', 'The line is queued and will be saved when the server is reachable'],
@@ -69,6 +88,9 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   const codeInput = $('meetingCode')
   const codeLabel = form.querySelector('label[for="meetingCode"]')
   const titleInput = $('meetingTitleInput')
+  const sourceSelect = $('meetingSource')
+  const sourceHint = $('meetingSourceHint')
+  const sourcesList = $('meetingSources')
   const startButton = $('meetingStart')
   const live = $('meetingLive')
   const partial = $('meetingPartial')
@@ -82,6 +104,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   let launchAvailable = null // null until the server has been asked
   let renderedLastKey = null
   let actionsSignature = ''
+  let sourcesSignature = ''
   let previousPhase = 'idle'
   let lastActive = false
 
@@ -141,6 +164,27 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     )
   }
 
+  function renderSources(state) {
+    const signature = JSON.stringify(state.sources.map((s) => [s.id, s.state]))
+    if (signature === sourcesSignature) return
+    sourcesSignature = signature
+    sourcesList.replaceChildren(
+      ...state.sources.map((entry) => {
+        const item = doc.createElement('li')
+        item.dataset.state = entry.state
+        item.textContent = `${entry.label}: ${SOURCE_STATES[entry.state] ?? entry.state}`
+        if (entry.detail) item.title = entry.detail
+        return item
+      })
+    )
+  }
+
+  function renderSourceHint() {
+    const text = SOURCE_HINTS[sourceSelect.value] ?? ''
+    sourceHint.textContent = text
+    sourceHint.hidden = !text
+  }
+
   function lineElement(line) {
     const kind = lineKind(line.persisted)
     const item = doc.createElement('li')
@@ -191,21 +235,24 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     if (codeLabel) codeLabel.hidden = state.launchReady === true
     codeInput.disabled = state.phase === 'launching'
     titleInput.disabled = state.phase === 'launching'
+    sourceSelect.disabled = state.phase === 'launching'
     startButton.disabled = state.phase === 'launching' || launchAvailable === false
 
     stopButton.hidden = !(state.phase === 'connecting' || state.phase === 'live')
     stopButton.disabled = state.phase !== 'live' && state.phase !== 'connecting'
     partial.textContent = state.partial
-    counts.textContent = state.lines.length
+    counts.textContent = state.lines.length || state.droppedSeconds
       ? [
           `${state.counts.saved} saved`,
           state.counts.waiting ? `${state.counts.waiting} waiting` : null,
-          state.counts.notSaved ? `${state.counts.notSaved} not saved` : null
+          state.counts.notSaved ? `${state.counts.notSaved} not saved` : null,
+          state.droppedSeconds ? `about ${state.droppedSeconds} s of audio dropped` : null
         ]
           .filter(Boolean)
           .join(' · ')
       : ''
     renderLines(state.lines)
+    renderSources(state)
 
     const notConfigured = state.phase === 'idle' && !state.message && launchAvailable === false
     message.textContent = notConfigured ? NOT_CONFIGURED : state.message
@@ -236,7 +283,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   stopButton.addEventListener('click', () => controller.stop())
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
-    await controller.start({ code: codeInput.value, title: titleInput.value })
+    await controller.start({ code: codeInput.value, title: titleInput.value, capture: sourceSelect.value })
     if (controller.getState().open) {
       // The server holds the launch session now; the code is not kept in the page.
       codeInput.value = ''
@@ -253,6 +300,8 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     }
   })
 
+  sourceSelect.addEventListener('change', renderSourceHint)
+  renderSourceHint()
   controller.subscribe(render)
   render(controller.getState())
 

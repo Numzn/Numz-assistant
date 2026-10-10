@@ -1,4 +1,5 @@
 import { MeetingApiError } from './meetingApi.js'
+import { normalizeCaptureMode } from '../voice/captureSources.js'
 
 /**
  * The browser's meeting flow as a small state machine, with no DOM and no globals, so it can be tested.
@@ -40,6 +41,8 @@ const RECOVERABLE_CODES = new Map([
   ['malformed-audio', 'A damaged piece of audio was skipped.']
 ])
 const SAVED = new Set(['INSERTED', 'ALREADY_EXISTS'])
+const RECORDING_OK = 'Recording. Each line is saved as you speak.'
+const NOT_RECORDING = new Set(['ended', 'unavailable'])
 const BUSY = new Set(['launching', 'connecting', 'live', 'stopping', 'ending'])
 
 function emptyState() {
@@ -56,6 +59,9 @@ function emptyState() {
     canReconnect: false,
     canEnd: false,
     canDiscard: false,
+    capture: 'microphone', // microphone | tab | both: where this meeting's audio comes from
+    sources: [], // [{ id, label, state, detail }] what each source is doing (see captureSources.js)
+    droppedSeconds: 0, // audio the connection could not carry; missing from the transcript
     launchReady: false, // the server accepts a start from this browser without the code being typed again
     result: null // { verified, storedSegments, unverifiedSessions } once done
   }
@@ -69,6 +75,27 @@ function randomLaunchKey() {
   if (typeof cryptoApi?.getRandomValues === 'function') cryptoApi.getRandomValues(bytes)
   else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
   return `k${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+}
+
+/** What a person needs to know about the sources, or '' when there is nothing to say (a quiet pause is not news). */
+function describeSources(list) {
+  const lost = list.filter((source) => NOT_RECORDING.has(source.state))
+  const running = list.filter((source) => !NOT_RECORDING.has(source.state))
+  const parts = []
+  if (lost.length) {
+    const what = lost.map((source) => `${source.label} is NOT being recorded${source.detail ? ` (${source.detail})` : ''}`)
+    parts.push(
+      `${what.join('. ')}.` +
+        (running.length ? ` Recording continues from ${running.map((source) => source.label).join(' and ')}.` : '')
+    )
+  }
+  for (const source of running.filter((entry) => entry.state === 'no-signal')) {
+    parts.push(
+      `${source.label}: no sound has reached the recorder yet. ` +
+        'Check that it is not muted and that the right device or tab is selected.'
+    )
+  }
+  return parts.join(' ')
 }
 
 function plural(n, one, many) {
@@ -138,6 +165,7 @@ export function createMeetingController({
   newLaunchKey = randomLaunchKey
 }) {
   let state = emptyState()
+  let captureMode = 'microphone' // kept for Reconnect
   let launchReady = false // survives a reset: it describes this browser, not one meeting
   let pendingLaunchKey = null // the key of a launch attempt whose outcome is not known yet
   const listeners = new Set()
@@ -199,8 +227,15 @@ export function createMeetingController({
     return launchReady
   }
 
+  /** The message while recording: all well, or all well apart from what the sources say. */
+  function recordingStatus() {
+    const note = describeSources(state.sources)
+    return note ? { message: `${RECORDING_OK} ${note}`, tone: 'warn' } : { message: RECORDING_OK, tone: 'ok' }
+  }
+
   async function connect() {
     set({
+      sources: [],
       phase: 'connecting',
       message: 'Connecting. Allow the microphone if the browser asks.',
       tone: 'info',
@@ -211,7 +246,8 @@ export function createMeetingController({
     const live = createLiveClient({
       meetingId: session.meetingId,
       meetingTicket: session.ticketToken,
-      wsProtocols: [TICKET_PROTOCOL, session.ticketToken]
+      wsProtocols: [TICKET_PROTOCOL, session.ticketToken],
+      captureMode
     })
     client = live
     live.setOnReady(({ persistence } = {}) => {
@@ -220,7 +256,23 @@ export function createMeetingController({
         handleConnectionProblem(live, new Error('The speech service is not saving this meeting.'))
         return
       }
-      set({ phase: 'live', message: 'Recording. Each line is saved as you speak.', tone: 'ok' })
+      set({ phase: 'live', ...recordingStatus() })
+    })
+    live.setOnSources?.((list) => {
+      if (client !== live) return
+      set({ sources: Array.isArray(list) ? list : [] })
+      if (state.phase === 'live') set(recordingStatus())
+    })
+    live.setOnDropped?.((info) => {
+      if (client !== live) return
+      const seconds = Math.round(Number(info?.seconds) || 0)
+      set({
+        droppedSeconds: seconds,
+        message:
+          `The connection is not keeping up: about ${seconds} s of audio were dropped and are missing from the ` +
+          'transcript. Check the network.',
+        tone: 'warn'
+      })
     })
     live.setOnPartial((text) => client === live && set({ partial: String(text ?? '') }))
     live.setOnStabilizing((text) => client === live && set({ partial: String(text ?? '') }))
@@ -344,8 +396,11 @@ export function createMeetingController({
       else set({ message: 'Could not reach the server to lock this browser. It is still unlocked.', tone: 'warn' })
     },
 
-    /** code: typed by a person, or empty to rely on the launch session. title: optional. */
-    async start({ code, title = '' } = {}) {
+    /**
+     * code: typed by a person, or empty to rely on the launch session. title: optional.
+     * capture: 'microphone' (default) | 'tab' | 'both'. Sharing a tab needs a click, so voice never asks for it.
+     */
+    async start({ code, title = '', capture = 'microphone' } = {}) {
       if (state.open || BUSY.has(state.phase)) return
       const trimmedCode = String(code ?? '').trim()
       if (!trimmedCode && !launchReady) await refreshLaunchSession() // the page may be stale
@@ -355,13 +410,15 @@ export function createMeetingController({
       }
       // Check the browser before creating anything on the server: no meeting is launched for a page
       // that could never record (no secure connection, no audio worklet).
-      const support = checkSupport()
+      const wanted = normalizeCaptureMode(capture)
+      const support = checkSupport({ capture: wanted })
       if (!support.ok) {
         set({ ...blank(), message: support.reason, tone: 'error' })
         return
       }
       const cleanTitle = String(title ?? '').trim()
-      set({ ...blank(), phase: 'launching', title: cleanTitle, message: 'Starting the meeting…' })
+      captureMode = wanted
+      set({ ...blank(), phase: 'launching', title: cleanTitle, capture: wanted, message: 'Starting the meeting…' })
       // One key per attempt: if the answer is lost and the user tries again, the server hands back the same
       // meeting instead of starting a second one.
       pendingLaunchKey ??= newLaunchKey()

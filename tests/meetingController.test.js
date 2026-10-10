@@ -86,7 +86,11 @@ function fakeClients({ startError } = {}) {
       setOnFinalSegment: (fn) => (handlers.final = fn),
       setOnError: (fn) => (handlers.error = fn),
       setOnStopped: (fn) => (handlers.stopped = fn),
+      setOnSources: (fn) => (handlers.sources = fn),
+      setOnDropped: (fn) => (handlers.dropped = fn),
       emit: {
+        sources: (list) => handlers.sources(list),
+        dropped: (info) => handlers.dropped(info),
         ready: (persistence = 'meeting') => handlers.ready({ sessionId: 's-1', persistence }),
         partial: (text) => handlers.partial(text),
         stabilizing: (text) => handlers.stabilizing(text),
@@ -754,4 +758,139 @@ test('audio the browser is holding back is a problem with a Reconnect, not a rec
   assert.match(state.message, /interact with the page|click/i)
   assert.match(state.message, /Reconnect/)
   assert.equal(storage.read().meetingId, MEETING, 'the meeting stays open so Reconnect can carry on with it')
+})
+
+// ---- capture sources ------------------------------------------------------------------------------------
+
+const source = (id, state = 'active', detail = '') => ({
+  id,
+  label: id === 'microphone' ? 'Microphone' : 'Tab or system audio',
+  state,
+  detail
+})
+
+test('the capture mode chosen at start reaches the recording client, and defaults to the microphone', async () => {
+  const a = build()
+  await a.controller.start({ code: 'c' })
+  assert.equal(a.clients.made[0].options.captureMode, 'microphone')
+
+  const b = build()
+  await b.controller.start({ code: 'c', capture: 'both' })
+  assert.equal(b.clients.made[0].options.captureMode, 'both')
+  assert.equal(b.controller.getState().capture, 'both')
+
+  const c = build()
+  await c.controller.start({ code: 'c', capture: 'something-else' })
+  assert.equal(c.clients.made[0].options.captureMode, 'microphone', 'an unknown mode is never passed on')
+})
+
+test('support is checked for the mode asked for, before anything is launched', async () => {
+  const asked = []
+  const { controller, api } = build({
+    checkSupport: ({ capture }) => {
+      asked.push(capture)
+      return capture === 'tab' ? { ok: false, reason: 'This browser cannot share a tab or screen audio.' } : { ok: true }
+    }
+  })
+  await controller.start({ code: 'c', capture: 'tab' })
+  assert.deepEqual(asked, ['tab'])
+  assert.equal(api.calls.launch.length, 0)
+  assert.match(controller.getState().message, /cannot share a tab/)
+})
+
+test('Reconnect keeps the capture mode of the meeting', async () => {
+  const blocked = Object.assign(new Error('Sharing the tab or screen audio was cancelled or blocked.'), { code: 'display-capture-failed' })
+  const clients = fakeClients({ startError: blocked })
+  const { controller } = build({ clients })
+  await controller.start({ code: 'c', capture: 'tab' })
+  assert.equal(controller.getState().phase, 'problem')
+  assert.match(controller.getState().message, /cancelled or blocked.*Reconnect/)
+  await controller.reconnect()
+  assert.deepEqual(clients.made.map((live) => live.options.captureMode), ['tab', 'tab'])
+})
+
+test('source status is kept in the state, and cleared when a new connection is made', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c', capture: 'both' })
+  const live = clients.made[0]
+  live.emit.sources([source('microphone'), source('tab')])
+  assert.deepEqual(controller.getState().sources.map((s) => s.id), ['microphone', 'tab'])
+  live.emit.error(new Error('Live speech connection closed unexpectedly'))
+  assert.equal(controller.getState().phase, 'problem')
+  await controller.reconnect()
+  assert.deepEqual(controller.getState().sources, [], 'the old connection\'s sources are not shown for the new one')
+})
+
+test('a source that is not being recorded is said so plainly, with what is still recording', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c', capture: 'both' })
+  const live = clients.made[0]
+  live.emit.sources([source('microphone'), source('tab', 'unavailable', 'Sharing the tab or screen audio was cancelled or blocked.')])
+  live.emit.ready()
+  const state = controller.getState()
+  assert.equal(state.phase, 'live')
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /Tab or system audio is NOT being recorded/)
+  assert.match(state.message, /cancelled or blocked/)
+  assert.match(state.message, /Recording continues from Microphone/)
+})
+
+test('a source that ends mid-meeting updates the message; recovery restores the normal one', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c', capture: 'both' })
+  const live = clients.made[0]
+  live.emit.ready()
+  assert.equal(controller.getState().tone, 'ok')
+  live.emit.sources([source('microphone'), source('tab', 'ended', 'The browser ended this source.')])
+  assert.equal(controller.getState().tone, 'warn')
+  assert.match(controller.getState().message, /Tab or system audio is NOT being recorded/)
+  live.emit.sources([source('microphone'), source('tab')])
+  assert.equal(controller.getState().tone, 'ok')
+  assert.match(controller.getState().message, /^Recording\./)
+})
+
+test('a source with no sound since the start is flagged, because that is what a muted microphone looks like', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.sources([source('microphone', 'no-signal')])
+  const state = controller.getState()
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /Microphone.*no sound/i)
+  assert.match(state.message, /muted/i)
+})
+
+test('a quiet pause is not a warning', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.sources([source('microphone', 'quiet')])
+  assert.equal(controller.getState().tone, 'ok')
+})
+
+test('every source ending is a problem with Reconnect, not a recording of nothing', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.error(Object.assign(new Error('Every audio source has stopped (the microphone was unplugged or sharing was stopped).'), { code: 'capture-ended' }))
+  const state = controller.getState()
+  assert.equal(state.phase, 'problem')
+  assert.equal(state.canReconnect, true)
+  assert.match(state.message, /stopped/)
+})
+
+test('audio dropped because the connection could not keep up is counted and shown, not hidden', async () => {
+  const { controller, clients } = build()
+  await controller.start({ code: 'c' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.dropped({ frames: 100, seconds: 10 })
+  const state = controller.getState()
+  assert.equal(state.droppedSeconds, 10)
+  assert.equal(state.tone, 'warn')
+  assert.match(state.message, /10 s of audio/)
+  assert.match(state.message, /missing from the transcript/)
 })

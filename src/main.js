@@ -281,7 +281,7 @@ try {
   meetingController = createMeetingController({
     api: meetingApi,
     storage: createMeetingStorage(),
-    checkSupport: checkLiveSpeechSupport,
+    checkSupport: ({ capture } = {}) => checkLiveSpeechSupport(globalThis, capture),
     createLiveClient: (options) =>
       createLiveSpeechClient({
         wsUrl: meetingSocketUrl(),
