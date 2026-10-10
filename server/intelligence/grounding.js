@@ -121,6 +121,13 @@ function groundItem(raw, { field, kind }, byId) {
       } else caveats.push('owner-unverified')
     }
     item.owner = owner
+    // A deadline is kept only if the cited words contain it. "by Friday" is a quote, never an inference.
+    const due = typeof raw?.due === 'string' ? raw.due.trim() : ''
+    if (due && evidenceText.toLowerCase().includes(due.toLowerCase())) item.due = due
+    else {
+      item.due = null
+      if (due) caveats.push('due-unverified')
+    }
   }
   return { item }
 }

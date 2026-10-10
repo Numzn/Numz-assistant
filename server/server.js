@@ -11,6 +11,9 @@ import { assistantRouter } from './routes/assistant.js'
 import { createMeetingsRouter } from './routes/meetings.js'
 import { createMeetingIntelligenceService } from './services/meetingIntelligenceService.js'
 import { generateGroundedNotes } from './services/speechNotesService.js'
+import { createLiveMeetingIntelligence } from './services/liveMeetingIntelligenceService.js'
+import { generateMeetingSummary } from './services/meetingSummaryService.js'
+import { generateResponse } from './services/aiService.js'
 import { attachSocketServer } from './websocket/socketServer.js'
 import { createUpgradeRouter } from './websocket/upgradeRouter.js'
 import { attachLiveSpeechRelay, liveSpeechUpstreamUrl } from './websocket/liveSpeechRelay.js'
@@ -45,11 +48,38 @@ const speechDatabase = createDatabase()
 const historyEnabled = !['off', '0', 'false', 'no'].includes(String(process.env.ASSISTANT_HISTORY ?? 'on').trim().toLowerCase())
 if (historyEnabled) sessionService.useStore(createConversationRepository(speechDatabase))
 console.log(`[history] assistant conversation history is ${historyEnabled ? 'ON (saved in the database)' : 'OFF (memory only)'}`)
+const meetingEvents = new EventEmitter()
 const meetingService = createMeetingSessionService({
   meetingRepository: createMeetingRepository(speechDatabase),
   speechSessionRepository: createSpeechSessionRepository(speechDatabase),
   transcriptRepository: createTranscriptRepository(speechDatabase),
-  eventBus: new EventEmitter()
+  eventBus: meetingEvents
+})
+// Live meeting intelligence listens to the canonical store: it only ever sees segments that were persisted. With no
+// AI provider configured it does not call one (the state says so) instead of sending a meeting to a placeholder.
+const requireAi = () => {
+  if (!aiConfig.configured) throw Object.assign(new Error('The AI provider is not configured'), { statusCode: 503 })
+}
+// MEETING_LIVE_INTELLIGENCE=off keeps every meeting's transcript away from the model provider: findings are then
+// only what the words state outright. (On, a meeting's saved lines are sent to the AI provider while it runs.)
+const liveIntelligenceOn = !['off', '0', 'false', 'no'].includes(String(process.env.MEETING_LIVE_INTELLIGENCE ?? 'on').trim().toLowerCase())
+console.log(`[meetings] live intelligence model updates are ${liveIntelligenceOn ? 'ON' : 'OFF'}`)
+const liveMeetingIntelligence = createLiveMeetingIntelligence({
+  meetingService,
+  eventBus: meetingEvents,
+  modelEnabled: liveIntelligenceOn,
+  // How long after the first unanalysed line the model is asked (default 15 s): the latency/cost dial.
+  ...(Number.parseInt(process.env.MEETING_INTELLIGENCE_DEBOUNCE_MS ?? '', 10) > 0
+    ? { debounceMs: Number.parseInt(process.env.MEETING_INTELLIGENCE_DEBOUNCE_MS, 10) }
+    : {}),
+  generateRolling: async (messages) => {
+    requireAi()
+    return generateResponse(messages)
+  },
+  generateFinal: async (transcript) => {
+    requireAi()
+    return generateMeetingSummary(transcript)
+  }
 })
 const meetingAuth = createMeetingAuth({
   adminToken: process.env.MEETING_API_TOKEN ?? '',
@@ -133,7 +163,8 @@ function createApp() {
     createMeetingsRouter({
       meetingService,
       auth: meetingAuth,
-      intelligenceService: createMeetingIntelligenceService({ meetingService, generateNotes: generateGroundedNotes })
+      intelligenceService: createMeetingIntelligenceService({ meetingService, generateNotes: generateGroundedNotes }),
+      liveIntelligence: liveMeetingIntelligence
     })
   )
 

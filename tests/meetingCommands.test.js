@@ -367,3 +367,218 @@ test('without a launch session the command still only opens the panel and asks f
   assert.deepEqual(r.calls.starts, [])
   assert.match(result.reply, /launch code/i)
 })
+
+// ---- asking about the meeting's findings -----------------------------------------------------------------------
+
+const ASKS = {
+  notes: [
+    'show me the notes so far',
+    'Show me the notes',
+    'can you give me the meeting notes please',
+    'notes so far',
+    "what's the summary so far",
+    'catch me up',
+    'what has been said so far'
+  ],
+  decisions: [
+    'What decisions have been made?',
+    'what decisions have been made so far',
+    'show me the decisions',
+    'any decisions yet',
+    'what did we decide'
+  ],
+  questions: ['What questions remain unanswered?', 'which questions are still open', 'open questions', 'any unanswered questions', "what's still unanswered"],
+  actions: ['What action items have been assigned?', 'show me the action items', 'list the tasks', 'what are the action items'],
+  owners: ['Who is responsible for each task?', 'who owns what', 'who is responsible for each action item', 'who is assigned'],
+  final: ['show me the final summary', 'give me the final summary', 'summarize the meeting']
+}
+
+test('every way of asking is understood, as the topic it is about', () => {
+  for (const [topic, phrases] of Object.entries(ASKS)) {
+    for (const phrase of phrases) {
+      assert.deepEqual(parseCommand(phrase), { type: 'ask', topic }, `"${phrase}"`)
+    }
+  }
+})
+
+test('"end the meeting and give me the final summary" is a stop that wants the summary', () => {
+  for (const phrase of [
+    'End the meeting and give me the final summary',
+    'end the meeting and summarize it',
+    'stop the meeting and show me the final summary',
+    'wrap up the meeting and give me the summary',
+    'end the meeting then give me the notes'
+  ]) {
+    assert.deepEqual(parseCommand(phrase), { type: 'stop', summary: true }, `"${phrase}"`)
+  }
+  assert.deepEqual(parseCommand('stop the meeting'), { type: 'stop' })
+})
+
+test('questions that merely mention these words go to the assistant, not the meeting', () => {
+  for (const phrase of [
+    'How do I get the meeting notes into a PDF?',
+    'what decisions should I make about my career',
+    'who is responsible for climate change',
+    'what action items are typical for a project meeting',
+    'tell me about meeting notes',
+    'show me the notes I wrote yesterday about the budget',
+    'what questions should I ask in an interview'
+  ]) {
+    assert.equal(parseCommand(phrase), null, `"${phrase}"`)
+  }
+})
+
+function intelRig({ initial = {}, intel = null, refresh, finalIntel = null, intelligenceError = null } = {}) {
+  let state = { phase: 'live', open: true, message: '', tone: 'info', intelligenceError, ...initial }
+  let current = intel
+  const calls = { stop: 0, refresh: 0, awaitFinal: 0, order: [] }
+  const meeting = {
+    getState: () => state,
+    getIntelligence: () => current,
+    async refreshIntelligence() {
+      calls.refresh += 1
+      calls.order.push('refresh')
+      if (refresh) return refresh()
+      return current
+    },
+    async awaitFinalIntelligence(options) {
+      calls.awaitFinal += 1
+      calls.order.push('awaitFinal')
+      calls.finalOptions = options
+      current = finalIntel ?? current
+      return current
+    },
+    async stop() {
+      calls.stop += 1
+      calls.order.push('stop')
+      await meeting.onStop?.()
+    }
+  }
+  const router = createCommandRouter({ meeting, openPanel: () => {}, now: () => 1_000, finalTimeoutMs: 5_000 })
+  return { router, calls, meeting, set: (patch) => (state = { ...state, ...patch }), setIntel: (value) => (current = value) }
+}
+
+const liveIntel = (over = {}) => ({
+  phase: 'live',
+  provisional: true,
+  transcript: { state: 'open', meetingStatus: 'LIVE', segmentCount: 6 },
+  analysis: { status: 'current', lastSuccessAt: '2026-10-10T18:20:11.000Z', pendingSegments: 0, error: null },
+  findings: {
+    topics: [],
+    decisions: [{ id: 'd1', kind: 'decision', text: 'Launch moves to Friday', status: 'confirmed', source: { segmentIds: ['s1'], start: 12, end: 18 } }],
+    openQuestions: [],
+    questionsAsked: [],
+    actionItems: [],
+    notes: []
+  },
+  final: { status: 'not-started' },
+  ...over
+})
+
+test('asking is answered from the meeting\'s own state after asking the server to update', async () => {
+  const r = intelRig({ intel: liveIntel() })
+  const result = await r.router.handle('What decisions have been made?')
+  assert.equal(r.calls.refresh, 1)
+  assert.match(result.reply, /Live — provisional/)
+  assert.match(result.reply, /Launch moves to Friday/)
+  assert.match(result.speech, /decision/)
+  assert.equal(r.calls.stop, 0, 'asking never touches the recording')
+})
+
+test('with no meeting there is nothing to ask, and nothing is fetched', async () => {
+  const r = intelRig({ initial: { phase: 'idle', open: false }, intel: null })
+  const result = await r.router.handle('show me the notes so far')
+  assert.match(result.reply, /no meeting to ask about/)
+  assert.equal(r.calls.refresh, 0)
+})
+
+test('when the refresh fails the last copy is used and the reply says it could not refresh', async () => {
+  const r = intelRig({
+    intel: liveIntel(),
+    intelligenceError: { code: 'network', message: 'Could not reach the server for the meeting notes.' },
+    refresh: async () => liveIntel()
+  })
+  const result = await r.router.handle('what decisions have been made')
+  assert.match(result.reply, /could not refresh the notes just now/)
+  assert.match(result.reply, /Launch moves to Friday/)
+  assert.equal(result.tone, 'warn')
+})
+
+test('when nothing at all could be fetched the reply says so instead of inventing an answer', async () => {
+  const r = intelRig({
+    intel: null,
+    intelligenceError: { code: 'network', message: 'Could not reach the server for the meeting notes.' },
+    refresh: async () => null
+  })
+  const result = await r.router.handle('show me the notes so far')
+  assert.match(result.reply, /could not get the meeting's notes/)
+  assert.equal(result.tone, 'error')
+})
+
+test('"end the meeting and give me the final summary" asks first, stops nothing, and then does both in order', async () => {
+  const finalIntel = {
+    phase: 'final',
+    provisional: false,
+    transcript: { state: 'verified', meetingStatus: 'COMPLETED', segmentCount: 9, verified: true },
+    analysis: { status: 'current', pendingSegments: 0 },
+    findings: { topics: [], decisions: [], openQuestions: [], questionsAsked: [], actionItems: [], notes: [] },
+    final: {
+      status: 'ready',
+      summary: { text: 'The team settled the launch date.', status: 'inferred', unsupportedTerms: [] },
+      findings: { topics: [], decisions: [], actionItems: [], openQuestions: [], questionsAsked: [] }
+    }
+  }
+  const r = intelRig({ intel: liveIntel(), finalIntel })
+  r.meeting.onStop = () => r.set({ phase: 'done', open: false, tone: 'ok', message: 'Saved 9 lines. The transcript is complete and verified.' })
+
+  const asked = await r.router.handle('End the meeting and give me the final summary')
+  assert.match(asked.reply, /Stop and save the meeting, then give you the final summary\?/)
+  assert.equal(r.calls.stop, 0)
+
+  const done = await r.router.handle('yes')
+  assert.deepEqual(r.calls.order, ['stop', 'awaitFinal'], 'the meeting really ended before the summary was asked for')
+  assert.equal(r.calls.finalOptions.timeoutMs, 5000)
+  assert.match(done.reply, /Saved 9 lines\. The transcript is complete and verified\./)
+  assert.match(done.reply, /Final — the transcript was verified/)
+  assert.match(done.reply, /The team settled the launch date\./)
+  assert.equal(done.tone, 'ok')
+})
+
+test('if the meeting could not be ended, no summary is claimed and none is waited for', async () => {
+  const r = intelRig({ intel: liveIntel() })
+  r.meeting.onStop = () =>
+    r.set({ phase: 'problem', open: true, tone: 'error', message: 'The transcript is incomplete: 2 lines are not saved yet. Press Try again in a moment.' })
+  await r.router.handle('end the meeting and give me the final summary')
+  const result = await r.router.handle('yes')
+  assert.equal(r.calls.awaitFinal, 0)
+  assert.match(result.reply, /transcript is incomplete/)
+  assert.doesNotMatch(result.reply, /Final/)
+})
+
+test('if the final record is not settled in time, the reply says it is still being written', async () => {
+  const pending = { ...liveIntel(), phase: 'closing', transcript: { state: 'verified', meetingStatus: 'COMPLETED', segmentCount: 9 }, final: { status: 'running' } }
+  const r = intelRig({ intel: liveIntel(), finalIntel: pending })
+  r.meeting.onStop = () => r.set({ phase: 'done', open: false, tone: 'ok', message: 'Saved 9 lines. The transcript is complete and verified.' })
+  await r.router.handle('end the meeting and give me the final summary')
+  const result = await r.router.handle('yes')
+  assert.match(result.reply, /still being written/)
+  assert.doesNotMatch(result.reply, /Final — the transcript was verified/)
+})
+
+test('"no" to the summary stop keeps recording and forgets the summary request', async () => {
+  const r = intelRig({ intel: liveIntel() })
+  await r.router.handle('end the meeting and give me the final summary')
+  const no = await r.router.handle('no')
+  assert.match(no.reply, /keeps recording/)
+  // a later plain stop is a plain stop
+  r.meeting.onStop = () => r.set({ phase: 'done', open: false, tone: 'ok', message: 'Saved 1 line. The transcript is complete and verified.' })
+  await r.router.handle('stop the meeting')
+  await r.router.handle('yes')
+  assert.equal(r.calls.awaitFinal, 0)
+})
+
+test('after the meeting, "show me the final summary" answers from the finished meeting', async () => {
+  const r = intelRig({ initial: { phase: 'done', open: false }, intel: { ...liveIntel(), phase: 'final', provisional: false, transcript: { state: 'verified', meetingStatus: 'COMPLETED', segmentCount: 9 }, final: { status: 'ready', summary: { text: 'Done and dusted.', status: 'inferred', unsupportedTerms: [] }, findings: { topics: [], decisions: [], actionItems: [], openQuestions: [], questionsAsked: [] } } } })
+  const result = await r.router.handle('show me the final summary')
+  assert.match(result.reply, /Done and dusted\./)
+})

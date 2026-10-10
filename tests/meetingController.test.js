@@ -27,13 +27,29 @@ const conflict = (code, details = null) => new MeetingApiError(code, { status: 4
 const seg = (n, text = `line ${n}`) => ({ id: `seg_${n}`, start: n, end: n + 1, text })
 
 function fakeApi({ launch = launched(), end = [completed(0)], session = false } = {}) {
-  const calls = { launch: [], end: [], session: 0, forget: 0 }
+  const calls = { launch: [], end: [], session: 0, forget: 0, intel: [], refresh: [] }
   const queue = [...end]
   const launches = Array.isArray(launch) ? [...launch] : null
-  const server = { authenticated: session }
+  const server = {
+    authenticated: session,
+    // what the server's live intelligence state is right now; tests change it
+    intel: { revision: 1, final: { status: 'not-started' }, findings: { decisions: [] }, analysis: { status: 'idle' } },
+    intelError: null
+  }
   return {
     calls,
     server,
+    async intelligence(args) {
+      calls.intel.push(args)
+      if (server.intelError) throw server.intelError
+      if (args.since === server.intel.revision) return { unchanged: true, revision: server.intel.revision }
+      return server.intel
+    },
+    async refreshIntelligence(args) {
+      calls.refresh.push(args)
+      if (server.intelError) throw server.intelError
+      return server.intel
+    },
     async launchSession() {
       calls.session += 1
       return { available: true, authenticated: server.authenticated }
@@ -105,10 +121,33 @@ function fakeClients({ startError } = {}) {
   return create
 }
 
+function manualTimers() {
+  const tasks = []
+  return {
+    tasks,
+    setTimer: (fn, ms) => {
+      const t = { fn, ms, off: false, unref() {} }
+      tasks.push(t)
+      return t
+    },
+    clearTimer: (t) => t && (t.off = true),
+    waiting: () => tasks.filter((t) => !t.off && !t.done).map((t) => t.ms),
+    async fire() {
+      for (const t of tasks.filter((x) => !x.off && !x.done)) {
+        t.done = true
+        t.fn()
+      }
+      for (let i = 0; i < 6; i++) await new Promise((resolve) => setImmediate(resolve))
+    }
+  }
+}
+
 function build({ api = fakeApi(), clients = fakeClients(), storage = createMemoryMeetingStorage(), checkSupport } = {}) {
   const sleeps = []
   let keys = 0
+  const timers = manualTimers()
   const controller = createMeetingController({
+    intelligenceOptions: { setTimer: timers.setTimer, clearTimer: timers.clearTimer, isHidden: () => false },
     api,
     createLiveClient: clients,
     storage,
@@ -122,7 +161,7 @@ function build({ api = fakeApi(), clients = fakeClients(), storage = createMemor
   controller.subscribe((state) => {
     if (phases.at(-1) !== state.phase) phases.push(state.phase)
   })
-  return { controller, api, clients, storage, sleeps, phases }
+  return { controller, api, clients, storage, sleeps, phases, timers }
 }
 
 test('lines decoded while Stop waits for the speech service are shown and counted (the last words were missing)', async () => {
@@ -909,4 +948,113 @@ test('audio dropped because the connection could not keep up is counted and show
   assert.equal(state.tone, 'warn')
   assert.match(state.message, /10 s of audio/)
   assert.match(state.message, /missing from the transcript/)
+})
+
+// ---- the meeting's intelligence, the one copy ------------------------------------------------------------------
+
+const settleIntel = async () => {
+  for (let i = 0; i < 6; i++) await new Promise((resolve) => setImmediate(resolve))
+}
+
+test('a started meeting is followed with its own ticket, and the state and getIntelligence are the same copy', async () => {
+  const api = fakeApi()
+  api.server.intel = { revision: 4, meetingId: MEETING, final: { status: 'not-started' }, findings: { decisions: [{ text: 'Ship Friday' }] } }
+  const { controller, timers } = build({ api })
+  await controller.start({ code: 'code' })
+  await settleIntel()
+  assert.deepEqual(api.calls.intel[0], { meetingId: MEETING, ticketToken: 'ticket-token.sig', since: null })
+  assert.equal(controller.getState().intelligence.findings.decisions[0].text, 'Ship Friday')
+  assert.equal(controller.getIntelligence(), controller.getState().intelligence)
+  assert.deepEqual(timers.waiting(), [4000])
+})
+
+test('the server\'s answer replaces the old one when it changes, and an unchanged answer is not a new state', async () => {
+  const api = fakeApi()
+  const { controller, timers } = build({ api })
+  const seen = []
+  controller.subscribe((state) => seen.push(state.intelligence?.revision))
+  await controller.start({ code: 'code' })
+  await settleIntel()
+  const before = seen.length
+  await timers.fire() // unchanged
+  assert.equal(api.calls.intel.at(-1).since, 1)
+  assert.equal(seen.length, before)
+  api.server.intel = { ...api.server.intel, revision: 2, findings: { decisions: [{ text: 'New' }] } }
+  await timers.fire()
+  assert.equal(controller.getIntelligence().findings.decisions[0].text, 'New')
+})
+
+test('after the meeting ends the ticket is still used until the final record settles', async () => {
+  const api = fakeApi({ end: [completed(2)] })
+  const { controller, clients, timers, storage } = build({ api })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  await settleIntel()
+  await controller.stop()
+  assert.equal(storage.read(), null, 'the ticket is no longer kept in the browser')
+  api.server.intel = { revision: 7, final: { status: 'running' }, findings: {} }
+  await timers.fire()
+  assert.equal(api.calls.intel.at(-1).ticketToken, 'ticket-token.sig', 'but it still reads its own meeting')
+  assert.equal(controller.getIntelligence().final.status, 'running')
+  api.server.intel = { revision: 8, final: { status: 'ready', summary: { text: 'Done.' } }, findings: {} }
+  await timers.fire()
+  assert.equal(controller.getIntelligence().final.status, 'ready')
+  const requests = api.calls.intel.length
+  await timers.fire()
+  assert.equal(api.calls.intel.length, requests, 'settled: no more polling')
+})
+
+test('a new meeting never shows the previous one\'s findings, not even for a moment', async () => {
+  const api = fakeApi({ end: [completed(1)] })
+  api.server.intel = { revision: 3, final: { status: 'ready' }, findings: { decisions: [{ text: 'Old meeting decision' }] } }
+  const { controller, clients } = build({ api })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  await settleIntel()
+  await controller.stop()
+  await settleIntel()
+  assert.equal(controller.getIntelligence().findings.decisions[0].text, 'Old meeting decision', 'readable after it ended')
+  controller.reset()
+  assert.equal(controller.getState().intelligence.findings.decisions[0].text, 'Old meeting decision', 'and after the form is back')
+
+  api.server.intel = { revision: 1, final: { status: 'not-started' }, findings: { decisions: [] } }
+  const seen = []
+  controller.subscribe((state) => seen.push(state.intelligence?.findings?.decisions?.[0]?.text ?? null))
+  await controller.start({ code: 'code' })
+  assert.ok(!seen.includes('Old meeting decision'), 'cleared before the new meeting is launched')
+})
+
+test('forgetting a meeting stops following it', async () => {
+  const api = fakeApi({ launch: launched() })
+  const storage = createMemoryMeetingStorage()
+  storage.write({ meetingId: MEETING, ticketToken: 'ticket-token.sig', expiresAt: new Date(NOW + 3600_000).toISOString(), title: 'x' })
+  const { controller, timers } = build({ api, storage })
+  controller.restore()
+  await settleIntel()
+  assert.equal(api.calls.intel.length, 1, 'an unfinished meeting is followed too')
+  controller.discard()
+  assert.equal(controller.getState().intelligence, null)
+  assert.deepEqual(timers.waiting(), [])
+})
+
+test('a page that cannot reach the notes says so, separately from the meeting itself', async () => {
+  const api = fakeApi()
+  const { controller } = build({ api })
+  api.server.intelError = new MeetingApiError('down', { status: 0, code: 'network' })
+  await controller.start({ code: 'code' })
+  await settleIntel()
+  const state = controller.getState()
+  assert.equal(state.phase, 'connecting', 'the meeting itself is unaffected')
+  assert.equal(state.intelligenceError.code, 'network')
+  assert.doesNotMatch(state.message, /notes/i)
+})
+
+test('refreshIntelligence asks the server to update now with the meeting\'s own ticket', async () => {
+  const api = fakeApi()
+  const { controller } = build({ api })
+  await controller.start({ code: 'code' })
+  api.server.intel = { revision: 5, final: { status: 'not-started' }, findings: { decisions: [{ text: 'Fresh' }] } }
+  const fresh = await controller.refreshIntelligence()
+  assert.equal(fresh.findings.decisions[0].text, 'Fresh')
+  assert.deepEqual(api.calls.refresh[0], { meetingId: MEETING, ticketToken: 'ticket-token.sig', final: false })
 })

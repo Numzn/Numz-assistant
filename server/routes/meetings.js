@@ -57,7 +57,7 @@ function titleFrom(body) {
   return trimmed || null
 }
 
-export function createMeetingsRouter({ meetingService, auth, intelligenceService = null }) {
+export function createMeetingsRouter({ meetingService, auth, intelligenceService = null, liveIntelligence = null }) {
   if (!meetingService || !auth) throw new Error('meetingService and auth are required')
   const router = Router()
 
@@ -225,6 +225,32 @@ export function createMeetingsRouter({ meetingService, auth, intelligenceService
       intelligenceService
         .notes(meetingId, { allowUnverified })
         .then((result) => res.json(result))
+        .catch(next)
+    })
+  }
+
+  // The live state of a meeting's intelligence, for the meeting's own ticket (what the browser holds) or an admin.
+  // One state object per meeting, read by the meeting panel and by chat alike; a ticket sees only its own meeting.
+  if (liveIntelligence) {
+    router.get('/:meetingId/intelligence/live', auth.requireMeetingWriter(), (req, res) => {
+      const meetingId = meetingIdFrom(req)
+      let since
+      if (req.query.since !== undefined) {
+        since = Number.parseInt(String(req.query.since), 10)
+        if (!Number.isInteger(since) || since < 0) throw badRequest('since must be a non-negative integer', 'invalid-since')
+      }
+      res.set('Cache-Control', 'no-store')
+      res.json(liveIntelligence.getState(meetingId, { since }))
+    })
+
+    // Update now. While the meeting is open this runs a model update for what is saved; once it is closed it
+    // (re)attempts the final record if that is missing or failed. Waits a bounded time and says what finished.
+    router.post('/:meetingId/intelligence/refresh', auth.requireMeetingWriter(), (req, res, next) => {
+      const meetingId = meetingIdFrom(req)
+      res.set('Cache-Control', 'no-store')
+      liveIntelligence
+        .refresh(meetingId, { final: req.body?.final === true })
+        .then((state) => res.json(state))
         .catch(next)
     })
   }

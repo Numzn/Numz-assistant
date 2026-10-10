@@ -27,27 +27,32 @@ function transcriptState(meeting, integrity) {
   return integrity.verified ? 'verified' : 'unverified'
 }
 
+/** What a reader needs to know about how settled a transcript is. One definition, shared by every consumer. */
+export function describeTranscript(meeting, integrity, segments) {
+  return {
+    state: transcriptState(meeting, integrity),
+    meetingStatus: meeting.status,
+    segmentCount: segments.length,
+    complete: integrity.complete,
+    verified: integrity.verified,
+    missingSegments: integrity.missingSegments,
+    unverifiedSessions: integrity.unverifiedSessions
+  }
+}
+
 export function createMeetingIntelligenceService({ meetingService, generateNotes }) {
   function load(meetingId) {
     const meeting = meetingService.getMeeting(meetingId)
     const integrity = meetingService.getIntegrity(meetingId)
     const segments = meetingService.getTranscript(meetingId)
-    const state = transcriptState(meeting, integrity)
+    const transcript = describeTranscript(meeting, integrity, segments)
     return {
       segments,
       header: {
         schemaVersion: SCHEMA_VERSION,
         meetingId,
         basis: 'saved-canonical-transcript',
-        transcript: {
-          state,
-          meetingStatus: meeting.status,
-          segmentCount: segments.length,
-          complete: integrity.complete,
-          verified: integrity.verified,
-          missingSegments: integrity.missingSegments,
-          unverifiedSessions: integrity.unverifiedSessions
-        }
+        transcript
       }
     }
   }
