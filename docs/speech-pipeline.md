@@ -228,13 +228,17 @@ utterance, persist every committed segment, retry what is waiting, report the se
 to the meeting API, then build the summary transcript. A failure in a later step can never discard a
 segment that was already committed.
 
-**Recording:** raw audio only ever lives in memory for the connection's
-lifetime by default. Passing `saveRecording: true` in `start` opts in to
-writing a WAV of the full session *and* requires the operator to set
-`LIVE_RECORDINGS_DIR` (e.g. to the existing gitignored `lectures/`
-convention) — both an explicit per-session choice and an explicit
-operator configuration are required before anything touches disk;
-neither alone is enough.
+**Recording:** audio is never written by default. Passing `saveRecording: true` in `start` opts in to a
+WAV of the full session *and* requires the operator to set `LIVE_RECORDINGS_DIR`; both an explicit
+per-session choice and an explicit operator configuration are required before anything touches disk, and
+neither alone is enough. The audio is streamed to `<dir>/<speech-session-id>.wav` as the frames arrive (not
+held in memory: 115 MB per hour on disk, nothing in RAM), with a header that is valid after every write, so a
+crash or a dropped connection still leaves a playable file. The directory is created 0700 and the file 0600.
+`ready.recording` says whether this session is being saved. A problem with the recording (no disk space, an
+unwritable directory) is logged and carried by `recording: false`; it is never sent as an `error` frame,
+because the browser treats every error frame as fatal and stops the microphone. What is recorded is exactly
+what the recognizer was given (frames dropped while paused are not recorded), so a replay reproduces the
+session.
 
 **Error handling:** malformed audio (frame length not a multiple of 4
 bytes) and an unsupported format are rejected with a clear `{"type":
@@ -292,7 +296,10 @@ and words were lost or doubled at the join.
 ## Live diagnostics
 
 Each live session logs `live-speech-diag {json}` once per minute of stream and once when it ends (the audio
-sidecar's log, `logs/numz-assistant-audio.log`). Numbers only: no audio and no transcript text. Fields:
+sidecar's log, `logs/numz-assistant-audio.log`). Numbers only: no audio and no transcript text. The same
+numbers arrive in the `stopped` frame as `diagnostics` (labelled with `meeting` when the session is bound to
+one), so a meeting's behaviour can be read from the meeting itself instead of from a log file; a failure to
+build them yields `null` and never costs the client its `stopped`. Fields:
 
 | Field | Meaning |
 |---|---|
@@ -317,3 +324,47 @@ session and Whisper at several levels and alignments, plus noise-only streams, a
 substitutions/deletions/insertions, dropped speech frames and false detections. It is opt-in because it loads
 the model: `cd audio && NUMZ_REAL_ASR=1 .venv/bin/python -m unittest tests.test_real_audio_gate -v`.
 It is ONE recording of one voice with synthetic noise; it does not prove the gate for other voices or rooms.
+
+## Measuring real meetings: capture, replay, score
+
+Until now accuracy was measured on ONE recording (the 11 s JFK clip) and speed from log lines. A meeting
+that sounded wrong could not be reproduced. This is the loop that makes it reproducible: **capture** a real
+session's audio, **replay** it through the live path, **score** it against what was said.
+
+**1. Capture (two opt-ins, off by default).** The operator adds `LIVE_RECORDINGS_DIR=<dir>` to `.env` and
+restarts the audio sidecar (it takes its settings from `.env` through its unit's `EnvironmentFile`; use
+`audio/recordings`, which is git-ignored). The browser then asks with `?saveAudio=1` on the page address (or
+`settings.voice.saveMeetingAudio`). `ready.recording: true` confirms it. Delete the files and unset the
+variable when finished: they are meeting audio.
+
+**2. Replay and score.**
+
+```
+npm run speech:replay -- audio/recordings/<session>.wav --reference ref.txt --pace 1 --json out.json
+```
+
+It feeds the recording to the same `LiveSpeechSession` as the sidecar, in 100 ms frames, and prints lines,
+gate levels, decode cost, lag, confidence counts and, with a reference, word error rate with its
+substitutions, deletions and insertions. It writes nothing to the outbox or the meeting API. `--pace 0` (the
+default) decodes as fast as possible, to measure throughput; `--pace 1` delivers audio at microphone speed,
+to measure the lag and the commit latency a person would see. The report also records the host's load, free
+memory and the tool's niceness: **a timing is only comparable with another taken under similar conditions**
+on this shared host.
+
+It loads a second copy of the model (about 1.2 GB). It refuses to start under 1,800 MB available (`--force`
+overrides), runs at low priority, and must not be run while a meeting is being recorded.
+
+**3. Reference transcripts.** Plain text of what was said; case and punctuation do not matter; write numbers
+as digits. The scorer is `audio/speech/scoring.py`, shared with the opt-in real-audio tests, so the numbers
+compare.
+
+**Baseline.** None exists yet for real meetings: clips and references have to be recorded first (see
+`audio/tests/fixtures/meetings/README.md`). The only run so far is the tool's own smoke test on the JFK clip,
+2026-10-10, on a busy host with the tool at niceness 10: 3 lines, WER 0.0, final decodes at 1.38 s per
+audio second with no fallback retries, lag up to 11.8 s behind the audio at `--pace 1`. That is a check that
+the tool works, not a baseline.
+
+**What it cannot tell you.** It measures this host, this model and the audio you give it. One clip is one
+voice in one room: take at least a few, in the conditions meetings really happen in. It does not measure the
+browser's microphone processing, the network or the Node relay; capture records what the sidecar received,
+which is after all of those.

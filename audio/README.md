@@ -52,7 +52,7 @@ Default URL: `http://127.0.0.1:8765`
 | `WHISPER_COMPUTE_TYPE` | `int8` | CPU quantization |
 | `MEETING_API_URL` | unset | Server origin of the meeting API, e.g. `http://127.0.0.1:3103` (no `/api/v1`). Unset: meeting-bound live sessions are refused |
 | `LIVE_OUTBOX_DIR` | `audio/outbox` | Durable outbox for segments not yet stored (gitignored) |
-| `LIVE_RECORDINGS_DIR` | unset | Opt-in WAV recordings. Unset: audio is never written to disk |
+| `LIVE_RECORDINGS_DIR` | unset | Opt-in WAV recordings, streamed to disk (0600) when the client also asks. Unset: audio is never written to disk. Replay one with `npm run speech:replay` (see `docs/speech-pipeline.md`) |
 
 ## Meeting persistence
 
