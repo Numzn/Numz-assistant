@@ -142,7 +142,7 @@ function manualTimers() {
   }
 }
 
-function build({ api = fakeApi(), clients = fakeClients(), storage = createMemoryMeetingStorage(), checkSupport, sessionWaitMs } = {}) {
+function build({ api = fakeApi(), clients = fakeClients(), storage = createMemoryMeetingStorage(), checkSupport, sessionWaitMs, shutdownWaitMs } = {}) {
   const sleeps = []
   let keys = 0
   const timers = manualTimers()
@@ -156,6 +156,7 @@ function build({ api = fakeApi(), clients = fakeClients(), storage = createMemor
     sleep: async (ms) => sleeps.push(ms),
     retryDelaysMs: [10, 20, 30],
     ...(sessionWaitMs === undefined ? {} : { sessionWaitMs }),
+    ...(shutdownWaitMs === undefined ? {} : { shutdownWaitMs }),
     now: () => NOW
   })
   const phases = []
@@ -1235,4 +1236,16 @@ test('Stop shuts the recording down before the server is asked to end the meetin
   live.emit.ready()
   await controller.stop()
   assert.deepEqual(order, ['stopped', 'end'])
+})
+
+test('a recording that never says it has stopped does not hold up ending the meeting for ever', async () => {
+  const { controller, clients, api } = build({ shutdownWaitMs: 20, api: fakeApi({ end: [completed(0)] }) })
+  await controller.start({ code: 'code' })
+  const live = clients.made[0]
+  live.whileStopping = () => new Promise(() => {}) // never settles
+  live.emit.ready()
+  live.emit.error(new Error('Live speech connection closed unexpectedly'))
+  await controller.finish()
+  assert.equal(api.calls.end.length, 1, 'it asked the server after the ceiling, and the server decides')
+  assert.equal(controller.getState().phase, 'done')
 })

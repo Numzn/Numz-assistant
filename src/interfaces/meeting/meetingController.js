@@ -28,6 +28,9 @@ const DEFAULT_RETRY_DELAYS_MS = [1500, 2000, 3000, 4000, 5000, 5000]
 // recording whose connection died without saying so is closed by the speech service only after its 30 s idle
 // timeout, plus the time to decode and save what was left; giving up before that left the meeting open for good.
 const DEFAULT_SESSION_WAIT_MS = 120_000
+// The recording's own stop gives up after 45 s (liveSpeechClient). If it still has not settled a little after that,
+// ending carries on regardless: the server's answers say whether the session has closed.
+const DEFAULT_SHUTDOWN_WAIT_MS = 60_000
 const RETRYABLE_END = new Set(['speech-session-active', 'transcript-incomplete'])
 
 /**
@@ -175,6 +178,7 @@ export function createMeetingController({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
   sessionWaitMs = DEFAULT_SESSION_WAIT_MS,
+  shutdownWaitMs = DEFAULT_SHUTDOWN_WAIT_MS,
   now = () => Date.now(),
   newLaunchKey = randomLaunchKey,
   intelligenceOptions = {} // timers / intervals for the intelligence poller (tests)
@@ -376,6 +380,15 @@ export function createMeetingController({
     })
   }
 
+  /** Waits for a promise, but no longer than `ms`: a recording that cannot say it has stopped must not hold up ending. */
+  function settleWithin(promise, ms) {
+    let timer
+    const ceiling = new Promise((resolve) => {
+      timer = setTimeout(resolve, ms)
+    })
+    return Promise.race([promise, ceiling]).finally(() => clearTimeout(timer))
+  }
+
   async function finish() {
     if (!session || ending) return
     if (!['stopping', 'problem', 'unfinished'].includes(state.phase)) return
@@ -396,7 +409,7 @@ export function createMeetingController({
           canEnd: false,
           canDiscard: false
         })
-        await shutdown
+        await settleWithin(shutdown, shutdownWaitMs)
       }
       // 2. Then the meeting is ended. The server refuses while the recording's session is still open or lines are still
       // on their way; both are expected to pass, so wait and try again instead of giving up while it is still settling.
