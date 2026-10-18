@@ -18,6 +18,7 @@
     "outbox:replay": "node scripts/run-outbox.js replay",
     "test": "node --test server/meetings/*.test.js server/persistence/*.test.js server/auth/*.test.js server/websocket/*.test.js server/api/*.test.js tests/*.test.js",
     "build": "vite build && node scripts/precompress.js dist",
+    "bundle:report": "node scripts/bundle-report.js dist",
     "start": "cross-env NODE_ENV=production node server/server.js",
     "preview": "vite preview"
   },
