@@ -1,9 +1,11 @@
-import { PorcupineWorker } from '@picovoice/porcupine-web'
-import { WebVoiceProcessor } from '@picovoice/web-voice-processor'
-
 /**
  * Thin Porcupine wake-word wrapper (browser, always-on mic via WebVoiceProcessor).
+ *
+ * The SDK (about 1.1 MB) is fetched the first time the wake word is armed, never at page load, and never at
+ * all when no access key is configured (isConfigured/isSupported need nothing from it).
  */
+const defaultLoadSdk = () => import('./porcupineSdk.js')
+
 export function createPorcupineWake({
   accessKey = '',
   keywordPublicPath = '',
@@ -11,27 +13,59 @@ export function createPorcupineWake({
   keywordLabel = 'numz',
   sensitivity = 0.55,
   wakeDebounceMs = 1500,
-  onWake = () => {}
+  onWake = () => {},
+  loadSdk = defaultLoadSdk
 } = {}) {
   /** @type {import('@picovoice/porcupine-web').PorcupineWorker | null} */
   let porcupine = null
   let armed = false
   let paused = false
   let lastWakeAt = 0
+  /** @type {Promise<{ PorcupineWorker: any, WebVoiceProcessor: any }> | null} */
+  let sdkPromise = null
+  /** The SDK once it has loaded; null before that (and nothing to undo then). */
+  let sdk = null
+  /** @type {Promise<any> | null} */
+  let enginePromise = null
 
   function isConfigured() {
     return Boolean(String(accessKey ?? '').trim())
   }
 
+  // The SDK needs WebAssembly and workers. Whether it will load is only known by trying, in arm().
   function isSupported() {
-    return (
-      isConfigured() &&
-      typeof PorcupineWorker?.create === 'function' &&
-      typeof WebVoiceProcessor?.subscribe === 'function'
-    )
+    return isConfigured() && typeof globalThis.WebAssembly === 'object' && typeof globalThis.Worker === 'function'
   }
 
-  async function ensureEngine() {
+  /** One load, shared by concurrent callers; a failed load is forgotten so a later arm() can try again. */
+  function loadEngineSdk() {
+    if (!sdkPromise) {
+      sdkPromise = Promise.resolve()
+        .then(() => loadSdk())
+        .then((loaded) => {
+          sdk = loaded
+          return loaded
+        })
+        .catch((err) => {
+          sdkPromise = null
+          throw err
+        })
+    }
+    return sdkPromise
+  }
+
+  /** One engine, however many arm() calls overlap (the SDK load makes the gap between them wider). */
+  function ensureEngine() {
+    if (!enginePromise) {
+      enginePromise = createEngine().catch((err) => {
+        enginePromise = null
+        throw err
+      })
+    }
+    return enginePromise
+  }
+
+  async function createEngine() {
     if (porcupine) return porcupine
     if (!isSupported()) {
       throw new Error('Porcupine not configured — set VITE_PICOVOICE_ACCESS_KEY and keyword assets')
@@ -55,6 +89,7 @@ export function createPorcupineWake({
       sensitivity
     }
 
+    const { PorcupineWorker } = await loadEngineSdk()
     porcupine = await PorcupineWorker.create(
       accessKey,
       [keywordModel],
@@ -79,9 +114,15 @@ export function createPorcupineWake({
       if (!isSupported()) return false
       const engine = await ensureEngine()
       if (!armed) {
-        await WebVoiceProcessor.subscribe(engine)
+        // Marked before the await so an overlapping arm() does not subscribe the engine a second time.
         armed = true
         paused = false
+        try {
+          await sdk.WebVoiceProcessor.subscribe(engine)
+        } catch (err) {
+          armed = false
+          throw err
+        }
       }
       return true
     },
@@ -89,9 +130,9 @@ export function createPorcupineWake({
     async disarm() {
       armed = false
       paused = false
-      if (porcupine) {
+      if (porcupine && sdk) {
         try {
-          await WebVoiceProcessor.unsubscribe(porcupine)
+          await sdk.WebVoiceProcessor.unsubscribe(porcupine)
         } catch {
           /* ignore */
         }
@@ -100,8 +141,9 @@ export function createPorcupineWake({
 
     async pause() {
       paused = true
+      if (!sdk) return // never armed: nothing is listening
       try {
-        await WebVoiceProcessor.reset()
+        await sdk.WebVoiceProcessor.reset()
       } catch {
         /* ignore */
       }
@@ -122,6 +164,7 @@ export function createPorcupineWake({
         }
         porcupine = null
       }
+      enginePromise = null
     }
   }
 }

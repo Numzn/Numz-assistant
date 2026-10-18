@@ -1,11 +1,4 @@
-import * as THREE from 'three'
-import { createAnimator } from './animation/animator.js'
-import { createCamera } from './engine/camera.js'
-import { createComposer } from './engine/composer.js'
-import { createRenderer } from './engine/renderer.js'
-import { createScene } from './engine/scene.js'
-import { setupResize } from './engine/resize.js'
-import { createCore } from './core/core.js'
+import { createOrbLoader, prefetchWhenIdle } from './orb/orbLoader.js'
 import { createEventBus } from './core/events/eventBus.js'
 import { createStateMachine, STATES } from './assistant/stateMachine.js'
 import { createAssistantClient } from './assistant/client.js'
@@ -36,17 +29,6 @@ if (!canvas) {
   throw new Error('Missing #canvas element')
 }
 
-const renderer = createRenderer(canvas)
-const scene = createScene()
-const camera = createCamera(window.innerWidth, window.innerHeight)
-
-const core = createCore()
-scene.add(core)
-
-const { composer, bloomPass } = createComposer(renderer, scene, camera)
-
-setupResize({ renderer, camera, composer })
-
 const eventBus = createEventBus()
 const assistantStateMachine = createStateMachine(STATES.IDLE, { eventBus })
 const assistantClient = createAssistantClient()
@@ -56,7 +38,7 @@ const assistantController = createAssistantController({
   eventBus
 })
 
-// Declared up here because the animator and the meeting callbacks below read them as the page goes on.
+// Declared up here because the orb and the meeting callbacks below read them as the page goes on.
 let voiceApi = null
 let voiceModeActive = false
 let chatView = null
@@ -67,13 +49,16 @@ let commandRouter = null
 const commandHook = { handle: (text) => (commandRouter ? commandRouter.handle(text) : null) }
 const motionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null
 
-const animator = createAnimator({
-  core,
-  bloomPass,
-  stateMachine: assistantStateMachine,
-  // Only the user's real microphone level, only in voice mode. Playback has no level to read.
-  getLevel: () => (voiceModeActive ? voiceApi?.getInputLevel?.() ?? 0 : 0),
-  reducedMotion: () => motionQuery?.matches === true
+// The orb (Three.js, about half a megabyte) is not part of the first page load: it is fetched when the browser is
+// idle or the voice button is approached, and created when voice mode is first entered. See src/orb/orbLoader.js.
+const orbLoader = createOrbLoader({
+  options: () => ({
+    canvas,
+    stateMachine: assistantStateMachine,
+    // Only the user's real microphone level, only in voice mode. Playback has no level to read.
+    getLevel: () => (voiceModeActive ? voiceApi?.getInputLevel?.() ?? 0 : 0),
+    reducedMotion: () => motionQuery?.matches === true
+  })
 })
 
 assistantStateMachine.subscribe((next, prev) => {
@@ -455,6 +440,9 @@ async function enterVoiceMode() {
   }
   if (startingVoiceMode) return
   startingVoiceMode = true
+  // Fetch and create the orb while the microphone prompt is up. Voice mode never waits for it, and works without
+  // it (no WebGL, a file that did not arrive): the status and controls are ordinary page elements.
+  orbLoader.load().catch((err) => console.warn('[orb] unavailable; voice mode continues without it', err))
   // The browser may be asking for the microphone right now; say so instead of looking frozen.
   chatView.notify('Allow the microphone if your browser asks…')
   try {
@@ -494,17 +482,29 @@ meetingController?.subscribe?.(refreshVoiceButton)
 refreshVoiceButton()
 
 // The orb is only drawn in voice mode (the Home screen covers it), so it costs nothing the rest of the time.
-const clock = new THREE.Clock()
+// The clock runs every frame, drawn or not, so the first frame after a long chat is not one huge step.
+let lastFrameAt = performance.now()
+let elapsedSeconds = 0
 
 function tick() {
   requestAnimationFrame(tick)
-  // One clock read per frame: getElapsedTime() already advances the clock, so a getDelta() after it returned
-  // about zero and the orb's state transitions never visibly happened.
-  const delta = clock.getDelta()
+  const now = performance.now()
+  const delta = Math.max(0, (now - lastFrameAt) / 1000)
+  lastFrameAt = now
+  elapsedSeconds += delta
   if (document.body.dataset.mode !== 'voice') return
-  animator.update(clock.elapsedTime, delta)
-  composer.render()
+  orbLoader.frame(elapsedSeconds, delta)
 }
+
+// Get the orb's code ready before it is asked for: once the page has settled, and as soon as the voice button
+// is approached (pointer, focus or touch), whichever comes first.
+const warmOrb = () => orbLoader.prefetch()
+for (const type of ['pointerenter', 'focusin', 'touchstart']) {
+  document.querySelector('#voiceModeButton')?.addEventListener(type, warmOrb, { once: true, passive: true })
+}
+const startIdlePrefetch = () => prefetchWhenIdle(warmOrb)
+if (document.readyState === 'complete') startIdlePrefetch()
+else window.addEventListener('load', startIdlePrefetch, { once: true })
 
 tick()
 

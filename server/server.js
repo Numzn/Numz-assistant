@@ -30,6 +30,7 @@ import { createMeetingAuth } from './auth/meetingAuth.js'
 import { createAssistantAuth } from './auth/assistantAuth.js'
 import { logMeetingsConfig, meetingsHealth } from './meetings/meetingHealth.js'
 import { errorHandler, notFoundHandler } from './http/errorHandler.js'
+import { createStaticAssets } from './http/staticAssets.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.join(__dirname, '..')
@@ -169,11 +170,14 @@ function createApp() {
   )
 
   if (isProd) {
+    // Built files: precompressed copies when the browser accepts them, hashed assets cached for a year,
+    // everything else (index.html above all) revalidated each time. See server/http/staticAssets.js.
     const dist = path.join(rootDir, 'dist')
-    app.use(express.static(dist, { index: false }))
+    const assets = createStaticAssets({ dir: dist })
+    app.use(assets)
     app.get('*', (req, res, next) => {
       if (req.path.startsWith('/api')) return next()
-      res.sendFile(path.join(dist, 'index.html'))
+      assets.sendIndex(req, res, next)
     })
   }
 
