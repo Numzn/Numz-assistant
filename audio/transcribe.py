@@ -45,7 +45,43 @@ WHISPER_VAD_PARAMETERS = {
 _whisper_model = None
 
 
-def _load_whisper():
+def _download_model(*args, **kwargs):
+    """faster-whisper's model resolver, imported on use (the import is slow and tests replace this)."""
+    from faster_whisper.utils import download_model
+
+    return download_model(*args, **kwargs)
+
+
+def _resolve_model_path(on_download=None):
+    """The folder holding the model's files, preferring the local cache.
+
+    faster-whisper asks the Hugging Face hub whether a cached model is current before it loads it, so one
+    stalled request at boot kept the sidecar from ever listening (2026-10-15: three days, no timeout). The
+    cache is therefore read first, with no network at all. Only a model that is not cached is downloaded,
+    and `on_download` is called just before so the caller can allow it more time. A model that is cached
+    but broken is not "not cached": that error is left to the loader, since a download would not mend it.
+    """
+    name = WHISPER_MODEL
+    if os.path.isdir(name):
+        return name
+    try:
+        path = _download_model(name, local_files_only=True)
+        logger.info("Whisper model %s found in the local cache (%s); no network needed", name, path)
+        return path
+    except FileNotFoundError:
+        # huggingface_hub's LocalEntryNotFoundError: nothing cached for this model. A bad model name is a
+        # ValueError and is not caught here.
+        logger.warning(
+            "Whisper model %s is not in the local cache; downloading it from the Hugging Face hub "
+            "(needs network access)",
+            name,
+        )
+    if on_download is not None:
+        on_download()
+    return _download_model(name)
+
+
+def _load_whisper(on_download=None):
     global _whisper_model
     if _whisper_model is not None:
         return _whisper_model
@@ -58,8 +94,9 @@ def _load_whisper():
         WHISPER_COMPUTE_TYPE,
     )
     t0 = time.perf_counter()
+    model_path = _resolve_model_path(on_download)
     _whisper_model = WhisperModel(
-        WHISPER_MODEL,
+        model_path,
         device=WHISPER_DEVICE,
         compute_type=WHISPER_COMPUTE_TYPE,
     )
@@ -295,9 +332,9 @@ def transcribe_blob(
     return result
 
 
-def warmup():
-    """Pre-load Whisper at server startup."""
-    _load_whisper()
+def warmup(on_download=None):
+    """Pre-load Whisper at server startup. `on_download` is called if the model has to be fetched."""
+    _load_whisper(on_download)
 
 
 def health_info() -> dict[str, Any]:

@@ -45,6 +45,8 @@ Default URL: `http://127.0.0.1:8765`
 | `AUDIO_HOST` | `127.0.0.1` | Bind host |
 | `AUDIO_PORT` | `8765` | Bind port |
 | `AUDIO_WARMUP` | `1` | Pre-load models at startup (`0` to skip) |
+| `AUDIO_WARMUP_TIMEOUT_S` | `180` | Longest the start-up model load may take before the process exits with status 75 (see "Start-up" below). `0` turns the limit off |
+| `AUDIO_DOWNLOAD_TIMEOUT_S` | `900` | The same limit, restarted from the moment a model that is not cached begins to download. `0` turns it off |
 | `VAD_MIN_SPEECH_MS` | `250` | Silero min speech segment |
 | `VAD_MIN_SILENCE_MS` | `300` | Silero min silence gap |
 | `VAD_SPEECH_PAD_MS` | `80` | Padding around speech |
@@ -53,6 +55,25 @@ Default URL: `http://127.0.0.1:8765`
 | `MEETING_API_URL` | unset | Server origin of the meeting API, e.g. `http://127.0.0.1:3103` (no `/api/v1`). Unset: meeting-bound live sessions are refused |
 | `LIVE_OUTBOX_DIR` | `audio/outbox` | Durable outbox for segments not yet stored (gitignored) |
 | `LIVE_RECORDINGS_DIR` | unset | Opt-in WAV recordings, streamed to disk (0600) when the client also asks. Unset: audio is never written to disk. Replay one with `npm run speech:replay` (see `docs/speech-pipeline.md`) |
+
+## Start-up
+
+The service listens only after the speech model is loaded. Two rules keep that from hanging:
+
+- **Cached model first, no network.** The model is read from the local Hugging Face cache
+  (`~/.cache/huggingface/hub`) without contacting the hub. Only a model that is **not** cached is downloaded, and
+  that is logged as a warning. A cached model is therefore never refreshed on its own: to take a newer revision,
+  delete its folder under `models--Systran--faster-whisper-<size>` and restart (the next start downloads it). A
+  cached but damaged model is an error to fix, not a reason to download.
+- **A deadline that fails loudly.** If loading outlasts `AUDIO_WARMUP_TIMEOUT_S` (or `AUDIO_DOWNLOAD_TIMEOUT_S`
+  once a download has begun), the process logs `STARTUP FAILED` with the limit and its setting, writes every
+  thread's stack to stderr (so the log shows the call that was stuck) and exits with status **75**. Under the
+  systemd unit (`Restart=on-failure`) that is a restart five seconds later; the launcher passes the status
+  through. Before this, a load stalled on one network request at boot (2026-10-15) left the service "running"
+  for three days with nothing listening on the port.
+
+A listening port is the check that matters: `ss -ltn | grep 8765`, or `GET /health`. `systemctl status` alone
+does not show it.
 
 ## Meeting persistence
 
