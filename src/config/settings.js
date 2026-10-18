@@ -3,8 +3,8 @@ export const settings = {
     // A quiet steel blue on charcoal. The earlier cyan glow on navy read as neon.
     core: 0xdfe6ee,
     coreOuter: 0x9fb6cf,
-    // Tone mapping darkens what the scene draws: this renders as the charcoal (#212121) of the Home screen.
-    background: 0x333333
+    // Tone mapping darkens what the scene draws: this renders as the warm charcoal (#131215) of the page.
+    background: 0x272529
   },
   assistantVisual: {
     /** Seconds to ease between state visual profiles. */
