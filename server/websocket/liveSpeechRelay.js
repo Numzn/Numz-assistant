@@ -59,7 +59,8 @@ function firstMessageProblem(data, isBinary, principal, token) {
   return null
 }
 
-function bridge({ client, upstreamUrl, principal, token, active, logger, maxPayload, startTimeoutMs }) {
+function bridge({ client, upstreamUrl, principal, token, active, logger, maxPayload, startTimeoutMs, onClosed = () => {} }) {
+  // Returns { close(reason) }: ends this connection now, on both sides (see closeMeeting).
   let started = false
   let closed = false
   let pendingBytes = 0
@@ -73,6 +74,7 @@ function bridge({ client, upstreamUrl, principal, token, active, logger, maxPayl
     closed = true
     clearTimeout(startTimer)
     active.delete(client)
+    onClosed()
     logger.log(`[live-speech] relay closed meeting=${principal.meetingId} code=${code} active=${active.size}`)
     try {
       if (client.readyState === WebSocket.OPEN) client.close(sendableCloseCode(code), reason.slice(0, 100))
@@ -118,6 +120,7 @@ function bridge({ client, upstreamUrl, principal, token, active, logger, maxPayl
   })
   client.on('close', () => finish(1000))
   client.on('error', () => finish(1011, 'client-error'))
+  return { close: (reason) => finish(1000, reason) }
 }
 
 export function attachLiveSpeechRelay({
@@ -132,6 +135,7 @@ export function attachLiveSpeechRelay({
 }) {
   if (!upgrades || !auth || !upstreamUrl) throw new Error('upgrades, auth and upstreamUrl are required')
   const active = new Set()
+  const bridges = new Map() // client -> { meetingId, close }, for closeMeeting
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: maxPayloadBytes,
@@ -154,9 +158,38 @@ export function attachLiveSpeechRelay({
     wss.handleUpgrade(req, socket, head, (client) => {
       active.add(client)
       logger.log(`[live-speech] relay opened meeting=${principal.meetingId} active=${active.size}`)
-      bridge({ client, upstreamUrl, principal, token, active, logger, maxPayload: maxPayloadBytes, startTimeoutMs })
+      const { close } = bridge({
+        client,
+        upstreamUrl,
+        principal,
+        token,
+        active,
+        logger,
+        maxPayload: maxPayloadBytes,
+        startTimeoutMs,
+        onClosed: () => bridges.delete(client)
+      })
+      bridges.set(client, { meetingId: principal.meetingId, close })
     })
   })
 
-  return { wss, active, upstreamUrl, path }
+  /**
+   * Ends the relayed connections of one meeting right now, closing the speech service's side without waiting for the
+   * browser's. The meeting's end is being asked for while its recording is still open; a browser that went away
+   * without closing (a dead network, a sleeping laptop) would otherwise keep the speech session open until the speech
+   * service's own idle timeout, and the meeting could not be ended meanwhile. The speech service then finishes the
+   * session (it flushes what it had and reports its count) and the end can go through. -> how many it closed
+   */
+  function closeMeeting(meetingId, reason = 'meeting-ending') {
+    let closed = 0
+    for (const [client, entry] of [...bridges]) {
+      if (entry.meetingId !== meetingId) continue
+      bridges.delete(client)
+      entry.close(reason)
+      closed += 1
+    }
+    return closed
+  }
+
+  return { wss, active, upstreamUrl, path, closeMeeting }
 }

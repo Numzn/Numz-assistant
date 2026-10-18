@@ -117,6 +117,9 @@ function log(level, message, meta) {
   else console.log(line)
 }
 
+// The live-speech relay is attached after the app is built, so the meetings router reaches it through this.
+const liveSpeech = { relay: null }
+
 function createApp() {
   const app = express()
   app.disable('x-powered-by')
@@ -165,7 +168,8 @@ function createApp() {
       meetingService,
       auth: meetingAuth,
       intelligenceService: createMeetingIntelligenceService({ meetingService, generateNotes: generateGroundedNotes }),
-      liveIntelligence: liveMeetingIntelligence
+      liveIntelligence: liveMeetingIntelligence,
+      closeLiveSpeech: (meetingId) => liveSpeech.relay?.closeMeeting(meetingId) ?? 0
     })
   )
 
@@ -192,7 +196,7 @@ const app = createApp()
 const server = http.createServer(app)
 const upgrades = createUpgradeRouter(server)
 attachSocketServer(server, { upgrades, authorize: assistantAuth.authorizeUpgrade })
-attachLiveSpeechRelay({
+liveSpeech.relay = attachLiveSpeechRelay({
   upgrades,
   auth: meetingAuth,
   upstreamUrl: liveSpeechUpstreamUrl(process.env.AUDIO_SERVICE_URL || undefined)

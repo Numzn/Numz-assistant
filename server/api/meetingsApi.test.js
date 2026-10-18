@@ -15,7 +15,7 @@ const SECRET = 'ticket-secret-'.padEnd(40, 'y')
 const quiet = { error() {}, warn() {}, info() {}, log() {} }
 
 /** Builds the real router + auth + error handling in-process, with a controllable clock. */
-function buildApp({ clock = { now: () => Date.now() }, adminToken = ADMIN, ticketSecret = SECRET, ticketTtlSeconds, service, logger = quiet } = {}) {
+function buildApp({ clock = { now: () => Date.now() }, adminToken = ADMIN, ticketSecret = SECRET, ticketTtlSeconds, service, logger = quiet, closeLiveSpeech } = {}) {
   const database = createDatabase({ filename: ':memory:' })
   const meetingService =
     service ??
@@ -32,7 +32,7 @@ function buildApp({ clock = { now: () => Date.now() }, adminToken = ADMIN, ticke
     req.id = 'test-request'
     next()
   })
-  app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth }))
+  app.use('/api/v1/meetings', createMeetingsRouter({ meetingService, auth, ...(closeLiveSpeech ? { closeLiveSpeech } : {}) }))
   app.use('/api', notFoundHandler)
   app.use(errorHandler({ logger }))
   return { app, meetingService, database }
@@ -449,6 +449,62 @@ test('REGRESSION: over HTTP, a session that never reported is never verified, ev
 
     const transcript = (await admin('GET', `/${id}/transcript`)).json
     assert.equal(transcript.integrity.verified, false, 'the stored transcript says so too')
+  } finally {
+    await close()
+  }
+})
+
+test('ending a meeting while its recording is still open asks the live connection to wrap up, and still answers 409', async () => {
+  const asked = []
+  const { app } = buildApp({ closeLiveSpeech: (meetingId) => asked.push(meetingId) })
+  const { base, close } = await serve(app)
+  try {
+    const admin = (method, path, extra) => call(base, method, path, { token: ADMIN, ...extra })
+    const created = (await admin('POST', '', { body: {} })).json
+    const id = created.meetingId
+    const ticket = created.ticket.token
+    await admin('POST', `/${id}/start`)
+    const session = (await call(base, 'POST', `/${id}/sessions`, { token: ticket, body: {} })).json
+    await call(base, 'POST', `/${id}/transcript/final`, { token: ticket, body: { speechSessionId: session.speechSessionId, segment: seg('n-1', 1, 'hello') } })
+
+    // The ticket holder (the browser) asks to end it while the recording's session is open.
+    const refused = await call(base, 'POST', `/${id}/end`, { token: ticket })
+    assert.equal(refused.status, 409)
+    assert.equal(refused.json.code, 'speech-session-active')
+    assert.deepEqual(asked, [id], 'the live connection was asked to wrap up, once')
+    assert.equal((await admin('GET', `/${id}`)).json.status, 'LIVE', 'and the meeting is untouched meanwhile')
+
+    // The session closes (as the speech service does after being asked); the next try goes through.
+    await call(base, 'POST', `/${id}/sessions/${session.speechSessionId}/end`, { token: ticket, body: { reason: 'disconnected', committedSegments: 1 } })
+    const ended = await call(base, 'POST', `/${id}/end`, { token: ticket })
+    assert.equal(ended.status, 200)
+    assert.equal(ended.json.status, 'COMPLETED')
+    assert.deepEqual(asked, [id], 'a successful end asks nothing')
+  } finally {
+    await close()
+  }
+})
+
+test('no live connection is asked to close for an end that is refused for another reason, or that is not allowed', async () => {
+  const asked = []
+  const { app } = buildApp({ closeLiveSpeech: (meetingId) => asked.push(meetingId) })
+  const { base, close } = await serve(app)
+  try {
+    const admin = (method, path, extra) => call(base, method, path, { token: ADMIN, ...extra })
+    const mine = (await admin('POST', '', { body: {} })).json
+    const other = (await admin('POST', '', { body: {} })).json
+    await admin('POST', `/${mine.meetingId}/start`)
+    await admin('POST', `/${other.meetingId}/start`)
+    const session = (await call(base, 'POST', `/${other.meetingId}/sessions`, { token: other.ticket.token, body: {} })).json
+    await call(base, 'POST', `/${other.meetingId}/transcript/final`, { token: other.ticket.token, body: { speechSessionId: session.speechSessionId, segment: seg('o-1', 1, 'busy') } })
+
+    // Someone else's ticket cannot end (or nudge) the meeting that is recording.
+    assert.equal((await call(base, 'POST', `/${other.meetingId}/end`, { token: mine.ticket.token })).status, 403)
+    assert.equal((await call(base, 'POST', `/${other.meetingId}/end`)).status, 401)
+    // A meeting with no recording ends without asking anything of anyone, and an unknown one is a 404.
+    assert.equal((await call(base, 'POST', `/${mine.meetingId}/end`, { token: mine.ticket.token })).status, 200)
+    assert.equal((await admin('POST', `/${UUID(404)}/end`)).status, 404)
+    assert.deepEqual(asked, [])
   } finally {
     await close()
   }
