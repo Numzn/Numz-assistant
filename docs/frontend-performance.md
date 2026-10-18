@@ -73,11 +73,24 @@ Measured in a real browser (headless Chromium, fake microphone):
 At the 6 KB/s measured on the public route, the first load goes from about 295 s to about 8 s. That is
 arithmetic on one measurement, not a measurement of the new build on that route.
 
-After the UI refresh (same day, `docs/home-screen.md`): the first load of `index.html` is 52.4 KB in Brotli (HTML 2.9,
-script 42.0 and 1.8, stylesheet 5.7). The self-hosted fonts are extra and load on use with `font-display: swap`, so they
-never block the text: Inter 48 KB and the greeting's Instrument Serif 22 KB on every first visit, JetBrains Mono 31 KB
-only once something that uses it (a timer, a timestamp, code, the model label) is on screen. All three are
-content-hashed and cached for a year.
+After the UI refresh (same day, `docs/home-screen.md`): the first load of `index.html` is 52.7 KB in Brotli (HTML 2.9,
+script 41.0 and 3.0, stylesheet 5.7). The self-hosted fonts are extra: Inter 48 KB and the greeting's Instrument Serif
+22 KB on every first visit, JetBrains Mono 31 KB only once something that uses it (a timer, a timestamp, code, the
+model label) is on screen. All three are content-hashed and cached for a year.
+
+**The fonts wait for the script.** First deployed, the fonts started downloading as soon as the stylesheet arrived and
+shared a slow link with the script (on the public route, which delivers 2 to 6 KB/s, the script took about 10 s to
+arrive instead of about 7). Now the default font tokens in `style.css` name only system fonts, and
+`:root[data-fonts]` is what names the three web fonts. `enableWebFonts()` (`src/interfaces/layout/workspace.js`) adds
+`data-fonts` to `<html>` as the first statement of `main.js` and `history.js`, that is, once the script has arrived; a
+browser fetches a font only when a rule uses its family, so nothing is fetched before. Data saver and 2G keep the
+system fonts (`isLowBandwidth()`, shared with the orb prefetch). `tests/fontsDeferred.test.js` fails if a web font
+family is named anywhere else in the stylesheet or if either page stops calling the helper.
+
+Measured on the same throttled link for both builds (6 KB/s, 1.2 s latency, cold cache, three runs each, identical
+every time): the script arrived at 20.5 s before and 11.5 s after (9 s earlier, the app is usable that much sooner),
+first paint stayed at 5.4 s, and the `load` event moved from 25.2 s to 25.9 s because the fonts still use the link,
+just after the script. The text shows in the system font first and switches to Inter when the font arrives.
 
 ## Keeping it fast
 

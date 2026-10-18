@@ -7,6 +7,8 @@
  * into calls, the same split as chatController / chatView.
  */
 
+import { isLowBandwidth } from '../../utils/network.js'
+
 const RECENT_LIMIT = 15
 
 export function createRecentConversations({ api, chat, getActiveId = () => null, limit = RECENT_LIMIT } = {}) {
@@ -173,4 +175,15 @@ export async function loadModelLabel({ fetchFn = (...args) => globalThis.fetch(.
   } catch {
     return null
   }
+}
+
+/**
+ * Switches the page from the system fonts to the web fonts (the two token sets at the top of style.css). Call it
+ * once the page's own script has arrived: the fonts are fetched only when this runs, so they never share a slow
+ * connection with the script. Skipped on data saver and 2G, where the system fonts stay. -> whether it switched
+ */
+export function enableWebFonts({ doc = globalThis.document, connection = globalThis.navigator?.connection } = {}) {
+  if (!doc?.documentElement || isLowBandwidth(connection)) return false
+  doc.documentElement.dataset.fonts = 'on'
+  return true
 }

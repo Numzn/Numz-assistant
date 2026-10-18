@@ -1,3 +1,5 @@
+import { isLowBandwidth } from '../utils/network.js'
+
 /**
  * Loads the Three.js orb on demand. This file imports nothing from Three.js, so it is cheap to ship in the first
  * page load; the orb itself (src/orb/createOrb.js) arrives as a separate file.
@@ -67,8 +69,7 @@ export function createOrbLoader({ options, importOrb = () => import('./createOrb
  * background download of this size would be unwelcome; load() still works then, on demand.
  */
 export function prefetchWhenIdle(prefetch, { connection = globalThis.navigator?.connection, schedule = defaultSchedule, delayMs = 2000 } = {}) {
-  if (connection?.saveData === true) return false
-  if (/(^|-)2g$/.test(String(connection?.effectiveType ?? ''))) return false
+  if (isLowBandwidth(connection)) return false
   schedule(() => {
     prefetch()
   }, delayMs)

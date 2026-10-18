@@ -25,8 +25,10 @@ meeting is open. The look is described under "Look and layout" below.
 Warm charcoal surfaces, cream text, brass accents, coral for recording, sage for success. Everything is a token at the
 top of `style.css` (`--bg`, `--surface*`, `--accent`, `--danger`, `--ok`, `--font*`); nothing below hard-codes a colour.
 Fonts are self-hosted Latin subsets (`src/assets/fonts/README.md`): Inter for the interface, Instrument Serif (italic)
-for the greeting, JetBrains Mono for timers, timestamps, the model label and code. They load on use with
-`font-display: swap`, so text shows at once in the system font.
+for the greeting, JetBrains Mono for timers, timestamps, the model label and code. Text shows at once in the system
+font; the web fonts start downloading only after the page's script has run (`enableWebFonts()` sets `data-fonts` on
+`<html>`, which swaps the font tokens), so they never compete with it on a slow link, and they are skipped on data
+saver and 2G. `font-display: swap` then switches the text when each font arrives.
 
 | Width | Layout |
 |---|---|

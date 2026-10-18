@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { greetingFor } from '../src/interfaces/chat/chatView.js'
-import { createRecentConversations, loadModelLabel, watchOnline } from '../src/interfaces/layout/workspace.js'
+import { createRecentConversations, enableWebFonts, loadModelLabel, watchOnline } from '../src/interfaces/layout/workspace.js'
+import { isLowBandwidth } from '../src/utils/network.js'
 import { formatElapsed } from '../src/interfaces/meeting/meetingPanel.js'
 
 const conversation = (id, title = id) => ({ id, title, createdAt: '2026-10-18T10:00:00Z', updatedAt: '2026-10-18T10:00:00Z', messageCount: 2 })
@@ -164,4 +165,30 @@ test('the meeting timer formats minutes and seconds, then hours, and never shows
   assert.equal(formatElapsed(59_999), '00:59')
   assert.equal(formatElapsed(3_725_000), '1:02:05')
   for (const bad of [-5000, NaN, undefined, null, Infinity]) assert.equal(formatElapsed(bad), '00:00', String(bad))
+})
+
+test('data saver and 2G are low bandwidth; 3G, 4G and an unknown connection are not', () => {
+  assert.equal(isLowBandwidth({ saveData: true }), true)
+  assert.equal(isLowBandwidth({ effectiveType: '2g' }), true)
+  assert.equal(isLowBandwidth({ effectiveType: 'slow-2g' }), true)
+  assert.equal(isLowBandwidth({ saveData: true, effectiveType: '4g' }), true)
+  for (const connection of [{ effectiveType: '3g' }, { effectiveType: '4g' }, { saveData: false }, {}, undefined, null]) {
+    assert.equal(isLowBandwidth(connection), false, JSON.stringify(connection))
+  }
+})
+
+test('the web fonts are switched on once, with a normal connection, and left off on data saver and 2G', () => {
+  const page = () => ({ documentElement: { dataset: {} } })
+  const normal = page()
+  assert.equal(enableWebFonts({ doc: normal, connection: { effectiveType: '4g' } }), true)
+  assert.equal(normal.documentElement.dataset.fonts, 'on')
+  assert.equal(enableWebFonts({ doc: normal, connection: { effectiveType: '4g' } }), true, 'calling it again changes nothing')
+  assert.equal(normal.documentElement.dataset.fonts, 'on')
+
+  for (const connection of [{ saveData: true }, { effectiveType: '2g' }, { effectiveType: 'slow-2g' }]) {
+    const saving = page()
+    assert.equal(enableWebFonts({ doc: saving, connection }), false, JSON.stringify(connection))
+    assert.equal(saving.documentElement.dataset.fonts, undefined, 'the system fonts stay')
+  }
+  assert.equal(enableWebFonts({ doc: null, connection: undefined }), false, 'no document: nothing to switch')
 })
