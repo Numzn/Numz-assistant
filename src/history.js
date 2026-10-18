@@ -6,9 +6,12 @@
 import { createHistoryApi } from './interfaces/history/historyApi.js'
 import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
 import { createAccessGateView } from './interfaces/auth/accessGateView.js'
+import { enableWebFonts } from './interfaces/layout/workspace.js'
 
 const PAGE = 50
 const ARM_MS = 4000
+
+enableWebFonts()
 
 const api = createHistoryApi()
 const accessController = createAccessController({ api: createAccessApi(), onUnlocked: () => location.reload() })

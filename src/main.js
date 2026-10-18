@@ -21,9 +21,12 @@ import { createChatController } from './interfaces/chat/chatController.js'
 import { createChatView } from './interfaces/chat/chatView.js'
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 import { createHistoryApi } from './interfaces/history/historyApi.js'
-import { createRecentConversations, createSidebar, loadModelLabel, watchOnline } from './interfaces/layout/workspace.js'
+import { createRecentConversations, createSidebar, enableWebFonts, loadModelLabel, watchOnline } from './interfaces/layout/workspace.js'
 import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
 import { createAccessGateView } from './interfaces/auth/accessGateView.js'
+
+// The script has arrived, so the web fonts may start downloading now (before, they shared a slow connection with it).
+enableWebFonts()
 
 const canvas = document.querySelector('#canvas')
 if (!canvas) {

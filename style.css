@@ -57,7 +57,17 @@
   --panel-w: 360px;
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.46);
   --ease: 220ms cubic-bezier(0.4, 0, 0.2, 1);
-  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* System fonts first, so the page paints and its script arrives without sharing the connection with a font.
+     enableWebFonts() (src/interfaces/layout/workspace.js) adds data-fonts once the script has run. */
+  --font-system: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font: var(--font-system);
+  --font-serif: Georgia, serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* The web fonts: nothing downloads until a rule uses one of these families, so this block is what starts them. */
+:root[data-fonts] {
+  --font: "Inter", var(--font-system);
   --font-serif: "Instrument Serif", Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
