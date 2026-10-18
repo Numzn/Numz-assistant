@@ -42,7 +42,7 @@ async function startRig({ relayOptions = {}, upstreamUrl, clock } = {}) {
   })
   const upgrades = createUpgradeRouter(http, { logger: quiet })
   const auth = createMeetingAuth({ adminToken: ADMIN, ticketSecret: SECRET, clock, logger: quiet })
-  attachLiveSpeechRelay({
+  const relay = attachLiveSpeechRelay({
     upgrades,
     auth,
     upstreamUrl: upstreamUrl ?? `ws://127.0.0.1:${upstream.address().port}/live-speech`,
@@ -55,6 +55,7 @@ async function startRig({ relayOptions = {}, upstreamUrl, clock } = {}) {
   const clients = []
   return {
     auth,
+    relay,
     base,
     upstreamReceived,
     upstreamSockets,
@@ -329,6 +330,80 @@ test('any other WebSocket path is answered 404 by the dispatcher, not left hangi
   try {
     const result = await rig.connect('/api/v1/nope', [TICKET_PROTOCOL, rig.ticket()])
     assert.equal(result.rejected, 404)
+  } finally {
+    await rig.close()
+  }
+})
+
+test('closeMeeting ends that meeting\'s relayed connection at once on both sides, and tells the client why', async () => {
+  const rig = await startRig()
+  try {
+    const token = rig.ticket()
+    const { client } = await rig.connect(PATH, [TICKET_PROTOCOL, token])
+    client.send(start(token))
+    await client.next()
+    const upstreamClosed = new Promise((resolve) => rig.upstreamSockets[0].on('close', (code) => resolve(code)))
+    assert.equal(rig.relay.closeMeeting(MEETING), 1)
+    assert.ok(await upstreamClosed, 'the speech service side is closed')
+    assert.deepEqual(await client.closed, { code: 1000, reason: 'meeting-ending' })
+    assert.equal(rig.relay.active.size, 0)
+    assert.equal(rig.relay.closeMeeting(MEETING), 0, 'nothing left to close')
+  } finally {
+    await rig.close()
+  }
+})
+
+test('closeMeeting reaches the speech service even when the browser never answers (a dead network)', async () => {
+  const rig = await startRig()
+  try {
+    const token = rig.ticket()
+    const { client } = await rig.connect(PATH, [TICKET_PROTOCOL, token])
+    client.send(start(token))
+    await client.next()
+    client.ws._socket.pause() // the browser's side goes silent: it will never acknowledge a close
+    const upstreamClosed = new Promise((resolve) => rig.upstreamSockets[0].on('close', (code) => resolve(code)))
+    rig.relay.closeMeeting(MEETING)
+    const within = (promise, ms) => Promise.race([promise, new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`not closed within ${ms} ms`)), ms))])
+    assert.ok(await within(upstreamClosed, 2000), 'the session on the speech service is not left waiting for the browser')
+    assert.equal(rig.relay.active.size, 0)
+  } finally {
+    await rig.close()
+  }
+})
+
+test('closeMeeting leaves other meetings\' recordings alone', async () => {
+  const rig = await startRig()
+  try {
+    const mine = rig.ticket(MEETING)
+    const other = rig.ticket(OTHER)
+    const a = (await rig.connect(PATH, [TICKET_PROTOCOL, mine])).client
+    const b = (await rig.connect(PATH, [TICKET_PROTOCOL, other])).client
+    a.send(start(mine, MEETING))
+    b.send(start(other, OTHER))
+    await a.next()
+    await b.next()
+    assert.equal(rig.relay.closeMeeting(MEETING), 1)
+    await a.closed
+    b.send(Buffer.from([9]), { binary: true })
+    assert.deepEqual((await b.next()).data, Buffer.from([1, 2, 3]), 'the other recording still works')
+    assert.equal(rig.relay.active.size, 1)
+    assert.equal(rig.relay.closeMeeting('00000000-0000-4000-8000-0000000000ff'), 0)
+  } finally {
+    await rig.close()
+  }
+})
+
+test('a connection that closes by itself is forgotten, so closeMeeting never touches it later', async () => {
+  const rig = await startRig()
+  try {
+    const token = rig.ticket()
+    const { client } = await rig.connect(PATH, [TICKET_PROTOCOL, token])
+    client.send(start(token))
+    await client.next()
+    client.send(JSON.stringify({ type: 'stop' }))
+    await client.next() // stopped
+    await client.closed
+    assert.equal(rig.relay.closeMeeting(MEETING), 0)
   } finally {
     await rig.close()
   }

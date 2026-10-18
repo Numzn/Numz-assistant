@@ -24,6 +24,13 @@ export const LIVE_SPEECH_PATH = '/api/v1/live-speech'
 
 const MAX_LINES = 500
 const DEFAULT_RETRY_DELAYS_MS = [1500, 2000, 3000, 4000, 5000, 5000]
+// How long ending a meeting keeps waiting for a recording that is still closing (409 speech-session-active). A
+// recording whose connection died without saying so is closed by the speech service only after its 30 s idle
+// timeout, plus the time to decode and save what was left; giving up before that left the meeting open for good.
+const DEFAULT_SESSION_WAIT_MS = 120_000
+// The recording's own stop gives up after 45 s (liveSpeechClient). If it still has not settled a little after that,
+// ending carries on regardless: the server's answers say whether the session has closed.
+const DEFAULT_SHUTDOWN_WAIT_MS = 60_000
 const RETRYABLE_END = new Set(['speech-session-active', 'transcript-incomplete'])
 
 /**
@@ -146,7 +153,12 @@ function describeEndError(err, meetingId) {
     }
   }
   if (err.status === 409 && err.code === 'speech-session-active') {
-    return { message: 'The recording is still closing. Press Try again in a moment.', canDiscard: false }
+    return {
+      message:
+        'The recording has not finished closing, so the meeting is still open (nothing is lost). Press Try again; ' +
+        'if you reload this page it will carry on finishing it.',
+      canDiscard: false
+    }
   }
   if (err.status === 401 || err.status === 403) {
     return {
@@ -165,6 +177,8 @@ export function createMeetingController({
   checkSupport = () => ({ ok: true }),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
+  sessionWaitMs = DEFAULT_SESSION_WAIT_MS,
+  shutdownWaitMs = DEFAULT_SHUTDOWN_WAIT_MS,
   now = () => Date.now(),
   newLaunchKey = randomLaunchKey,
   intelligenceOptions = {} // timers / intervals for the intelligence poller (tests)
@@ -176,6 +190,7 @@ export function createMeetingController({
   const listeners = new Set()
   let client = null
   let stopping = null // the client being stopped: its last lines are still decoded and saved while it winds down
+  let shutdown = null // the stop of the recording in flight (a promise), so ending never runs ahead of it
   let session = null // { meetingId, ticketToken, expiresAt, title, startedAt }
   let ending = false
 
@@ -216,10 +231,34 @@ export function createMeetingController({
     })
   }
 
+  /**
+   * Stops a recording client and remembers that it is stopping. Its last lines are still shown and counted while it
+   * winds down, and finish() waits for it before asking the server to end the meeting: the speech service ends its
+   * session only once the recording has stopped, so ending first is what the server refuses with 409.
+   */
+  function shutDown(live) {
+    stopping = live
+    let stopped
+    try {
+      stopped = Promise.resolve(live.stop())
+    } catch (err) {
+      stopped = Promise.reject(err)
+    }
+    // The speech service finishes the session by itself when the socket closes, so a failed stop is not an error here.
+    const task = stopped
+      .catch(() => {})
+      .finally(() => {
+        if (stopping === live) stopping = null
+        if (shutdown === task) shutdown = null
+      })
+    shutdown = task
+    return task
+  }
+
   function handleConnectionProblem(live, err) {
     if (client !== live) return // already handled (the client reports an error and then also throws)
     client = null
-    live.stop().catch(() => {}) // release the microphone and the socket
+    shutDown(live) // release the microphone and the socket; ending the meeting waits for this to settle
     set({
       phase: 'problem',
       partial: '',
@@ -341,27 +380,60 @@ export function createMeetingController({
     })
   }
 
+  /** Waits for a promise, but no longer than `ms`: a recording that cannot say it has stopped must not hold up ending. */
+  function settleWithin(promise, ms) {
+    let timer
+    const ceiling = new Promise((resolve) => {
+      timer = setTimeout(resolve, ms)
+    })
+    return Promise.race([promise, ceiling]).finally(() => clearTimeout(timer))
+  }
+
   async function finish() {
     if (!session || ending) return
     if (!['stopping', 'problem', 'unfinished'].includes(state.phase)) return
     ending = true
     try {
-      for (let attempt = 0; ; attempt++) {
+      // The person has asked for this meeting to end: remember it, so a reload while it is still closing carries on.
+      if (!session.closing) {
+        session = { ...session, closing: true }
+        storage.write(session)
+      }
+      // 1. The recording has to be shut down first (its stop frame, its last lines, its session on the server).
+      if (shutdown) {
         set({
           phase: 'ending',
-          message: attempt === 0 ? 'Saving the meeting…' : 'Waiting for the last lines to be saved…',
+          message: 'Waiting for the recording to finish closing…',
           tone: 'info',
           canReconnect: false,
           canEnd: false,
           canDiscard: false
         })
+        await settleWithin(shutdown, shutdownWaitMs)
+      }
+      // 2. Then the meeting is ended. The server refuses while the recording's session is still open or lines are still
+      // on their way; both are expected to pass, so wait and try again instead of giving up while it is still settling.
+      let note = 'Saving the meeting…'
+      let waited = 0 // milliseconds of waiting planned for a session that is still closing
+      let incompleteTries = 0
+      for (let attempt = 0; ; attempt++) {
+        set({ phase: 'ending', message: note, tone: 'info', canReconnect: false, canEnd: false, canDiscard: false })
         try {
           complete(await api.end({ meetingId: session.meetingId, ticketToken: session.ticketToken }))
           return
         } catch (err) {
-          const retryable = err instanceof MeetingApiError && err.status === 409 && RETRYABLE_END.has(err.code)
-          if (retryable && attempt < retryDelaysMs.length) {
-            await sleep(retryDelaysMs[attempt])
+          const refusal = err instanceof MeetingApiError && err.status === 409 ? err.code : null
+          const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)]
+          if (refusal === 'speech-session-active' && waited < sessionWaitMs) {
+            waited += delay
+            note = `The recording is still closing, so the meeting cannot be saved yet. Waiting for it… (${Math.round(waited / 1000)} s)`
+            await sleep(delay)
+            continue
+          }
+          if (refusal === 'transcript-incomplete' && incompleteTries < retryDelaysMs.length) {
+            incompleteTries += 1
+            note = 'Waiting for the last lines to be saved…'
+            await sleep(delay)
             continue
           }
           const { message, canDiscard } = describeEndError(err, session.meetingId)
@@ -409,11 +481,15 @@ export function createMeetingController({
         meetingId: saved.meetingId,
         title: saved.title ?? '',
         startedAt: saved.startedAt ?? null,
-        message: 'An earlier meeting was not finished. Finish it to save it as complete.',
-        tone: 'warn',
-        canEnd: true,
-        canDiscard: true
+        message: saved.closing
+          ? 'You ended this meeting earlier and it is still being saved. Finishing it now…'
+          : 'An earlier meeting was not finished. Finish it to save it as complete.',
+        tone: saved.closing ? 'info' : 'warn',
+        canEnd: !saved.closing,
+        canDiscard: !saved.closing
       })
+      // Ending it was already asked for (Stop or End meeting, then the page went away): carry on, no second click.
+      if (saved.closing) Promise.resolve().then(finish)
     },
 
     /** Forget the launch session on this browser, so the code has to be typed again. Not while a meeting is open. */
@@ -494,15 +570,8 @@ export function createMeetingController({
       if (!client || !['connecting', 'live'].includes(state.phase)) return
       const live = client
       client = null
-      stopping = live
       set({ phase: 'stopping', partial: '', message: 'Finishing the last lines… this can take a few seconds.', tone: 'info' })
-      try {
-        await live.stop()
-      } catch {
-        // The speech service finishes the session by itself when the socket closes.
-      } finally {
-        stopping = null
-      }
+      await shutDown(live)
       await finish()
     },
 

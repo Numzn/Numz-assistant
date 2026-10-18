@@ -142,7 +142,7 @@ function manualTimers() {
   }
 }
 
-function build({ api = fakeApi(), clients = fakeClients(), storage = createMemoryMeetingStorage(), checkSupport } = {}) {
+function build({ api = fakeApi(), clients = fakeClients(), storage = createMemoryMeetingStorage(), checkSupport, sessionWaitMs, shutdownWaitMs } = {}) {
   const sleeps = []
   let keys = 0
   const timers = manualTimers()
@@ -155,6 +155,8 @@ function build({ api = fakeApi(), clients = fakeClients(), storage = createMemor
     newLaunchKey: () => `attempt-${String(++keys).padStart(16, '0')}`,
     sleep: async (ms) => sleeps.push(ms),
     retryDelaysMs: [10, 20, 30],
+    ...(sessionWaitMs === undefined ? {} : { sessionWaitMs }),
+    ...(shutdownWaitMs === undefined ? {} : { shutdownWaitMs }),
     now: () => NOW
   })
   const phases = []
@@ -1059,4 +1061,191 @@ test('refreshIntelligence asks the server to update now with the meeting\'s own 
   const fresh = await controller.refreshIntelligence()
   assert.equal(fresh.findings.decisions[0].text, 'Fresh')
   assert.deepEqual(api.calls.refresh[0], { meetingId: MEETING, ticketToken: 'ticket-token.sig', final: false })
+})
+
+// ---- Closing a meeting: stop, the recording's shutdown, its session on the server, then the end ----------------
+
+function gate() {
+  let open
+  const promise = new Promise((resolve) => (open = resolve))
+  return { promise, open }
+}
+const tick = async () => {
+  for (let i = 0; i < 8; i++) await new Promise((resolve) => setImmediate(resolve))
+}
+
+test('a recording that is slow to close is waited for, not given up on after a fixed handful of tries', async () => {
+  const refusals = Array.from({ length: 8 }, () => conflict('speech-session-active'))
+  const { controller, clients, api, sleeps, phases } = build({ sessionWaitMs: 1000, api: fakeApi({ end: [...refusals, completed(2)] }) })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  await controller.stop()
+  assert.equal(api.calls.end.length, 9, 'it kept asking until the session had closed')
+  assert.deepEqual(sleeps, [10, 20, 30, 30, 30, 30, 30, 30], 'backing off, then every 30 ms')
+  assert.equal(controller.getState().phase, 'done')
+  assert.equal(phases.includes('problem'), false, 'the person never saw a failure for something that was only slow')
+})
+
+test('while it waits, the panel says what it is waiting for and for how long', async () => {
+  const seen = []
+  const api = fakeApi({ end: [conflict('speech-session-active'), conflict('speech-session-active'), completed(1)] })
+  const { controller, clients } = build({ api, sessionWaitMs: 1000 })
+  controller.subscribe((state) => state.phase === 'ending' && seen.push(state.message))
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  await controller.stop()
+  assert.equal(seen[0], 'Saving the meeting…')
+  assert.ok(seen.some((m) => /recording is still closing.*Waiting for it… \(0 s\)/.test(m)), seen.join(' | '))
+})
+
+test('after the longest wait it stops, names the cause, keeps the meeting open and offers Try again', async () => {
+  const { controller, clients, api, sleeps, storage } = build({ sessionWaitMs: 100, api: fakeApi({ end: [conflict('speech-session-active')] }) })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  await controller.stop()
+  assert.deepEqual(sleeps, [10, 20, 30, 30, 30], 'planned waiting reached the limit, so it stopped')
+  assert.equal(api.calls.end.length, 6)
+  const state = controller.getState()
+  assert.equal(state.phase, 'problem')
+  assert.equal(state.open, true)
+  assert.equal(state.canEnd, true)
+  assert.match(state.message, /has not finished closing, so the meeting is still open/)
+  assert.equal(storage.read().closing, true, 'remembered, so a reload carries on instead of leaving it LIVE')
+})
+
+test('Try again after the limit works once the recording has closed', async () => {
+  const refusals = Array.from({ length: 3 }, () => conflict('speech-session-active'))
+  const { controller, clients, api } = build({ sessionWaitMs: 30, api: fakeApi({ end: [...refusals, completed(2)] }) })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  await controller.stop()
+  assert.equal(controller.getState().phase, 'problem')
+  assert.equal(api.calls.end.length, 3, 'waited 10 + 20 ms, reached the limit of 30, stopped')
+  await controller.finish()
+  assert.equal(controller.getState().phase, 'done')
+  assert.equal(api.calls.end.length, 4)
+})
+
+test('Ending after a lost connection waits for the recording to finish stopping before asking the server', async () => {
+  const stopGate = gate()
+  const { controller, clients, api } = build({ api: fakeApi({ end: [completed(0)] }) })
+  await controller.start({ code: 'code' })
+  const live = clients.made[0]
+  live.whileStopping = () => stopGate.promise // the recording takes a while to shut down
+  live.emit.ready()
+  live.emit.error(new Error('Live speech connection closed unexpectedly'))
+  assert.equal(controller.getState().phase, 'problem')
+  assert.equal(controller.getState().canEnd, true)
+
+  const ending = controller.finish()
+  await tick()
+  assert.equal(api.calls.end.length, 0, 'the server is not asked while the recording is still closing')
+  assert.equal(controller.getState().phase, 'ending')
+  assert.match(controller.getState().message, /Waiting for the recording to finish closing/)
+
+  stopGate.open()
+  await ending
+  assert.equal(live.stopCalls, 1, 'the recording was stopped once, by the lost connection, and not again')
+  assert.equal(api.calls.end.length, 1)
+  assert.equal(controller.getState().phase, 'done')
+})
+
+test('lines the recording saves while it shuts down after a lost connection are still shown and counted', async () => {
+  const stopGate = gate()
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(1)] }) })
+  await controller.start({ code: 'code' })
+  const live = clients.made[0]
+  live.whileStopping = () => stopGate.promise
+  live.emit.ready()
+  live.emit.error(new Error('Live speech connection closed unexpectedly'))
+  live.emit.final(seg(1, 'the last words'), 'INSERTED')
+  assert.deepEqual(controller.getState().lines.map((line) => line.text), ['the last words'])
+  assert.equal(controller.getState().counts.saved, 1)
+  stopGate.open()
+  await controller.finish()
+})
+
+test('the person asking to end the meeting is remembered at once, and forgotten once it has ended', async () => {
+  const { controller, clients, storage } = build({ api: fakeApi({ end: [new MeetingApiError('boom', { status: 500, code: 'server-error' }), completed(1)] }) })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  assert.equal(storage.read().closing, undefined, 'recording is not an ask to end')
+  await controller.stop()
+  assert.equal(controller.getState().phase, 'problem')
+  assert.equal(storage.read().closing, true)
+  await controller.finish()
+  assert.equal(storage.read(), null)
+})
+
+test('a page reloaded while a meeting was still being ended carries on ending it, with no second click', async () => {
+  const storage = createMemoryMeetingStorage()
+  storage.write({ meetingId: MEETING, ticketToken: 't.sig', expiresAt: new Date(NOW + 3600_000).toISOString(), startedAt: new Date(NOW).toISOString(), closing: true })
+  const { controller, api, phases } = build({ storage, api: fakeApi({ end: [conflict('speech-session-active'), completed(3)] }), sessionWaitMs: 1000 })
+  controller.restore()
+  assert.equal(controller.getState().phase, 'unfinished', 'the panel can open on it first')
+  assert.match(controller.getState().message, /still being saved/)
+  assert.equal(controller.getState().canEnd, false)
+  await tick()
+  assert.equal(api.calls.end.length, 2)
+  assert.equal(controller.getState().phase, 'done')
+  assert.equal(storage.read(), null)
+  assert.deepEqual(phases.filter((phase) => phase !== 'idle'), ['unfinished', 'ending', 'done'])
+})
+
+test('a meeting left open without asking to end it is not ended by a reload', async () => {
+  const storage = createMemoryMeetingStorage()
+  storage.write({ meetingId: MEETING, ticketToken: 't.sig', expiresAt: new Date(NOW + 3600_000).toISOString(), startedAt: new Date(NOW).toISOString() })
+  const { controller, api } = build({ storage })
+  controller.restore()
+  await tick()
+  assert.equal(api.calls.end.length, 0)
+  assert.equal(controller.getState().phase, 'unfinished')
+  assert.equal(controller.getState().canEnd, true)
+})
+
+test('a long wait for the session does not use up the retries for lines that are still arriving', async () => {
+  const end = [
+    ...Array.from({ length: 5 }, () => conflict('speech-session-active')),
+    conflict('transcript-incomplete', { missingSegments: 1 }),
+    conflict('transcript-incomplete', { missingSegments: 1 }),
+    completed(3)
+  ]
+  const { controller, clients, api } = build({ sessionWaitMs: 1000, api: fakeApi({ end }) })
+  await controller.start({ code: 'code' })
+  clients.made[0].emit.ready()
+  await controller.stop()
+  assert.equal(api.calls.end.length, 8)
+  assert.equal(controller.getState().phase, 'done')
+})
+
+test('Stop shuts the recording down before the server is asked to end the meeting', async () => {
+  const order = []
+  const api = fakeApi({ end: [completed(1)] })
+  const realEnd = api.end
+  api.end = async (args) => {
+    order.push('end')
+    return realEnd(args)
+  }
+  const { controller, clients } = build({ api })
+  await controller.start({ code: 'code' })
+  const live = clients.made[0]
+  live.whileStopping = async () => {
+    await tick()
+    order.push('stopped')
+  }
+  live.emit.ready()
+  await controller.stop()
+  assert.deepEqual(order, ['stopped', 'end'])
+})
+
+test('a recording that never says it has stopped does not hold up ending the meeting for ever', async () => {
+  const { controller, clients, api } = build({ shutdownWaitMs: 20, api: fakeApi({ end: [completed(0)] }) })
+  await controller.start({ code: 'code' })
+  const live = clients.made[0]
+  live.whileStopping = () => new Promise(() => {}) // never settles
+  live.emit.ready()
+  live.emit.error(new Error('Live speech connection closed unexpectedly'))
+  await controller.finish()
+  assert.equal(api.calls.end.length, 1, 'it asked the server after the ceiling, and the server decides')
+  assert.equal(controller.getState().phase, 'done')
 })

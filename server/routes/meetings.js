@@ -57,7 +57,7 @@ function titleFrom(body) {
   return trimmed || null
 }
 
-export function createMeetingsRouter({ meetingService, auth, intelligenceService = null, liveIntelligence = null }) {
+export function createMeetingsRouter({ meetingService, auth, intelligenceService = null, liveIntelligence = null, closeLiveSpeech = () => 0 }) {
   if (!meetingService || !auth) throw new Error('meetingService and auth are required')
   const router = Router()
 
@@ -160,7 +160,16 @@ export function createMeetingsRouter({ meetingService, auth, intelligenceService
   // (`transcript-incomplete`) or a speech session that produced transcript is still open (`speech-session-active`).
   // The ticket holder may end its own meeting (the browser that launched it); no other lifecycle step.
   router.post('/:meetingId/end', auth.requireMeetingWriter(), (req, res) => {
-    res.json(meetingService.endMeeting(meetingIdFrom(req)))
+    const meetingId = meetingIdFrom(req)
+    try {
+      res.json(meetingService.endMeeting(meetingId))
+    } catch (err) {
+      // Ending was asked for while a recording is still open: ask that recording to wrap up now. Its session then
+      // closes within moments instead of after the speech service's idle timeout, so the caller's retry succeeds.
+      // The answer is still the 409: finishing the session takes a moment, and the caller already waits and retries.
+      if (err?.code === 'speech-session-active') closeLiveSpeech(meetingId)
+      throw err
+    }
   })
 
   router.post('/:meetingId/cancel', auth.requireAdmin(), (req, res) => {
