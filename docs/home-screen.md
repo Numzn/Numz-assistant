@@ -1,8 +1,10 @@
 # Home screen (NUMZ Presence)
 
-One static page (`index.html` + `style.css` + `src/main.js`, vanilla ES modules, no framework). There is no router and
-no other screen: Home is the only one. It shows a header (NUMZ, New chat, Meeting, Settings), "What can I help with?",
-the current conversation, and a composer fixed at the bottom. No dashboard, recent list or transcript preview.
+One static page (`index.html` + `style.css` + `src/main.js`, vanilla ES modules, no framework). There is no router:
+Home is the app, and the saved-conversations list has its own page (`history.html`). Home has three parts side by side:
+a **sidebar** (brand, New chat, recent conversations), the **workspace** (header with the breadcrumb, Meeting and
+Settings; the greeting or the conversation; the composer) and the **meeting panel**, docked on the right while a
+meeting is open. The look is described under "Look and layout" below.
 
 ## How the pieces fit
 
@@ -15,8 +17,50 @@ the current conversation, and a composer fixed at the bottom. No dashboard, rece
 | Voice mode | `main.js` + `voiceOrchestrator` | Enter from the composer's microphone; the orb, one status word, Stop and End. `startConversation()` returns `{ ok }` or `{ ok:false, reason }`. `interrupt()` stops speech and the stream. |
 | Orb | `src/animation/animator.js`, `core/core.js` | Reads the real assistant state machine; while LISTENING also the real microphone level (`voiceInputLocal.getInputLevel`). Drawn only in voice mode. |
 | Meeting commands | `src/interfaces/commands/meetingCommands.js` | One router for typed and spoken input. |
+| Sidebar and header chrome | `src/interfaces/layout/workspace.js` | Recent conversations (a DOM-free list over `historyApi`, opened with the same `chat.open()` as `?conversation=`), the drawer the sidebar becomes on small screens, the online dot, and the model label. |
+| Meeting panel | `src/interfaces/meeting/meetingPanel.js` | A view over `meetingController`: recording state, timer, transcript lines, and the summary card from the server's intelligence state. |
+
+## Look and layout
+
+Warm charcoal surfaces, cream text, brass accents, coral for recording, sage for success. Everything is a token at the
+top of `style.css` (`--bg`, `--surface*`, `--accent`, `--danger`, `--ok`, `--font*`); nothing below hard-codes a colour.
+Fonts are self-hosted Latin subsets (`src/assets/fonts/README.md`): Inter for the interface, Instrument Serif (italic)
+for the greeting, JetBrains Mono for timers, timestamps, the model label and code. They load on use with
+`font-display: swap`, so text shows at once in the system font.
+
+| Width | Layout |
+|---|---|
+| over 1100 px | sidebar 272 px, workspace, meeting panel 360 px docked on the right (the conversation narrows) |
+| 901 to 1100 px | sidebar stays; the meeting panel (340 px) lies over the right edge |
+| 900 px and under | the sidebar is a drawer opened from the header (scrim, Escape and a pick all close it); the panel is full width |
+| 600 px and under | one column of quick actions, no model label, compact paddings |
+
+Voice mode hides the sidebar, conversation and composer; the orb's backdrop is tuned (`settings.colors.background`) to
+render exactly the page colour, so the screen has no seam.
+
+Contrast: the reference palette's muted text (`#81796f`) is 4.3:1 on the page and 3.7:1 on raised surfaces. The faint
+text token here is `#968e84`, which is 4.97:1 on raised surfaces and higher elsewhere (WCAG AA is 4.5:1).
 
 ## What is real and what is not
+
+- **No profile, user name, account switching or sign-out menu.** The app has one shared access code, not accounts, so the
+  greeting is time-of-day generic ("Good evening."). `createChatView({ userName })` takes a name for when accounts exist.
+  The sign-out equivalent is "Lock the assistant" in Settings, shown only when a code is set.
+- **The model label** beside the composer shows what `/api/v1/health` reports (`aiModel`) and only when `aiConfigured`.
+- **Quick actions** put their words in the composer; nothing is sent until you send it. "Summarize meeting" uses the
+  real command "Show me the notes so far".
+- **The waveform and the recording dot** follow the meeting controller: they appear only while recording, and the bars
+  move only while a capture source reports sound (`sources[].state === "active"`, the same state the "sound heard" chip
+  uses); otherwise they sit low and dim. The timer counts from the meeting's real start (`startedAt`).
+- **Transcript lines have no speaker names** (the live transcript carries none), so there is no active-speaker
+  highlight. The line being recognised right now is highlighted, and each saved line shows its time and whether the
+  server stored it.
+- **The summary card** renders the server's findings with their status labels. Action items show the owner and the due
+  date as spoken, or "owner not stated" and "no deadline stated". There are **no checkboxes**: completion is not stored
+  anywhere, and a control that does nothing would claim otherwise.
+- Replies to meeting commands are drawn as a card labelled "Meeting"; other replies are ordinary messages.
+- The orb keeps its steel-blue colours (see `settings.assistantVisual`); only its backdrop matches the new page.
+
 
 - The orb follows the **real state machine**. While listening it also follows the **real microphone level**. While the
   assistant speaks it follows the state only: browser speech synthesis exposes no playback level, so none is shown.
@@ -65,10 +109,11 @@ session re-sends its whole history to the model on every turn, so an attached fi
 ## Conversation history
 
 Conversations are saved in the existing SQLite database (migration 4: `assistant_conversations`,
-`assistant_messages`) as plain text, and **are kept until deleted**. Home shows none of them; the History screen
-(`/history.html`, linked from Settings when history is on) lists them, reopens one (`/?conversation=<id>`; the
-assistant continues with its context, even after a server restart), and deletes one (a second click confirms) or all
-(an explicit confirmation naming the count).
+`assistant_messages`) as plain text, and **are kept until deleted**. The sidebar lists the 15 most recent (and opens
+one in place, with the same `chat.open()`); the History screen (`/history.html`, linked from the sidebar when history is
+on) lists them all, reopens one (`/?conversation=<id>`; the assistant continues with its context, even after a server
+restart), and deletes one (a second click confirms) or all (an explicit confirmation naming the count). With history
+off, the sidebar's list and the link are hidden.
 
 - A conversation is created by its first message; sessions that never receive one (a page load, New chat) are not stored.
 - A saving failure is logged and never breaks a chat.
@@ -105,7 +150,8 @@ it can read every saved conversation.
 4. Open a real meeting (with the launch code), type "stop meeting", answer "yes", and read the result: it must be the
    controller's message (verified, or not verified), never a bare "saved".
 5. Turn on "reduce motion" in the operating system: the orb must not move.
-6. Look at a phone-width window and at keyboard-only navigation (Tab order, visible focus rings).
+6. Look at a phone-width window (the drawer, the full-width meeting panel) and at keyboard-only navigation (Tab order,
+   visible focus rings, Escape closing the drawer).
 7. With a code set: the card appears on a fresh browser, a wrong code is refused, the right one loads the app, history
    needs it too, and Settings > Lock signs out.
 8. Attach a real text file (and try a PDF and an image: both must be refused with a reason).
