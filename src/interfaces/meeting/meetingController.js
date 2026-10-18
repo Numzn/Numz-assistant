@@ -52,6 +52,7 @@ function emptyState() {
     open: false, // a meeting exists on the server that this page has not finished
     meetingId: null,
     title: '',
+    startedAt: null, // when this meeting began (ISO time), for the timer in the panel
     partial: '',
     lines: [], // { key, text, start, end, persisted } (the newest MAX_LINES)
     counts: { saved: 0, waiting: 0, notSaved: 0 },
@@ -407,6 +408,7 @@ export function createMeetingController({
         open: true,
         meetingId: saved.meetingId,
         title: saved.title ?? '',
+        startedAt: saved.startedAt ?? null,
         message: 'An earlier meeting was not finished. Finish it to save it as complete.',
         tone: 'warn',
         canEnd: true,
@@ -478,7 +480,7 @@ export function createMeetingController({
         startedAt: new Date(now()).toISOString()
       }
       storage.write(session)
-      set({ open: true, meetingId: session.meetingId })
+      set({ open: true, meetingId: session.meetingId, startedAt: session.startedAt })
       intelligence.track({ meetingId: session.meetingId, ticketToken: session.ticketToken })
       // A correct code makes the server set a launch session; learn that from the server, not by assuming it.
       // Alongside connecting, so it costs the recording nothing, and settled by the time start() returns.

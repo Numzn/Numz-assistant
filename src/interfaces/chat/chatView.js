@@ -9,7 +9,17 @@ import { renderMarkdown } from './markdownView.js'
 const NEAR_BOTTOM_PX = 96
 const NOTICE_MS = 9000
 
-export function createChatView({ chat, doc = document, onVoiceMode = null, autofocus = true } = {}) {
+/** "Good evening." or, when the app knows who is signed in, "Good evening, Amina." */
+export function greetingFor(date = new Date(), name = '') {
+  const hour = date.getHours()
+  const word =
+    hour >= 5 && hour < 12 ? 'Good morning' : hour >= 12 && hour < 17 ? 'Good afternoon' : hour >= 17 && hour < 22 ? 'Good evening' : 'Hello'
+  const who = String(name ?? '').trim()
+  return who ? `${word}, ${who}.` : `${word}.`
+}
+
+// userName: the signed-in user's name, once the app has accounts. Nothing passes it today, so the greeting is generic.
+export function createChatView({ chat, doc = document, onVoiceMode = null, autofocus = true, userName = '' } = {}) {
   const $ = (id) => {
     const element = doc.getElementById(id)
     if (!element) throw new Error(`Chat view: missing #${id}`)
@@ -98,6 +108,18 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
     li.className = 'msg'
     li.dataset.id = message.id
     li.dataset.role = message.role
+    if (message.role === 'assistant') {
+      const who = doc.createElement('div')
+      who.className = 'who'
+      const avatar = doc.createElement('span')
+      avatar.className = 'avatar'
+      avatar.setAttribute('aria-hidden', 'true')
+      avatar.textContent = 'N'
+      const name = doc.createElement('span')
+      name.textContent = 'NUMZ'
+      who.append(avatar, name)
+      li.append(who)
+    }
     return li
   }
 
@@ -127,6 +149,20 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
       li.textContent = message.text
       return
     }
+
+    // Only replies to meeting commands (notes, decisions, actions, the final summary) carry a tone.
+    const who = li.querySelector('.who')
+    const kicker = who.querySelector('.kicker')
+    if (message.tone && !kicker) {
+      const label = doc.createElement('span')
+      label.className = 'kicker'
+      label.textContent = 'Meeting'
+      who.append(label)
+    } else if (!message.tone) {
+      kicker?.remove()
+    }
+    if (message.tone) li.dataset.card = 'meeting'
+    else delete li.dataset.card
 
     const bodyEl = ensure(li, 'body')
     if (message.status === 'thinking') {
@@ -272,6 +308,17 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
     form.classList.remove('dragging')
     addFiles(event.dataTransfer.files)
   })
+  // The starting points put their words in the composer; nothing is sent until you send it.
+  doc.getElementById('quickActions')?.addEventListener('click', (event) => {
+    const prompt = event.target.closest?.('[data-prompt]')?.dataset.prompt
+    if (!prompt) return
+    clearNotice()
+    input.value = prompt
+    autosize()
+    input.focus()
+  })
+  const welcome = doc.getElementById('welcome')
+  if (welcome) welcome.textContent = greetingFor(new Date(), userName)
   stopButton.addEventListener('click', () => chat.cancel())
   newChatButton.addEventListener('click', async () => {
     clearNotice()

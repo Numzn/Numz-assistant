@@ -63,6 +63,15 @@ function chipFor(state) {
   }
 }
 
+/** 65000 -> "01:05", 3725000 -> "1:02:05". Not a number, or negative: "00:00". */
+export function formatElapsed(ms) {
+  const total = Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : 0
+  const pad = (n) => String(n).padStart(2, '0')
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  return `${h ? `${h}:${pad(m)}` : pad(m)}:${pad(total % 60)}`
+}
+
 function lineKind(persisted) {
   if (persisted === 'INSERTED' || persisted === 'ALREADY_EXISTS') return 'saved'
   return persisted === 'FAILED' ? 'waiting' : 'notSaved'
@@ -86,6 +95,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   const button = $('meetingButton')
   const closeButton = $('meetingClose')
   const heading = $('meetingHeading')
+  const timer = $('meetingTimer')
   const chip = $('meetingChip')
   const form = $('meetingForm')
   const codeInput = $('meetingCode')
@@ -123,6 +133,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
   let intelSignature = ''
   let previousPhase = 'idle'
   let lastActive = false
+  let timerId = null
 
   forgetOldRememberedCode()
 
@@ -204,15 +215,21 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     const meta = doc.createElement('span')
     meta.className = 'meta'
     const bits = []
-    if (owner && item.kind === 'actionItem') {
-      bits.push(item.owner?.name ? `owner: ${item.owner.name}` : 'owner not stated')
-      bits.push(item.due ? `due: ${item.due}` : 'no deadline stated')
-    }
+    const isAction = owner && item.kind === 'actionItem'
+    if (isAction) bits.push(item.owner?.name ? `owner: ${item.owner.name}` : 'owner not stated')
     bits.push(findingLabel(item, settled))
     bits.push(`at ${timestamp(item.source?.start)}`)
     meta.textContent = bits.join(' · ')
     li.title = (item.evidence ?? []).map((e) => `"${e.text}"`).join(' ')
-    li.append(text, meta)
+    li.append(text)
+    if (isAction) {
+      // The due date as spoken, or the plain fact that none was stated.
+      const due = doc.createElement('span')
+      due.className = 'due'
+      due.textContent = item.due ? `due ${item.due}` : 'no deadline stated'
+      li.append(due)
+    }
+    li.append(meta)
     return li
   }
 
@@ -272,13 +289,16 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     const kind = lineKind(line.persisted)
     const item = doc.createElement('li')
     item.dataset.state = kind
+    const time = doc.createElement('span')
+    time.className = 'time'
+    time.textContent = Number.isFinite(line.start) ? timestamp(line.start) : ''
     const text = doc.createElement('span')
     text.textContent = line.text
     const label = doc.createElement('span')
     label.className = 'line-state'
     label.textContent = LINE_LABELS[kind][0]
     label.title = `${LINE_LABELS[kind][1]} (${line.persisted})`
-    item.append(text, label)
+    item.append(time, text, label)
     return item
   }
 
@@ -303,11 +323,29 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     if (nearBottom) list.scrollTop = list.scrollHeight
   }
 
+  // The timer counts from when this meeting began, only while it is recording or connecting.
+  function renderTimer(state) {
+    const running = (state.phase === 'live' || state.phase === 'connecting') && Boolean(state.startedAt)
+    timer.hidden = !running
+    if (!running) {
+      clearInterval(timerId)
+      timerId = null
+      return
+    }
+    const tick = () => (timer.textContent = formatElapsed(Date.now() - Date.parse(controller.getState().startedAt)))
+    tick()
+    if (timerId === null) timerId = setInterval(tick, 1000)
+  }
+
   function render(state) {
     const [chipText, chipTone] = chipFor(state)
     chip.textContent = chipText
     chip.dataset.tone = chipTone
     heading.textContent = state.title || 'Meeting'
+    // CSS reads these: coral while recording, and bars that move only while a source is really delivering sound.
+    panel.dataset.phase = state.phase
+    panel.dataset.signal = String(state.phase === 'live' && state.sources.some((source) => source.state === 'active'))
+    renderTimer(state)
 
     const busy = ['launching', 'connecting', 'stopping', 'ending'].includes(state.phase)
     const showForm = state.phase === 'idle' || state.phase === 'launching'
