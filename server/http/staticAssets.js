@@ -114,8 +114,13 @@ export function createStaticAssets({ dir }) {
     return files(req, res, next)
   }
 
-  /** For "any other page path": the app itself (index.html), compressed and revalidated like the rest. */
+  /**
+   * For "any other page path": the app itself (index.html), compressed and revalidated like the rest.
+   * Not for /assets/: a hashed file that is not there is a 404. Answering 200 with the page instead would hand a
+   * stale browser tab (one opened before a deploy, asking for last week's chunk) HTML where it expects script.
+   */
   staticAssets.sendIndex = (req, res, next) => {
+    if (IMMUTABLE_PREFIXES.some((prefix) => req.path.startsWith(prefix))) return next()
     req.url = '/index.html'
     return staticAssets(req, res, next)
   }

@@ -129,6 +129,15 @@ test('any other page path gets the app, compressed and revalidated; API paths ar
   })
 })
 
+test('a hashed file that does not exist is a 404, not the app: a stale tab must not get HTML where it expects script', async () => {
+  await withServer(async ({ get }) => {
+    const res = await get('/assets/createOrb-OLDHASH1.js', { headers: { 'Accept-Encoding': 'br' } })
+    assert.equal(res.status, 404)
+    assert.doesNotMatch(String(res.headers['content-type']), /javascript/)
+    assert.doesNotMatch(res.body.toString(), /type="module"|hello/, 'not the app page (Express\'s own 404 text is fine)')
+  })
+})
+
 test('files that are not compressible are served as they are and revalidated', async () => {
   await withServer(async ({ get }) => {
     const res = await get('/porcupine/model.pv', { headers: { 'Accept-Encoding': 'br, gzip' } })
