@@ -204,6 +204,7 @@ test('the happy path: launch, connect with the ticket, show saved lines, stop, e
   )
   assert.equal(controller.getState().phase, 'connecting')
   assert.equal(controller.getState().open, true)
+  assert.equal(controller.getState().startedAt, new Date(NOW).toISOString(), 'the panel timer counts from here')
 
   const live = clients.made[0]
   assert.equal(live.options.meetingId, MEETING)
@@ -480,6 +481,7 @@ test('a meeting left open by an earlier page load can be finished', async () => 
   assert.equal(state.phase, 'unfinished')
   assert.equal(state.open, true)
   assert.equal(state.title, 'Before the reload')
+  assert.equal(state.startedAt, storage.read().startedAt, 'the timer keeps counting from when the meeting began')
   assert.equal(state.canEnd, true)
 
   await controller.start({ code: 'code' })

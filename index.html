@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#212121" />
+    <meta name="theme-color" content="#131215" />
     <title>NUMZ</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
@@ -13,93 +13,194 @@
     <canvas id="canvas" aria-hidden="true"></canvas>
 
     <div id="app">
-      <header id="appHeader">
-        <span id="brand">NUMZ</span>
-        <div id="headerActions">
-          <button id="newChatButton" type="button" class="ghost" aria-label="New conversation" title="New conversation">
-            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
-            <span>New chat</span>
+      <aside id="sidebar" aria-label="Navigation">
+        <div id="sidebarHead">
+          <span id="brand">NUMZ</span>
+          <button id="sidebarClose" type="button" class="ghost icon" aria-label="Close navigation">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="m5 5 10 10M15 5 5 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
           </button>
-          <button
-            id="meetingButton"
-            type="button"
-            class="ghost"
-            aria-label="Meeting"
-            aria-expanded="false"
-            aria-controls="meetingPanel"
-            title="Record and save a meeting"
-          >
-            Meeting
+        </div>
+        <button id="newChatButton" type="button" class="nav-btn primary" aria-label="New conversation" title="New conversation">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+          <span>New chat</span>
+        </button>
+        <nav id="recent" aria-label="Recent conversations">
+          <p id="recentLabel">Recent</p>
+          <ul id="recentList"></ul>
+          <p id="recentStatus" role="status"></p>
+          <a id="historyLink" class="ghost" href="/history.html" hidden>All conversations</a>
+        </nav>
+      </aside>
+      <div id="sidebarScrim" aria-hidden="true"></div>
+
+      <div id="workspace">
+        <header id="appHeader">
+          <button id="sidebarToggle" type="button" class="ghost icon" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M3 6h14M3 10h14M3 14h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
           </button>
-          <div id="settingsWrap">
+          <div id="breadcrumb">
+            <span class="crumb-muted">Workspace</span><span class="crumb-muted">/</span><span>NUMZ Assistant</span>
+            <span id="onlineDot" data-online="true" role="img" aria-label="Online"></span>
+          </div>
+          <div id="headerActions">
             <button
-              id="micSettingsButton"
+              id="meetingButton"
               type="button"
               class="ghost"
-              aria-label="Settings"
+              aria-label="Meeting"
               aria-expanded="false"
-              aria-controls="micSettingsPanel"
-              title="Settings"
+              aria-controls="meetingPanel"
+              title="Record and save a meeting"
             >
-              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M3 6h14M3 14h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /><circle cx="7" cy="6" r="2" fill="#212121" stroke="currentColor" stroke-width="1.6" /><circle cx="13" cy="14" r="2" fill="#212121" stroke="currentColor" stroke-width="1.6" /></svg>
-              <span class="sr-only">Settings</span>
+              <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><rect x="3" y="5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" /><path d="m13 8 4-2v8l-4-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" /></svg>
+              <span>Meeting</span>
             </button>
-            <div id="micSettingsPanel" role="group" aria-label="Voice settings" hidden>
-              <label for="micDeviceSelect">Microphone</label>
-              <div id="micDeviceControls">
-                <select id="micDeviceSelect"></select>
-                <button id="micRefreshButton" type="button">Refresh</button>
-                <button id="micTestButton" type="button">Test</button>
-              </div>
-              <div id="micDeviceHint"></div>
-              <a id="historyLink" href="/history.html" hidden>Conversation history</a>
-              <button id="lockButton" type="button" class="link-quiet" hidden>Lock the assistant</button>
-              <div id="wakeRow">
-                <span>Wake word</span>
-                <button id="wakeButton" type="button" aria-pressed="false" aria-label="Toggle wake word mode" title="Toggle wake word mode">Wake</button>
+            <div id="settingsWrap">
+              <button
+                id="micSettingsButton"
+                type="button"
+                class="ghost"
+                aria-label="Settings"
+                aria-expanded="false"
+                aria-controls="micSettingsPanel"
+                title="Settings"
+              >
+                <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M3 6h14M3 14h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /><circle cx="7" cy="6" r="2" fill="#212121" stroke="currentColor" stroke-width="1.6" /><circle cx="13" cy="14" r="2" fill="#212121" stroke="currentColor" stroke-width="1.6" /></svg>
+                <span class="sr-only">Settings</span>
+              </button>
+              <div id="micSettingsPanel" role="group" aria-label="Voice settings" hidden>
+                <label for="micDeviceSelect">Microphone</label>
+                <div id="micDeviceControls">
+                  <select id="micDeviceSelect"></select>
+                  <button id="micRefreshButton" type="button">Refresh</button>
+                  <button id="micTestButton" type="button">Test</button>
+                </div>
+                <div id="micDeviceHint"></div>
+                <button id="lockButton" type="button" class="link-quiet" hidden>Lock the assistant</button>
+                <div id="wakeRow">
+                  <span>Wake word</span>
+                  <button id="wakeButton" type="button" aria-pressed="false" aria-label="Toggle wake word mode" title="Toggle wake word mode">Wake</button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main id="chatMain">
-        <h1 id="welcome">What can I help with?</h1>
-        <ol id="thread" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation"></ol>
-      </main>
-
-      <div id="composerWrap">
-        <p id="composerNotice" role="status" aria-live="polite" hidden></p>
-        <form id="composer" autocomplete="off">
-          <div id="composerChips" aria-label="Attached files" hidden></div>
-          <button id="attachButton" type="button" class="round" aria-label="Attach a text file" title="Attach a text file (text only)">
-            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 4.5v11M4.5 10h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
-          </button>
-          <input id="attachInput" type="file" multiple hidden />
-          <label for="composerInput" class="sr-only">Message NUMZ</label>
-          <textarea
-            id="composerInput"
-            rows="1"
-            maxlength="4000"
-            placeholder="Message NUMZ"
-            enterkeyhint="send"
-            aria-keyshortcuts="Enter"
-            spellcheck="true"
-          ></textarea>
-          <div id="composerActions">
-            <button id="voiceModeButton" type="button" class="round" aria-label="Start voice mode" title="Start voice mode" hidden>
-              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 3a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0v-4A2.5 2.5 0 0 0 10 3Zm-5 6.5a5 5 0 0 0 10 0M10 14.5V17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-            <button id="sendButton" type="submit" class="round primary" aria-label="Send message" title="Send (Enter)" disabled>
-              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 16V4m0 0-5 5m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-            <button id="stopButton" type="button" class="round primary" aria-label="Stop" title="Stop" hidden>
-              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5" fill="currentColor" /></svg>
-            </button>
+        <main id="chatMain">
+          <div id="welcomeBlock">
+            <h1 id="welcome">Hello.</h1>
+            <p id="welcomeSub">What can I help with today?</p>
+            <ul id="quickActions" aria-label="Ways to start">
+            <li>
+              <button type="button" class="quick" data-prompt="Show me the notes so far">
+                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false"><path d="M5 3.5h7l3 3V16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M12 3.5v3h3M7 10h6M7 13h6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+                <span>Summarize meeting</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="quick" data-prompt="Write an email">
+                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false"><rect x="2.5" y="4" width="15" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="m3.5 5 6.5 5 6.5-5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" /></svg>
+                <span>Write an email</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="quick" data-prompt="Explain this code">
+                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false"><path d="m7 5-4 5 4 5M13 5l4 5-4 5M11.5 3 8.5 17" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                <span>Explain code</span>
+              </button>
+            </li>
+            <li>
+              <button type="button" class="quick" data-prompt="Help me organize my notes">
+                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 3.5h12v13H4zM7 7h6M7 10h6M7 13h4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+                <span>Organize notes</span>
+              </button>
+            </li>
+            </ul>
           </div>
-        </form>
-        <p id="composerHint">Enter to send &middot; Shift+Enter for a new line</p>
+          <ol id="thread" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation"></ol>
+        </main>
+
+        <div id="composerWrap">
+          <p id="composerNotice" role="status" aria-live="polite" hidden></p>
+          <form id="composer" autocomplete="off">
+            <div id="composerChips" aria-label="Attached files" hidden></div>
+            <button id="attachButton" type="button" class="round" aria-label="Attach a text file" title="Attach a text file (text only)">
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 4.5v11M4.5 10h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+            </button>
+            <input id="attachInput" type="file" multiple hidden />
+            <label for="composerInput" class="sr-only">Message NUMZ</label>
+            <textarea
+              id="composerInput"
+              rows="1"
+              maxlength="4000"
+              placeholder="Message NUMZ"
+              enterkeyhint="send"
+              aria-keyshortcuts="Enter"
+              spellcheck="true"
+            ></textarea>
+            <div id="composerActions">
+              <span id="modelPill" title="The model answering your messages" hidden></span>
+              <button id="voiceModeButton" type="button" class="round" aria-label="Start voice mode" title="Start voice mode" hidden>
+                <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 3a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0v-4A2.5 2.5 0 0 0 10 3Zm-5 6.5a5 5 0 0 0 10 0M10 14.5V17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+              <button id="sendButton" type="submit" class="round primary" aria-label="Send message" title="Send (Enter)" disabled>
+                <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path d="M10 16V4m0 0-5 5m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+              <button id="stopButton" type="button" class="round primary" aria-label="Stop" title="Stop" hidden>
+                <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5" fill="currentColor" /></svg>
+              </button>
+            </div>
+          </form>
+          <p id="composerHint">Enter to send &middot; Shift+Enter for a new line</p>
+        </div>
       </div>
+
+      <section id="meetingPanel" aria-label="Meeting" hidden>
+        <div id="meetingHead">
+          <span id="meetingWave" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span id="meetingHeading">Meeting</span>
+        <span id="meetingTimer" hidden>00:00</span>
+          <span id="meetingChip" data-tone="info">Not started</span>
+          <button id="meetingClose" type="button" aria-label="Close the meeting panel">&times;</button>
+        </div>
+        <form id="meetingForm" autocomplete="off">
+          <label for="meetingCode">Launch code</label>
+          <input id="meetingCode" name="launch-code" type="password" autocomplete="new-password" spellcheck="false" />
+          <label for="meetingTitleInput">Title <span class="optional">(optional)</span></label>
+          <input id="meetingTitleInput" name="title" type="text" maxlength="120" autocomplete="off" />
+          <label for="meetingSource">Audio source</label>
+          <select id="meetingSource" name="source" aria-describedby="meetingSourceHint">
+            <option value="microphone" selected>Microphone</option>
+            <option value="tab">Shared tab or system audio</option>
+            <option value="both">Microphone and shared tab or system audio</option>
+          </select>
+          <p id="meetingSourceHint" hidden></p>
+          <button id="meetingStart" type="submit">Start meeting</button>
+        </form>
+        <div id="meetingLive" hidden>
+          <ul id="meetingSources" aria-label="Audio sources" aria-live="polite"></ul>
+          <div id="meetingPartial" aria-hidden="true"></div>
+          <ol id="meetingLines" aria-live="polite" aria-relevant="additions"></ol>
+          <div id="meetingCounts"></div>
+          <button id="meetingStop" type="button" data-primary="true">Stop and save</button>
+          <div id="meetingIntel" hidden>
+            <div id="meetingIntelHead"><span class="summary-icon" aria-hidden="true"><svg viewBox="0 0 20 20" width="15" height="15" focusable="false"><path d="M10 2.5 11.7 8.3 17.5 10l-5.8 1.7L10 17.5l-1.7-5.8L2.5 10l5.8-1.7Z" fill="currentColor" /></svg></span><span>Meeting summary</span></div>
+            <p id="meetingIntelStatus" role="status" aria-live="polite"></p>
+            <section id="meetingIntelSummaryBox" hidden>
+              <h3>Summary</h3>
+              <p id="meetingIntelSummary"></p>
+              <p id="meetingIntelCaution" hidden></p>
+            </section>
+            <section data-intel="decisions"><h3>Decisions</h3><ul id="meetingIntelDecisions"></ul></section>
+            <section data-intel="actions"><h3>Action items</h3><ul id="meetingIntelActions"></ul></section>
+            <section data-intel="questions"><h3>Open questions</h3><ul id="meetingIntelQuestions"></ul></section>
+            <section data-intel="notes"><h3>Notes</h3><ul id="meetingIntelNotes"></ul></section>
+            <button id="meetingIntelRefresh" type="button">Update now</button>
+          </div>
+        </div>
+        <p id="meetingMessage" role="status" aria-live="polite" data-tone="info"></p>
+        <div id="meetingActions"></div>
+      </section>
     </div>
 
     <!-- Voice mode: the orb (the canvas behind) plus a status and the controls to stop. -->
@@ -119,50 +220,6 @@
     <button id="micButton" type="button" aria-label="Hold to talk" hidden>Hold to talk</button>
     <div id="voiceTranscript" hidden></div>
     <div id="assistantResponse" hidden></div>
-
-    <section id="meetingPanel" aria-label="Meeting" hidden>
-      <div id="meetingHead">
-        <span id="meetingHeading">Meeting</span>
-        <span id="meetingChip" data-tone="info">Not started</span>
-        <button id="meetingClose" type="button" aria-label="Close the meeting panel">&times;</button>
-      </div>
-      <form id="meetingForm" autocomplete="off">
-        <label for="meetingCode">Launch code</label>
-        <input id="meetingCode" name="launch-code" type="password" autocomplete="new-password" spellcheck="false" />
-        <label for="meetingTitleInput">Title <span class="optional">(optional)</span></label>
-        <input id="meetingTitleInput" name="title" type="text" maxlength="120" autocomplete="off" />
-        <label for="meetingSource">Audio source</label>
-        <select id="meetingSource" name="source" aria-describedby="meetingSourceHint">
-          <option value="microphone" selected>Microphone</option>
-          <option value="tab">Shared tab or system audio</option>
-          <option value="both">Microphone and shared tab or system audio</option>
-        </select>
-        <p id="meetingSourceHint" hidden></p>
-        <button id="meetingStart" type="submit">Start meeting</button>
-      </form>
-      <div id="meetingLive" hidden>
-        <ul id="meetingSources" aria-label="Audio sources" aria-live="polite"></ul>
-        <div id="meetingPartial" aria-hidden="true"></div>
-        <ol id="meetingLines" aria-live="polite" aria-relevant="additions"></ol>
-        <div id="meetingCounts"></div>
-        <button id="meetingStop" type="button" data-primary="true">Stop and save</button>
-        <div id="meetingIntel" hidden>
-          <p id="meetingIntelStatus" role="status" aria-live="polite"></p>
-          <section id="meetingIntelSummaryBox" hidden>
-            <h3>Summary</h3>
-            <p id="meetingIntelSummary"></p>
-            <p id="meetingIntelCaution" hidden></p>
-          </section>
-          <section data-intel="decisions"><h3>Decisions</h3><ul id="meetingIntelDecisions"></ul></section>
-          <section data-intel="actions"><h3>Action items</h3><ul id="meetingIntelActions"></ul></section>
-          <section data-intel="questions"><h3>Open questions</h3><ul id="meetingIntelQuestions"></ul></section>
-          <section data-intel="notes"><h3>Notes</h3><ul id="meetingIntelNotes"></ul></section>
-          <button id="meetingIntelRefresh" type="button">Update now</button>
-        </div>
-      </div>
-      <p id="meetingMessage" role="status" aria-live="polite" data-tone="info"></p>
-      <div id="meetingActions"></div>
-    </section>
 
     <!-- The assistant asks for its access code here when the server requires one. -->
     <section id="accessGate" role="dialog" aria-modal="true" aria-labelledby="accessTitle" hidden>

@@ -21,6 +21,7 @@ import { createChatController } from './interfaces/chat/chatController.js'
 import { createChatView } from './interfaces/chat/chatView.js'
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 import { createHistoryApi } from './interfaces/history/historyApi.js'
+import { createRecentConversations, createSidebar, loadModelLabel, watchOnline } from './interfaces/layout/workspace.js'
 import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
 import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 
@@ -354,7 +355,7 @@ const chat = createChatController({
 })
 chatView = createChatView({ chat, onVoiceMode: () => enterVoiceMode() })
 
-// ---- Saved conversations: reopen one from the history screen, and show its link only when history is on ----
+// ---- Saved conversations: the sidebar's list, and reopening one from the history screen ----
 {
   const historyApi = createHistoryApi()
   const wanted = new URLSearchParams(globalThis.location?.search ?? '').get('conversation')
@@ -376,15 +377,22 @@ chatView = createChatView({ chat, onVoiceMode: () => enterVoiceMode() })
         )
       })
   }
-  const link = document.querySelector('#historyLink')
-  if (link) {
-    historyApi
-      .list({ limit: 1 })
-      .then((result) => {
-        link.hidden = !result?.enabled
-      })
-      .catch(() => {})
+  // The sidebar lists recent conversations from the same API; its answer also decides whether the history link shows.
+  try {
+    const recent = createRecentConversations({ api: historyApi, chat, getActiveId: () => assistantClient.getSessionId?.() ?? null })
+    createSidebar({ recent, onProblem: (text) => chatView?.notify(text) })
+  } catch (err) {
+    // The sidebar must never take the conversation down with it.
+    console.error('[sidebar] could not start', err)
   }
+  watchOnline({ dot: document.querySelector('#onlineDot') })
+  // Show the model only when the server says which one it is using.
+  loadModelLabel().then((model) => {
+    const pill = document.querySelector('#modelPill')
+    if (!model || !pill) return
+    pill.textContent = model
+    pill.hidden = false
+  })
 }
 
 // ---- Voice mode: the orb, a status in words, and a way out ----

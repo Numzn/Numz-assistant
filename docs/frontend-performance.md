@@ -73,6 +73,12 @@ Measured in a real browser (headless Chromium, fake microphone):
 At the 6 KB/s measured on the public route, the first load goes from about 295 s to about 8 s. That is
 arithmetic on one measurement, not a measurement of the new build on that route.
 
+After the UI refresh (same day, `docs/home-screen.md`): the first load of `index.html` is 52.4 KB in Brotli (HTML 2.9,
+script 42.0 and 1.8, stylesheet 5.7). The self-hosted fonts are extra and load on use with `font-display: swap`, so they
+never block the text: Inter 48 KB and the greeting's Instrument Serif 22 KB on every first visit, JetBrains Mono 31 KB
+only once something that uses it (a timer, a timestamp, code, the model label) is on screen. All three are
+content-hashed and cached for a year.
+
 ## Keeping it fast
 
 `npm run build && npm run bundle:report` prints first-load and lazy sizes (raw, gzip, Brotli) per page.

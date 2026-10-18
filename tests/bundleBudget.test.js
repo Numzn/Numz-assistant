@@ -79,7 +79,7 @@ test('every file under /assets/ has a content hash, because the server caches th
   const names = fs.readdirSync(path.join(dist, 'assets'))
   assert.ok(names.length >= 5)
   for (const name of names) {
-    assert.match(name, /-[A-Za-z0-9_-]{8}\.[a-z]+$/, `${name} has no content hash and would be cached as immutable`)
+    assert.match(name, /-[A-Za-z0-9_-]{8}\.[a-z0-9]+$/, `${name} has no content hash and would be cached as immutable`)
   }
 })
 
