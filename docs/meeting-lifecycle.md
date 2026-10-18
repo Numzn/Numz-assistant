@@ -290,7 +290,7 @@ act on it. Stacks are never returned.
 | `POST /:id/ticket` | admin | 201 `{ticket}` | 503 if tickets unconfigured |
 | `POST /:id/start` | admin | 200 meeting (creates no session) | 409 `invalid-meeting-transition` |
 | `POST /:id/pause`, `/resume`, `/recover` | admin | 200 meeting | 409 `invalid-meeting-transition` |
-| `POST /:id/end` | admin, or the meeting's own ticket | 200 COMPLETED + `integrity` | 409 `transcript-incomplete`, 409 `speech-session-active`, 409 `invalid-meeting-transition` |
+| `POST /:id/end` | admin, or the meeting's own ticket | 200 COMPLETED + `integrity` | 409 `transcript-incomplete`, 409 `speech-session-active` (the live connection of that meeting is also asked to wrap up, see "Stop and save"), 409 `invalid-meeting-transition` |
 | `POST /:id/cancel`, `/fail` | admin | 200 meeting; optional body `{ reason }` | 400 `invalid-close-reason`, 409 `invalid-meeting-transition` |
 | `GET /:id/sessions` | admin | 200 list with `committedSegments` and `storedSegments` | |
 | `POST /:id/sessions` | admin or ticket | 201 session | 409 `meeting-not-attachable` |
@@ -326,11 +326,32 @@ The **Meeting** button on the assistant screen opens a panel. The flow, in order
    missing. If every source ends the meeting shows a problem with Reconnect. Audio the connection cannot carry is
    dropped once its backlog passes about a minute and **counted** (`about N s of audio dropped`): the
    transcript has a gap there. With speakers, use headphones when mixing, or the same voices are recorded twice.
-4. **Stop and save.** The page stops the microphone, tells the speech service to stop and **waits until it
-   reports that it has finished** (it may still be decoding queued audio; up to 45 s), then calls
-   `POST /:id/end` with its ticket. The server
-   refuses (409) while the recording is still closing or lines are missing, so the page retries for about
-   20 seconds, then offers **Try again**. The result is shown plainly: *saved and verified*, *ended but not
+4. **Stop and save.** This is one sequence, run by the meeting controller, and each step waits for the one before:
+   1. *The recording shuts down.* The page stops the microphone, tells the speech service to stop and **waits until
+      it reports that it has finished** (it may still be decoding queued audio; up to 45 s, and ending never waits
+      more than 60 s for it). The same shutdown is
+      tracked when the recording is lost instead (a dropped connection), so **End meeting** after a lost connection
+      waits for it too, and the lines it saves while winding down are still shown and counted.
+   2. *The speech session finalizes.* The speech service ends its session on the server before it reports finished.
+   3. *The meeting ends.* The page calls `POST /:id/end` with its ticket. The server refuses (409) while the
+      recording's session is still open (`speech-session-active`) or lines are missing (`transcript-incomplete`);
+      both pass by themselves, so the page **waits and asks again** instead of giving up: up to two minutes for a
+      session that is still closing (backing off to every 5 s, with a message that says what it waits for and for how
+      long), and its own six retries for lines still arriving. After the two minutes it says the meeting is still
+      open, that nothing is lost, and offers **Try again**.
+   4. *Asking to end is remembered.* From the first end attempt the stored meeting carries `closing: true`. A page
+      reloaded or reopened while the meeting is still closing **carries on ending it** without another click; a meeting
+      that was only left open (never ended by the person) is not ended by a reload, as before.
+
+   Why the wait is long: a recording whose connection died without saying so (a dead network, a sleeping laptop) is
+   closed by the speech service only after its 30 s idle timeout. On 2026-10-18 the page gave up after 20 s, the
+   session closed a moment later, and nothing ended the meeting, which stayed LIVE. Now, too, **the server helps**:
+   when `POST /:id/end` is refused with `speech-session-active`, it asks the live-speech relay to close that
+   meeting's connections (`closeMeeting`, which closes the speech service's side at once, whether or not the browser
+   answers). The session then finishes within moments instead of after the idle timeout, and the page's next try goes
+   through. Replayed on a real page, relay and sidecar with a connection that dies without telling the sidecar, the meeting
+   was COMPLETED after 2 s (31 s with the waiting alone, and never before: it stayed LIVE). The answer to that first request is still the 409. Only
+   connections made through the relay (the browser's) are closed this way. The result is shown plainly: *saved and verified*, *ended but not
    verified* (a recording never confirmed its line count), *no speech was transcribed* (a recording that produced
    no lines: a muted microphone, a silent tab), or *nothing was recorded*.
 
