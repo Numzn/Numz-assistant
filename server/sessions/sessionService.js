@@ -1,25 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import { ASSISTANT_STATES, isValidAssistantState } from './assistantStates.js'
 
-export const ASSISTANT_STATES = Object.freeze({
-  IDLE: 'IDLE',
-  LISTENING: 'LISTENING',
-  TRANSCRIBING: 'TRANSCRIBING',
-  PROCESSING: 'PROCESSING',
-  THINKING: 'THINKING',
-  RETRIEVING_MEMORY: 'RETRIEVING_MEMORY',
-  TOOL_EXECUTION: 'TOOL_EXECUTION',
-  GENERATING: 'GENERATING',
-  SPEAKING: 'SPEAKING',
-  INTERRUPTED: 'INTERRUPTED',
-  ERROR_RECOVERY: 'ERROR_RECOVERY',
-  ERROR: 'ERROR'
-})
-
-const VALID_STATES = new Set(Object.values(ASSISTANT_STATES))
-
-export function isValidAssistantState(state) {
-  return VALID_STATES.has(state)
-}
+// The state list is defined once, in assistantStates.js (the browser imports the same file). Re-exported here so
+// the routes and the orchestrator keep importing it from the session service.
+export { ASSISTANT_STATES, isValidAssistantState }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

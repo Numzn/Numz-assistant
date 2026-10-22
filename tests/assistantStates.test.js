@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { dirname, join, relative } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+import * as canonical from '../server/sessions/assistantStates.js'
 import { ASSISTANT_STATES, isValidAssistantState } from '../server/sessions/sessionService.js'
 import { STATE_GROUPS, STATES, createStateMachine } from '../src/assistant/stateMachine.js'
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
  * The browser's state machine and the server's session service both speak the same twelve states. These pin the
@@ -134,4 +140,61 @@ test('a state change reports the new state, the one before, and their groups', (
       ['THINKING', 'SPEAKING', 'RESPONSE', 'RESPONSE']
     ]
   )
+})
+
+// ---- one definition, and what keeps it shareable ---------------------------------------------------------------
+
+test('there is one list: the server and the browser hold the very same object and the very same check', () => {
+  assert.equal(ASSISTANT_STATES, canonical.ASSISTANT_STATES)
+  assert.equal(STATES, canonical.ASSISTANT_STATES)
+  assert.equal(isValidAssistantState, canonical.isValidAssistantState)
+})
+
+test('every state in the list has an interface group and somewhere to go, so a state added there cannot be half-added', () => {
+  const groups = new Set(Object.values(STATE_GROUPS))
+  for (const state of Object.values(canonical.ASSISTANT_STATES)) {
+    const group = createStateMachine(state).getMeta()?.group
+    assert.ok(groups.has(group), `${state} has no interface group`)
+    const exits = Object.values(canonical.ASSISTANT_STATES).filter((to) => to !== state && createStateMachine(state).canTransition(to))
+    assert.ok(exits.length > 0, `${state} has no allowed moves`)
+  }
+})
+
+test('the shared file imports nothing, so it is as valid in the browser bundle as under Node', () => {
+  const source = readFileSync(join(ROOT, 'server/sessions/assistantStates.js'), 'utf8')
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+  assert.doesNotMatch(code, /\bimport\b/, 'no import of any kind (static or dynamic)')
+  assert.doesNotMatch(code, /\brequire\s*\(/)
+  assert.doesNotMatch(code, /\bprocess\b|\bBuffer\b|\bglobalThis\.window\b|\bdocument\b/)
+})
+
+function sourceFiles(directory) {
+  return readdirSync(directory).flatMap((name) => {
+    const path = join(directory, name)
+    if (statSync(path).isDirectory()) return sourceFiles(path)
+    return /\.js$/.test(name) && !/\.test\.js$/.test(name) ? [path] : []
+  })
+}
+
+const importsOf = (file) => [...readFileSync(file, 'utf8').matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
+
+test('the browser reaches into server/ for this one file and nothing else; the server never reaches into src/', () => {
+  const crossing = []
+  for (const file of sourceFiles(join(ROOT, 'src'))) {
+    for (const target of importsOf(file)) if (/(^|\/)server\//.test(target)) crossing.push(`${relative(ROOT, file)} -> ${target}`)
+  }
+  assert.deepEqual(crossing, ['src/assistant/stateMachine.js -> ../../server/sessions/assistantStates.js'])
+
+  for (const file of sourceFiles(join(ROOT, 'server'))) {
+    for (const target of importsOf(file)) assert.doesNotMatch(target, /(^|\/)src\//, `${relative(ROOT, file)} imports ${target}`)
+  }
+})
+
+test('the production image still has what sharing relies on: the build stage sees the whole repository, the runtime stage gets server/', () => {
+  const dockerfile = readFileSync(join(ROOT, 'Dockerfile.production'), 'utf8')
+  const [buildStage, runtimeStage] = dockerfile.split(/^FROM /m).slice(1)
+  assert.match(buildStage, /^COPY \. \.$/m, 'the build stage copies the whole repository, so Vite can bundle the shared file')
+  assert.match(runtimeStage, /^COPY server \.\/server$/m, 'the runtime stage copies server/, so the server finds the shared file')
+  const ignored = readFileSync(join(ROOT, '.dockerignore'), 'utf8').split('\n').map((line) => line.trim())
+  assert.ok(!ignored.some((line) => /^\/?server\/?$/.test(line)), '.dockerignore must not drop server/')
 })
