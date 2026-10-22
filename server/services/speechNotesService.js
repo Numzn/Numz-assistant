@@ -1,5 +1,5 @@
 import { generateResponse } from './aiService.js'
-import { formatSegmentLine, stripCodeFences } from '../utils/prompt.js'
+import { formatSegmentLine, notesResult, parseModelJson } from '../utils/prompt.js'
 
 const SCHEMA_VERSION = '1.0'
 
@@ -58,12 +58,5 @@ export async function generateGroundedNotes(transcript, { generate = generateRes
   ]
 
   const reply = await generate(messages)
-  const candidate = stripCodeFences(reply)
-
-  try {
-    const notes = JSON.parse(candidate)
-    return { schemaVersion: SCHEMA_VERSION, notes }
-  } catch (err) {
-    return { schemaVersion: SCHEMA_VERSION, notes: null, raw: reply, parseError: err.message }
-  }
+  return notesResult(SCHEMA_VERSION, reply, parseModelJson(reply))
 }

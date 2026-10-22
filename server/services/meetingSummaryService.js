@@ -1,5 +1,5 @@
 import { generateResponse } from './aiService.js'
-import { formatSegmentLine, stripCodeFences } from '../utils/prompt.js'
+import { formatSegmentLine, notesResult, parseModelJson } from '../utils/prompt.js'
 
 /**
  * The final record of a MEETING, written once its transcript is closed and verified. (speechNotesService is the
@@ -45,9 +45,5 @@ export async function generateMeetingSummary(transcript, { generate = generateRe
     { role: 'user', content: `Transcript:\n\n${segments.map(formatSegmentLine).join('\n')}` }
   ]
   const reply = await generate(messages)
-  try {
-    return { schemaVersion: SCHEMA_VERSION, notes: JSON.parse(stripCodeFences(String(reply ?? ''))) }
-  } catch (err) {
-    return { schemaVersion: SCHEMA_VERSION, notes: null, raw: reply, parseError: err.message }
-  }
+  return notesResult(SCHEMA_VERSION, reply, parseModelJson(reply, { coerce: true }))
 }

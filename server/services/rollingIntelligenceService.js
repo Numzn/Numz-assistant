@@ -1,5 +1,5 @@
 import { generateResponse } from './aiService.js'
-import { formatSegmentLine, stripCodeFences } from '../utils/prompt.js'
+import { formatSegmentLine, parseModelJson } from '../utils/prompt.js'
 
 const SYSTEM_PROMPT = `You maintain a rolling understanding of an in-progress meeting/lecture as it happens, from newly finalized transcript segments.
 
@@ -75,12 +75,9 @@ export function createRollingIntelligenceTracker({ generate = generateResponse, 
     ]
 
     const reply = await generate(messages) // if this throws, nothing is dropped: the batch stays pending
-    let parsed
-    try {
-      parsed = JSON.parse(stripCodeFences(String(reply ?? '')))
-    } catch (err) {
-      throw new RollingOutputError(`The model did not return JSON: ${err.message}`)
-    }
+    const read = parseModelJson(reply, { coerce: true })
+    if (!read.ok) throw new RollingOutputError(`The model did not return JSON: ${read.error}`)
+    const parsed = read.value
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new RollingOutputError('The model returned JSON that is not an object')
     }
