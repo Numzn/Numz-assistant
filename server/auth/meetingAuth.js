@@ -1,4 +1,12 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
+import {
+  createFailureThrottle,
+  createSignedSession,
+  readCookie,
+  secretsEqual,
+  sendAuthError,
+  sessionCookieHeader
+} from './authPrimitives.js'
 
 /**
  * Authentication boundary for meeting persistence.
@@ -36,15 +44,6 @@ export const LAUNCH_SESSION_PATH = '/api/v1/meetings'
 const LAUNCH_SESSION_VERSION = 'v1'
 const DEFAULT_LAUNCH_SESSION_TTL_SECONDS = 8 * 3600
 
-function digest(value) {
-  return createHash('sha256').update(String(value), 'utf8').digest()
-}
-
-/** Constant-time comparison of two strings (digests give equal lengths for timingSafeEqual). */
-function secretsEqual(candidate, expected) {
-  return timingSafeEqual(digest(candidate), digest(expected))
-}
-
 function usable(secret) {
   return typeof secret === 'string' && secret.length >= MIN_SECRET_LENGTH
 }
@@ -56,24 +55,9 @@ function bearerToken(req) {
   return match ? match[1] : null
 }
 
-function readCookie(req, name) {
-  const header = req.headers?.cookie
-  if (typeof header !== 'string') return null
-  for (const part of header.split(';')) {
-    const index = part.indexOf('=')
-    if (index !== -1 && part.slice(0, index).trim() === name) return part.slice(index + 1).trim()
-  }
-  return null
-}
-
-function isHttps(req) {
-  if (req.secure) return true
-  return String(req.headers?.['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase() === 'https'
-}
-
 function deny(res, req, status, code, message) {
   if (status === 401) res.set('WWW-Authenticate', 'Bearer')
-  return res.status(status).json({ error: message, code, requestId: req.id })
+  return sendAuthError(res, req, status, code, message)
 }
 
 export function createMeetingAuth({
@@ -104,7 +88,7 @@ export function createMeetingAuth({
   }
 
   const nowSeconds = () => Math.floor(clock() / 1000)
-  const launchFailures = [] // timestamps (ms) of recent wrong launch codes
+  const launchFailures = createFailureThrottle({ limit: LAUNCH_FAILURE_LIMIT, windowMs: LAUNCH_FAILURE_WINDOW_MS, clock })
 
   function sign(payload) {
     return createHmac('sha256', ticketSecret).update(payload).digest('base64url')
@@ -116,31 +100,26 @@ export function createMeetingAuth({
       ? Math.floor(launchSessionTtlSeconds)
       : DEFAULT_LAUNCH_SESSION_TTL_SECONDS
   // Derived from BOTH secrets: rotating the launch code or the ticket secret voids every session.
-  const sessionKey = launchEnabled
-    ? createHmac('sha256', ticketSecret).update(`numz-launch-session-key-v1:${launchCode}`).digest()
+  const launchSession = launchEnabled
+    ? createSignedSession({
+        key: createHmac('sha256', ticketSecret).update(`numz-launch-session-key-v1:${launchCode}`).digest(),
+        version: LAUNCH_SESSION_VERSION,
+        nowSeconds,
+        ttlSeconds: sessionTtl
+      })
     : null
-  const signSession = (payload) => createHmac('sha256', sessionKey).update(payload).digest('hex')
 
   function launchSessionValid(req) {
     if (!launchEnabled) return false
-    const parts = String(readCookie(req, LAUNCH_COOKIE) ?? '').split('.')
-    if (parts.length !== 3 || parts[0] !== LAUNCH_SESSION_VERSION) return false
-    const expires = Number.parseInt(parts[1], 10)
-    if (!Number.isFinite(expires) || String(expires) !== parts[1] || expires <= nowSeconds()) return false
-    const expected = signSession(`${LAUNCH_SESSION_VERSION}.${expires}`)
-    return parts[2].length === expected.length && timingSafeEqual(Buffer.from(parts[2]), Buffer.from(expected))
+    return launchSession.verify(String(readCookie(req, LAUNCH_COOKIE) ?? ''))
   }
 
-  function launchCookie(req, value, maxAge) {
-    const flags = [`Path=${LAUNCH_SESSION_PATH}`, 'HttpOnly', 'SameSite=Strict', `Max-Age=${maxAge}`]
-    if (isHttps(req)) flags.push('Secure')
-    return `${LAUNCH_COOKIE}=${value}; ${flags.join('; ')}`
-  }
+  const launchCookie = (req, value, maxAge) =>
+    sessionCookieHeader(req, { name: LAUNCH_COOKIE, value, path: LAUNCH_SESSION_PATH, maxAge })
 
   /** Sets the session cookie on the response. Call only after the launch code has been verified. */
   function startLaunchSession(req, res) {
-    const expires = nowSeconds() + sessionTtl
-    const token = `${LAUNCH_SESSION_VERSION}.${expires}.${signSession(`${LAUNCH_SESSION_VERSION}.${expires}`)}`
+    const { token, expires } = launchSession.mint()
     res.append('Set-Cookie', launchCookie(req, token, sessionTtl))
     res.set('Cache-Control', 'no-store')
     return { expiresAt: new Date(expires * 1000).toISOString() }
@@ -245,20 +224,18 @@ export function createMeetingAuth({
    */
   function requireLaunchCode() {
     return (req, res, next) => {
-      const refuse = (status, code, message) => res.status(status).json({ error: message, code, requestId: req.id })
+      const refuse = (status, code, message) => sendAuthError(res, req, status, code, message)
       if (!launchEnabled) {
         return refuse(503, 'launch-not-configured', 'Starting meetings from the browser is not configured on this server')
       }
-      const now = clock()
-      while (launchFailures.length && now - launchFailures[0] >= LAUNCH_FAILURE_WINDOW_MS) launchFailures.shift()
-      if (launchFailures.length >= LAUNCH_FAILURE_LIMIT) {
-        res.set('Retry-After', String(Math.max(1, Math.ceil((launchFailures[0] + LAUNCH_FAILURE_WINDOW_MS - now) / 1000))))
+      if (launchFailures.isLocked()) {
+        res.set('Retry-After', String(launchFailures.retryAfterSeconds()))
         return refuse(429, 'too-many-attempts', 'Too many wrong launch codes; wait a minute and try again')
       }
       const supplied = req.headers?.['x-meeting-launch-code']
       if (typeof supplied !== 'string' || !supplied) return refuse(401, 'launch-code-required', 'A launch code is required')
       if (!secretsEqual(supplied, launchCode)) {
-        launchFailures.push(now)
+        launchFailures.record()
         return refuse(401, 'launch-code-invalid', 'The launch code was not accepted')
       }
       return next()

@@ -1,5 +1,13 @@
 import { Router } from 'express'
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
+import { createHmac } from 'node:crypto'
+import {
+  createFailureThrottle,
+  createSignedSession,
+  readCookie,
+  secretsEqual,
+  sendAuthError as deny,
+  sessionCookieHeader
+} from './authPrimitives.js'
 
 /**
  * Access control for the assistant API (/api/v1/assistant/*, its WebSocket, and the DeepSeek probe).
@@ -23,34 +31,6 @@ const VERSION = 'v1'
 const FAILURE_LIMIT = 10
 const FAILURE_WINDOW_MS = 60_000
 
-const digest = (value) => createHash('sha256').update(String(value), 'utf8').digest()
-
-/** Constant-time comparison (digests give equal lengths for timingSafeEqual). */
-function secretsEqual(candidate, expected) {
-  return timingSafeEqual(digest(candidate), digest(expected))
-}
-
-function readCookie(req, name) {
-  const header = req.headers?.cookie
-  if (typeof header !== 'string') return null
-  for (const part of header.split(';')) {
-    const index = part.indexOf('=')
-    if (index === -1) continue
-    if (part.slice(0, index).trim() === name) return part.slice(index + 1).trim()
-  }
-  return null
-}
-
-function isHttps(req) {
-  if (req.secure) return true
-  const forwarded = String(req.headers?.['x-forwarded-proto'] ?? '').split(',')[0].trim().toLowerCase()
-  return forwarded === 'https'
-}
-
-function deny(res, req, status, code, message) {
-  return res.status(status).json({ error: message, code, requestId: req.id })
-}
-
 export function createAssistantAuth({ accessCode = '', ttlSeconds = 12 * 3600, clock = () => Date.now(), logger = console } = {}) {
   const code = typeof accessCode === 'string' ? accessCode.trim() : ''
   const mode = !code ? 'disabled' : code.length >= MIN_CODE_LENGTH ? 'enabled' : 'misconfigured'
@@ -62,30 +42,13 @@ export function createAssistantAuth({ accessCode = '', ttlSeconds = 12 * 3600, c
 
   const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? Math.floor(ttlSeconds) : 12 * 3600
   const key = createHmac('sha256', code).update('numz-assistant-session-key-v1').digest()
-  const sign = (payload) => createHmac('sha256', key).update(payload).digest('hex')
   const nowSeconds = () => Math.floor(clock() / 1000)
-  let failures = []
+  const session = createSignedSession({ key, version: VERSION, nowSeconds, ttlSeconds: ttl })
+  const failures = createFailureThrottle({ limit: FAILURE_LIMIT, windowMs: FAILURE_WINDOW_MS, clock })
 
-  function mint() {
-    const expires = nowSeconds() + ttl
-    return { token: `${VERSION}.${expires}.${sign(`${VERSION}.${expires}`)}`, expires }
-  }
-
-  function tokenValid(token) {
-    const parts = typeof token === 'string' ? token.split('.') : []
-    if (parts.length !== 3 || parts[0] !== VERSION) return false
-    const expires = Number.parseInt(parts[1], 10)
-    if (!Number.isFinite(expires) || String(expires) !== parts[1] || expires <= nowSeconds()) return false
-    const expected = sign(`${VERSION}.${expires}`)
-    if (parts[2].length !== expected.length) return false
-    return timingSafeEqual(Buffer.from(parts[2]), Buffer.from(expected))
-  }
-
-  function cookie(req, value, maxAge) {
-    const flags = ['Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${maxAge}`]
-    if (isHttps(req)) flags.push('Secure')
-    return `${COOKIE_NAME}=${value}; ${flags.join('; ')}`
-  }
+  const mint = () => session.mint()
+  const tokenValid = (token) => session.verify(token)
+  const cookie = (req, value, maxAge) => sessionCookieHeader(req, { name: COOKIE_NAME, value, path: '/', maxAge })
 
   /** { ok: true } or { ok: false, status, code, message }. Used by HTTP routes and by WebSocket upgrades. */
   function check(req) {
@@ -95,12 +58,6 @@ export function createAssistantAuth({ accessCode = '', ttlSeconds = 12 * 3600, c
     }
     if (tokenValid(readCookie(req, COOKIE_NAME))) return { ok: true }
     return { ok: false, status: 401, code: 'assistant-auth-required', message: 'Enter the access code to use the assistant' }
-  }
-
-  function throttled() {
-    const now = clock()
-    failures = failures.filter((at) => now - at < FAILURE_WINDOW_MS)
-    return failures.length >= FAILURE_LIMIT
   }
 
   const status = () => ({ required: mode !== 'disabled', misconfigured: mode === 'misconfigured' })
@@ -132,13 +89,13 @@ export function createAssistantAuth({ accessCode = '', ttlSeconds = 12 * 3600, c
       router.post('/login', (req, res) => {
         if (mode === 'disabled') return res.json({ required: false, authenticated: true })
         if (mode === 'misconfigured') return deny(res, req, 503, 'assistant-auth-misconfigured', 'The assistant access code is not set up correctly on the server')
-        if (throttled()) {
+        if (failures.isLocked()) {
           res.set('Retry-After', String(Math.ceil(FAILURE_WINDOW_MS / 1000)))
           return deny(res, req, 429, 'too-many-attempts', 'Too many wrong codes; wait a minute and try again')
         }
         const presented = typeof req.body?.code === 'string' ? req.body.code.trim() : ''
         if (!presented || !secretsEqual(presented, code)) {
-          failures.push(clock())
+          failures.record()
           return deny(res, req, 401, 'wrong-code', 'That is not the access code')
         }
         const { token, expires } = mint()
