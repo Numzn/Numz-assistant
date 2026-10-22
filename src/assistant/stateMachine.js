@@ -1,17 +1,9 @@
-export const STATES = Object.freeze({
-  IDLE: 'IDLE',
-  LISTENING: 'LISTENING',
-  TRANSCRIBING: 'TRANSCRIBING',
-  PROCESSING: 'PROCESSING',
-  THINKING: 'THINKING',
-  RETRIEVING_MEMORY: 'RETRIEVING_MEMORY',
-  TOOL_EXECUTION: 'TOOL_EXECUTION',
-  GENERATING: 'GENERATING',
-  SPEAKING: 'SPEAKING',
-  INTERRUPTED: 'INTERRUPTED',
-  ERROR_RECOVERY: 'ERROR_RECOVERY',
-  ERROR: 'ERROR'
-})
+import { ASSISTANT_STATES, isValidAssistantState } from '../../server/sessions/assistantStates.js'
+
+// The twelve states are defined once, in server/sessions/assistantStates.js, which the server uses too (Vite
+// bundles it into the page at build time; see that file for why it lives under server/). What is here is the
+// interface's part: which group each state belongs to, and which moves are allowed.
+export const STATES = ASSISTANT_STATES
 
 export const STATE_GROUPS = Object.freeze({
   READY: 'READY',
@@ -20,8 +12,6 @@ export const STATE_GROUPS = Object.freeze({
   INTERRUPTED: 'INTERRUPTED',
   ERROR: 'ERROR'
 })
-
-const VALID_STATES = Object.freeze(new Set(Object.values(STATES)))
 
 const STATE_META = Object.freeze({
   [STATES.IDLE]: { group: STATE_GROUPS.READY },
@@ -58,7 +48,7 @@ export function createStateMachine(initialState = STATES.IDLE, { eventBus } = {}
   const subscribers = new Set()
 
   function assertValid(next) {
-    if (!VALID_STATES.has(next)) {
+    if (!isValidAssistantState(next)) {
       throw new Error(`Invalid assistant state: ${next}`)
     }
   }
