@@ -120,6 +120,17 @@ test('anything that is not exactly version.integer.signature is refused', () => 
   for (const notAString of [null, undefined, 123, {}, ['v1', 1, 2]]) assert.equal(s.verify(notAString), false)
 })
 
+test('a signature of the right length but made of multi-byte characters is refused, not thrown on', () => {
+  // A Cookie header is bytes 0x80-0xFF as far as Node is concerned, so a client can send these. 64 of them are
+  // 64 characters (the length of a real signature) but 128 bytes, which timingSafeEqual refuses to compare.
+  const s = session()
+  const [version, expires] = s.mint().token.split('.')
+  for (const character of ['\u00e9', '\u00ff', '\u0080']) {
+    assert.doesNotThrow(() => s.verify(`${version}.${expires}.${character.repeat(64)}`))
+    assert.equal(s.verify(`${version}.${expires}.${character.repeat(64)}`), false)
+  }
+})
+
 // ---- failure throttle ------------------------------------------------------------------------------------
 
 function throttle({ limit = 3, windowMs = 1000 } = {}) {

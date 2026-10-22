@@ -74,7 +74,9 @@ export function createSignedSession({ key, version, nowSeconds, ttlSeconds }) {
       const expires = Number.parseInt(parts[1], 10)
       if (!Number.isFinite(expires) || String(expires) !== parts[1] || expires <= nowSeconds()) return false
       const expected = sign(`${version}.${expires}`)
-      return parts[2].length === expected.length && timingSafeEqual(Buffer.from(parts[2]), Buffer.from(expected))
+      // Compared as digests, not as buffers of the two strings: a client can send bytes 0x80-0xFF, which are as
+      // many characters as a real signature but twice the bytes, and timingSafeEqual throws on unequal lengths.
+      return secretsEqual(parts[2], expected)
     }
   }
 }

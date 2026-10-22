@@ -242,3 +242,21 @@ test('meeting: a missing or wrong bearer is challenged with Bearer; a forbidden 
   assert.equal(noCode.res.statusCode, 401)
   assert.equal(noCode.res.headers['www-authenticate'], undefined)
 })
+
+// ---- malformed cookies ---------------------------------------------------------------------------------------
+
+test('a cookie with a forged signature made of multi-byte characters is refused by both modules, never thrown on', () => {
+  // The right length (64 characters) and a live expiry, but 128 bytes. Node hands a client's bytes 0x80-0xFF to
+  // the app as characters, so this can arrive from outside; it used to end as a 500 instead of a 401.
+  const forged = '\u00e9'.repeat(64)
+  const assistant = createAssistantAuth({ accessCode: ASSISTANT_CODE, clock: () => NOW, logger: quiet })
+  const result = assistant.check({ headers: { cookie: `numz_assistant_session=v1.1000000600.${forged}` } })
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 401)
+
+  const status = meetingAuth().launchSessionStatus({ headers: { cookie: `numz_launch_session=v1.1000000600.${forged}` } })
+  assert.deepEqual(status, { available: true, authenticated: false })
+  const gate = pass(meetingAuth().requireLaunchAccess(), { headers: { cookie: `numz_launch_session=v1.1000000600.${forged}` } })
+  assert.equal(gate.passed, false)
+  assert.equal(gate.res.statusCode, 401, 'falls through to the launch-code check: no code, so 401')
+})
