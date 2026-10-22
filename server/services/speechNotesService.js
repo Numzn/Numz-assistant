@@ -1,5 +1,5 @@
 import { generateResponse } from './aiService.js'
-import { formatSegmentLine, stripCodeFences } from '../utils/prompt.js'
+import { formatSegmentLine, notesResult, parseModelJson } from '../utils/prompt.js'
 
 const SCHEMA_VERSION = '1.0'
 
@@ -42,9 +42,11 @@ function formatCanonicalTranscriptForPrompt(transcript) {
  * provider abstraction (aiService.js) — no new provider code.
  *
  * @param {object} transcript canonical transcript (schemaVersion, segments[], ...)
+ * @param {{ generate?: (messages: object[]) => Promise<string> }} [options] the model call; the default is the
+ *   configured provider, the same seam generateMeetingSummary has
  * @returns {Promise<{schemaVersion: string, notes: object, raw?: string, parseError?: string}>}
  */
-export async function generateGroundedNotes(transcript) {
+export async function generateGroundedNotes(transcript, { generate = generateResponse } = {}) {
   const transcriptText = formatCanonicalTranscriptForPrompt(transcript).trim()
   if (!transcriptText) {
     throw new Error('Transcript is empty — nothing to summarize')
@@ -55,13 +57,6 @@ export async function generateGroundedNotes(transcript) {
     { role: 'user', content: `Transcript:\n\n${transcriptText}` }
   ]
 
-  const reply = await generateResponse(messages)
-  const candidate = stripCodeFences(reply)
-
-  try {
-    const notes = JSON.parse(candidate)
-    return { schemaVersion: SCHEMA_VERSION, notes }
-  } catch (err) {
-    return { schemaVersion: SCHEMA_VERSION, notes: null, raw: reply, parseError: err.message }
-  }
+  const reply = await generate(messages)
+  return notesResult(SCHEMA_VERSION, reply, parseModelJson(reply))
 }
