@@ -168,6 +168,7 @@ if (authMode === 'broker') {
         revalidateS: num('AI_REVALIDATE_S', 60),
         graceS: num('AI_REVALIDATE_GRACE_S', 600),
         maintainS: num('AI_MAINTAIN_S', 30),
+        loginLimit: num('AI_LOGIN_RATE_LIMIT', 30),
         // Secure cookies are the rule; plain-http local testing (127.0.0.1) may switch it off, and only there.
         secure: !(String(process.env.AI_COOKIE_SECURE ?? '').toLowerCase() === 'off' && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(publicOrigin)),
         allowedExternalIds: allowed.length ? new Set(allowed) : null

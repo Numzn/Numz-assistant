@@ -21,7 +21,7 @@ import { readCookie, sendAuthError as deny } from './authPrimitives.js'
  */
 
 const SESSION_TOUCH_EVERY_S = 15
-const LOGIN_RATE = { limit: 30, windowMs: 15 * 60_000 }
+const LOGIN_RATE_WINDOW_MS = 15 * 60_000
 const NEXT_OK = /^\/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]{0,512}$/
 
 export function createAiAuth({ repo, broker, config = {}, clock = Date.now, logger = console, meter = null }) {
@@ -33,6 +33,7 @@ export function createAiAuth({ repo, broker, config = {}, clock = Date.now, logg
     revalidateS: 60,
     graceS: 600,
     maintainS: 30,
+    loginLimit: 30, // sign-in starts and returns, per address, per 15 minutes
     secure: true,
     allowedExternalIds: null, // a Set: only these NUMZLAB user ids may sign in (a staged roll-out); null = everyone NUMZLAB approves
     ...config
@@ -65,8 +66,8 @@ export function createAiAuth({ repo, broker, config = {}, clock = Date.now, logg
 
   function limited(ip) {
     const now = clock()
-    const stamps = (logins.get(ip) ?? []).filter((t) => now - t < LOGIN_RATE.windowMs)
-    if (stamps.length >= LOGIN_RATE.limit) return true
+    const stamps = (logins.get(ip) ?? []).filter((t) => now - t < LOGIN_RATE_WINDOW_MS)
+    if (stamps.length >= cfg.loginLimit) return true
     stamps.push(now)
     logins.set(ip, stamps)
     if (logins.size > 5000) logins.clear()

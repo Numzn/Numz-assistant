@@ -56,6 +56,9 @@ export function attachSocketServer(httpServer, { path = '/api/v1/assistant/ws', 
     let current = null // the usage handle of the turn in progress
     let burst = []
     onConnect?.(ws, verdict)
+    // A frame over the limit (or any protocol breach) is reported by `ws` as an 'error' event; with no listener Node would end the whole
+    // server. The socket is closed by `ws` itself (1009 for an oversize frame); here it is only logged.
+    ws.on('error', (err) => console.warn(`[ws] a socket was closed: ${err?.code ?? err?.message ?? 'error'}`))
 
     ws.on('message', async (raw) => {
       const now = Date.now()
