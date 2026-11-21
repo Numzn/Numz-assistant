@@ -82,6 +82,7 @@ function controlsFor(state) {
     confirm: phase === S.AWAITING_CONFIRMATION,
     skip: phase === S.AWAITING_CONFIRMATION,
     clear: history.length > 0 || (state.counts?.reads ?? 0) > 0,
+    clearToContinue: cameraOn && state.limitReached === true,
     auto: state.auto === true
   }
 }

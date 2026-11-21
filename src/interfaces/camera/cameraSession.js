@@ -68,6 +68,7 @@ const CAMERA_PROBLEMS = {
 }
 
 const SMALLER = { maxEdge: 800, quality: 0.6 }
+const MAX_SLOW_DOWNS = 3 // how many times one call waits because the server said "too fast"
 
 function initialState() {
   return {
@@ -144,6 +145,11 @@ export function createCameraSession({
       case 'invalid-image':
       case 'image-too-large':
         return { message: 'That picture could not be used. Try again, a little further from the screen.', canRetry: true }
+      // The server answered, but the model behind it did not: say that, not "could not reach the server".
+      case 'read-failed':
+        return { message: 'The picture could not be read just now. Try again.', canRetry: true }
+      case 'answer-failed':
+        return { message: 'The answer could not be worked out just now. Try again.', canRetry: true }
       default:
         return { message: 'Could not reach the server. Check the connection and try again.', canRetry: true }
     }
@@ -161,6 +167,7 @@ export function createCameraSession({
   /** Calls the server, retrying what can succeed on a second try. Throws AbortError, or the error that gave up. */
   async function withPatience(call, myEpoch) {
     let recreated = false
+    let slowedDown = 0
     for (let attempt = 0; ; attempt++) {
       try {
         return await call()
@@ -169,6 +176,15 @@ export function createCameraSession({
         if (err?.code === 'session-not-found' && !recreated) {
           recreated = true
           await newServerSession()
+          continue
+        }
+        // "Too fast" is the server asking for a pause, not a failure: wait as long as it says without using up a retry
+        // (a retry's own pause can be shorter than the server's minimum gap), but not for ever.
+        if (err?.code === 'camera-rate-limited' && slowedDown < MAX_SLOW_DOWNS) {
+          slowedDown += 1
+          await sleep(err.retryAfterMs || config.minGapMs)
+          if (myEpoch !== epoch) throw Object.assign(new Error('abandoned'), { name: 'AbortError' })
+          attempt -= 1
           continue
         }
         if (!err?.transient || attempt >= config.retryDelaysMs.length) throw err
@@ -283,7 +299,7 @@ export function createCameraSession({
     } catch (err) {
       if (err?.name === 'AbortError' || myEpoch !== epoch) return
       const failure = describeFailure(err)
-      problem(failure.message.replace('Could not reach the server.', 'Could not get the answer.'), failure)
+      problem(failure.message, failure)
     } finally {
       busy = false
     }

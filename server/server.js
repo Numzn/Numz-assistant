@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
 import { createCameraRouter } from './routes/camera.js'
 import { createCameraService } from './camera/cameraService.js'
+import { cameraLimitsFromEnv } from './camera/cameraLimits.js'
 import { createVisionFromEnv, describeVision } from './camera/vision.js'
 import { createMeetingsRouter } from './routes/meetings.js'
 import { createMeetingIntelligenceService } from './services/meetingIntelligenceService.js'
@@ -111,8 +112,10 @@ const cameraService = createCameraService({
     requireAi()
     return generateResponse(messages)
   },
-  sessions: sessionService
+  sessions: sessionService,
+  limits: cameraLimitsFromEnv(process.env)
 })
+console.log(`[camera] up to ${cameraService.limits.maxReads} pictures are read per camera session`)
 setInterval(() => cameraService.sweep(), 30_000).unref()
 // No live connection survives a process restart: interrupted meetings move to RECOVERING.
 const meetingRecovery = meetingService.recoverInterruptedMeetings()

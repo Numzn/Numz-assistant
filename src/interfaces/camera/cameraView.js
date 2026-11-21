@@ -89,7 +89,8 @@ export function createCameraView({ doc = document, session, device, clock = () =
     emptyPanel: $('emptyPanel'),
     historyPanel: $('historyPanel'),
     historyList: $('historyList'),
-    clear: $('clearButton')
+    clear: $('clearButton'),
+    limitClear: $('limitClearButton')
   }
 
   let shown = { answer: undefined, history: undefined, questionKey: null, cameraOn: false }
@@ -198,6 +199,7 @@ export function createCameraView({ doc = document, session, device, clock = () =
 
     drawHistory(view.history, state)
     els.clear.hidden = !view.controls.clear
+    els.limitClear.hidden = !view.controls.clearToContinue
     els.emptyPanel.hidden = Boolean(view.question || view.answer || view.history.length)
 
     if (state.cameraOn !== shown.cameraOn) {
@@ -251,23 +253,29 @@ export function createCameraView({ doc = document, session, device, clock = () =
     }
   })
 
-  // Clearing asks twice, like deleting a conversation: the first tap arms it for a few seconds.
-  let armTimer = null
-  els.clear.addEventListener('click', () => {
-    if (els.clear.dataset.armed !== 'true') {
-      els.clear.dataset.armed = 'true'
-      els.clear.textContent = 'Click again to clear'
-      armTimer = setTimeout(disarm, ARM_MS)
-      return
+  // Clearing asks twice, like deleting a conversation: the first tap arms it for a few seconds. Both clear buttons
+  // (the one in the history panel, and the one among the controls when the session limit is reached) work this way.
+  function twoTapClear(button, armedText) {
+    const idle = button.textContent
+    let timer = null
+    const disarm = () => {
+      clearTimeout(timer)
+      button.dataset.armed = 'false'
+      button.textContent = idle
     }
-    disarm()
-    session.clearHistory()
-  })
-  function disarm() {
-    clearTimeout(armTimer)
-    els.clear.dataset.armed = 'false'
-    els.clear.textContent = 'Clear history'
+    button.addEventListener('click', () => {
+      if (button.dataset.armed !== 'true') {
+        button.dataset.armed = 'true'
+        button.textContent = armedText
+        timer = setTimeout(disarm, ARM_MS)
+        return
+      }
+      disarm()
+      session.clearHistory()
+    })
   }
+  twoTapClear(els.clear, 'Click again to clear')
+  twoTapClear(els.limitClear, 'Tap again to clear')
 
   const unsubscribe = session.subscribe(render)
   return { render, dispose: unsubscribe }

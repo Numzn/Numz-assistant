@@ -529,6 +529,24 @@ test('a busy server (429) is waited for as long as it asks', async () => {
   assert.equal(rig.session.getState().history.length, 1)
 })
 
+test('being told to slow down (429) does not use up a retry: a failing server still gets all its attempts', async () => {
+  const rig = await started(build()) // retries after 1 s and 2.5 s
+  const fail = new CameraApiError('boom', { status: 502, code: 'read-failed' })
+  rig.api.reads = [fail, new CameraApiError('slow down', { status: 429, code: 'camera-rate-limited', retryAfterMs: 1000 }), fail]
+  await watch(rig, page(1))
+  assert.equal(rig.api.calls.read.length, 4, 'the first try and both retries, and the one the server turned away')
+  assert.deepEqual(rig.sleeps, [1000, 1000, 2500])
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.ERROR)
+})
+
+test('a server that keeps saying "slow down" is not waited on for ever', async () => {
+  const rig = await started(build())
+  rig.api.reads = [new CameraApiError('slow down', { status: 429, code: 'camera-rate-limited', retryAfterMs: 1000 })]
+  await watch(rig, page(1))
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.ERROR)
+  assert.ok(rig.api.calls.read.length <= 6, `${rig.api.calls.read.length} calls`)
+})
+
 test('refusals that retrying cannot fix stop at once, with an explanation', async () => {
   for (const [error, expected] of [
     [new CameraApiError('no vision', { status: 503, code: 'vision-not-configured' }), /not set up/i],
@@ -588,6 +606,30 @@ test('an answer that fails keeps the question, and the person can ask for the an
   state = rig.session.getState()
   assert.equal(state.history.length, 1)
   assert.equal(rig.api.calls.read.length, 1, 'the picture is not read again to retry the answer')
+})
+
+test('each failure is described as what it was: the picture not read, the answer not worked out, or the server not reached', async () => {
+  const modelFailure = (code) => new CameraApiError('upstream', { status: 502, code })
+  const cases = [
+    ['read', modelFailure('read-failed'), /picture could not be read/i],
+    ['read', new CameraApiError('offline', { status: 0, code: 'network' }), /could not reach the server/i],
+    ['answer', modelFailure('answer-failed'), /answer could not be worked out/i],
+    ['answer', new CameraApiError('offline', { status: 0, code: 'network' }), /could not reach the server/i]
+  ]
+  for (const [what, failure, expected] of cases) {
+    const rig = await started(build({ options: { retryDelaysMs: [] } }))
+    if (what === 'read') rig.api.reads = [failure]
+    else {
+      rig.api.reads = [QUESTION(1)]
+      rig.api.answers = [failure]
+    }
+    await watch(rig, page(1))
+    const state = rig.session.getState()
+    assert.equal(state.phase, CAMERA_STATES.ERROR, `${what} ${failure.code}`)
+    assert.match(state.message, expected, `${what} ${failure.code}`)
+    assert.equal(state.canRetry, true)
+    assert.equal(state.tone, 'error')
+  }
 })
 
 test('"try again" does the one thing that failed: the camera, the picture, or the answer', async () => {

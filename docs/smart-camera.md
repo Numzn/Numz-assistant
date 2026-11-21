@@ -61,11 +61,18 @@ The page opens without any of this, but cannot read pictures. In `.env.secrets` 
 | `CAMERA_VISION_BASE_URL` | optional for `anthropic` (a gateway); required for `openai-compatible` |
 
 Answers use the assistant's existing text model (`AI_PROVIDER`). The start-up log says which settings are missing, never
-a value.
+a value. Optional: `CAMERA_MAX_READS` (1 to 1000, default 100) caps the pictures one camera session may read, which is
+the cost control; anything else is ignored.
+
+**Prove a key works without a phone:** `node scripts/camera-vision-check.js` (or `... photo.jpg` with your own picture)
+sends one picture to the configured provider exactly as the camera would, and says what happened: which settings are
+missing, that the provider rejected the key or the model name or address, that it was unreachable, slow, out of quota or
+overloaded, that the reply was not the expected JSON, or `OK` with the question it read. It never prints the key or
+anything the provider said about an error. One run is one paid call.
 
 ## Limits (all in `CAMERA_LIMITS`, `server/camera/cameraService.js`)
 
-100 pictures per session, 1.5 MB per picture, one read per 2 s per session, 2 reads at once across the server, 20
+100 pictures per session (`CAMERA_MAX_READS`), 1.5 MB per picture, one read per 2 s per session, 2 reads at once across the server, 20
 live sessions (the idlest is dropped), a session expires after 30 minutes idle, every model call has a 40 s deadline.
 On the phone: the camera switches itself off after 5 minutes with nothing new (also when paused), and a hidden page is
 paused.
@@ -82,11 +89,15 @@ paused.
 
 ## What is and is not verified
 
-Verified: 900 Node tests (the camera adds about 150: frame analysis, state machine, question identity, model-reply
-parsing, the service, the routes with the real browser client over a real socket, the vision adapters against a fake
-`fetch`, the presenter); the production build within a bundle budget (25 KB gzipped for the camera page); and
-`scripts/camera-e2e/run.mjs`, 31 checks in real headless Chromium against the production build and its security headers,
-with a fake camera feed and stub models (no console or CSP errors).
+Verified: 916 Node tests (the camera adds about 165: frame analysis, state machine, question identity, model-reply
+parsing, the service, the routes with the real browser client over a real socket, the vision adapters and the live check
+against a fake `fetch`, the presenter, the limits); the production build within a bundle budget (25 KB gzipped for the
+camera page); and two scripts in `scripts/camera-e2e/` that drive real headless Chromium against the production build and
+its security headers, with a fake camera feed and stub models: `run.mjs` (31 checks: the working path) and `unhappy.mjs`
+(42 checks: no vision provider, camera refused / in use / missing / on a page that is not https and then "Try again",
+the assistant locked with a wrong and the right access code, the vision model failing and the answer model failing, the
+session limit and clearing to continue, the camera taken away mid-session, keyboard use and control names). No console or
+CSP errors on the working path.
 
 **Not verified, and why it matters:**
 
@@ -106,7 +117,8 @@ with a fake camera feed and stub models (no console or CSP errors).
 
 1. **Lock the assistant API.** `ASSISTANT_ACCESS_CODE` is unset in production, so these routes (and the vision key
    behind them) would be open to anyone who can reach the server. Set a code of at least 12 characters first.
-2. A vision provider, key and model (see above), and a decision on cost: every picture sent is a paid call.
+2. A vision provider, key and model (see above), proved with `node scripts/camera-vision-check.js`, and a decision on
+   cost: every picture sent is a paid call (`CAMERA_MAX_READS` caps a session).
 3. A rebuilt image (the page is a third Vite page; nothing else about the build changes).
 4. One real test on a real phone over https (cameras need a secure page; `localhost` or the tailnet https name).
 
@@ -114,7 +126,10 @@ with a fake camera feed and stub models (no console or CSP errors).
 
 ```bash
 npx vite build
-CAMERA_E2E_DIR=/tmp/camera-e2e FFMPEG=/path/to/ffmpeg node scripts/camera-e2e/run.mjs
+CAMERA_E2E_DIR=/tmp/camera-e2e FFMPEG=/path/to/ffmpeg node scripts/camera-e2e/run.mjs      # the working path
+CAMERA_E2E_DIR=/tmp/camera-e2e FFMPEG=/path/to/ffmpeg node scripts/camera-e2e/unhappy.mjs  # what goes wrong
 ```
 
-It writes the uploaded picture and screenshots (phone and desktop sizes) to `CAMERA_E2E_DIR`.
+They need Playwright (`PLAYWRIGHT_FROM` points at a project that has it; on this host ZEDFOOTBALL's) and ffmpeg, start the
+real server on spare ports with a throwaway database and a stub in place of the models, and write the uploaded picture and
+screenshots (phone and desktop sizes) to `CAMERA_E2E_DIR`. Run them one after the other: they share ports.

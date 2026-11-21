@@ -121,6 +121,13 @@ test('at the session limit scanning stops, and the way out is clearing the histo
   assert.match(view.indicator.label, /limit/i)
   assert.equal(view.controls.capture, false)
   assert.equal(view.controls.clear, true)
+  assert.equal(view.controls.clearToContinue, true, 'the way out is among the camera controls, not only further down the page')
+})
+
+test('the clear-and-continue control appears only at the limit', () => {
+  assert.equal(presentCamera(on(S.READY, { history: [{ questionId: 'q1', text: 'x', answer: ANSWER, markdown: '' }] })).controls.clearToContinue, false)
+  assert.equal(presentCamera(on(S.ERROR, { canRetry: true, message: 'offline', tone: 'error' })).controls.clearToContinue, false)
+  assert.equal(presentCamera(base({ limitReached: true })).controls.clearToContinue, false, 'with the camera off there is nothing to continue')
 })
 
 test('starting the camera is shown as starting, with nothing else on offer but stopping', () => {

@@ -1,7 +1,8 @@
-// Real-browser check of the Smart Camera. NOT part of `npm test`: it needs Playwright and ffmpeg.
+// Real-browser check of the Smart Camera (the happy path). NOT part of `npm test`: it needs Playwright and ffmpeg.
 //
 //   npx vite build                      (the production bundle, served with its real security headers)
 //   node scripts/camera-e2e/run.mjs     (writes pictures and screenshots to $CAMERA_E2E_DIR, default a temp folder)
+//   node scripts/camera-e2e/unhappy.mjs (the same for what goes wrong: no provider, camera refused, locked, failing)
 //
 // It starts the real server.js in production mode on spare ports with a throwaway database, a stub standing in for the
 // vision and text models (no key, no network), and headless Chromium with a fake camera that alternates between two
@@ -12,103 +13,26 @@
 // Environment: PLAYWRIGHT_FROM (the package.json of a project whose node_modules has `playwright`; on this host it
 // defaults to ZEDFOOTBALL's frontend, since this project does not depend on it), FFMPEG (default `ffmpeg`),
 // CAMERA_E2E_DIR (where pictures and screenshots go).
-import { spawn, execFileSync } from 'node:child_process'
-import http from 'node:http'
 import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createRequire } from 'node:module'
+import { kindOf, launchBrowser, makeFeed, phone, reporter, startApp, startStub, workDir } from './lib.mjs'
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
-const dir = process.env.CAMERA_E2E_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'numz-camera-e2e-'))
-const FFMPEG = process.env.FFMPEG || 'ffmpeg'
-const { chromium } = createRequire(process.env.PLAYWRIGHT_FROM || '/srv/projects/ZEDFOOTBALL/frontend/package.json')('playwright')
-fs.mkdirSync(dir, { recursive: true })
+const dir = workDir()
 console.log('working in', dir)
-
-// ---- the fake camera: two rendered question screens, played in turn --------------------------------------------
-const SCREENS = {
-  q1: '<body style="margin:0;background:#fff;color:#111;font:38px/1.5 Arial,sans-serif;padding:70px 90px;width:1100px;height:580px"><div style="color:#555;font-size:26px">Physics practice · Set 3</div><p style="margin:18px 0"><b>Question 1.</b> A car travels 150 km in 2.5 hours. What is its average speed?</p><div>A) 40 km/h &nbsp;&nbsp; B) 60 km/h &nbsp;&nbsp; C) 75 km/h &nbsp;&nbsp; D) 100 km/h</div></body>',
-  q2: '<body style="margin:0;background:#f4f1ea;color:#161616;font:40px/1.5 Georgia,serif;padding:70px 90px;width:1100px;height:580px"><div style="color:#666;font-size:26px">Geography practice · Set 1</div><p style="margin:18px 0"><b>Question 2.</b> Name the longest river in Africa and the sea into which it flows.</p><div style="color:#444">Give your answer in one sentence.</div></body>'
-}
-{
-  const shooter = await chromium.launch()
-  const page = await shooter.newPage({ viewport: { width: 1280, height: 720 } })
-  for (const [name, html] of Object.entries(SCREENS)) {
-    await page.setContent(html)
-    await page.screenshot({ path: `${dir}/${name}.png` })
-    execFileSync(FFMPEG, ['-y', '-loglevel', 'error', '-loop', '1', '-framerate', '10', '-i', `${dir}/${name}.png`, '-t', '10', '-vf', 'scale=1280:720,format=yuvj420p', '-q:v', '3', '-f', 'mjpeg', `${dir}/${name}.mjpeg`])
-  }
-  await shooter.close()
-  fs.writeFileSync(`${dir}/feed.mjpeg`, Buffer.concat([fs.readFileSync(`${dir}/q1.mjpeg`), fs.readFileSync(`${dir}/q2.mjpeg`)]))
-}
-
+const feed = await makeFeed(dir)
 const PORT = 3995
 const STUB = 3994
-const db = path.join(dir, 'e2e.sqlite')
-for (const f of [db, db + '-wal', db + '-shm']) fs.rmSync(f, { force: true })
+const stub = await startStub(STUB)
+const appHandle = await startApp({ dir, port: PORT, stubPort: STUB })
+const { check, finish } = reporter()
+const browser = await launchBrowser(feed)
 
-const READINGS = [
-  { isQuestion: true, text: 'Question 1. A car travels 150 km in 2.5 hours. What is its average speed?', options: [{ label: 'A', text: '40 km/h' }, { label: 'B', text: '60 km/h' }, { label: 'C', text: '75 km/h' }, { label: 'D', text: '100 km/h' }], type: 'multiple-choice', subject: 'physics', hasDiagram: false, confidence: 0.93, reason: '' },
-  { isQuestion: true, text: 'Question 2. Name the longest river in Africa and the sea into which it flows.', options: [], type: 'short-answer', subject: 'geography', hasDiagram: false, confidence: 0.9, reason: '' }
-]
-const stub = { pictures: 0, texts: 0, firstPicture: null, readings: 0 }
-const server = http.createServer((req, res) => {
-  let body = ''
-  req.on('data', (c) => (body += c))
-  req.on('end', () => {
-    const parsed = JSON.parse(body)
-    const flat = JSON.stringify(parsed)
-    const m = flat.match(/data:image\/jpeg;base64,([A-Za-z0-9+/=]+)/)
-    res.setHeader('content-type', 'application/json')
-    if (m) {
-      stub.pictures++
-      if (!stub.firstPicture) stub.firstPicture = Buffer.from(m[1], 'base64')
-      const reading = READINGS[Math.min(stub.readings++, READINGS.length - 1)]
-      return res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(reading) } }] }))
-    }
-    stub.texts++
-    const first = flat.includes('average speed')
-    const answer = first
-      ? { subject: 'physics', type: 'multiple-choice', answer: 'B) 60 km/h', steps: ['speed = distance / time', '150 / 2.5 = 60'], explanation: 'Average speed is **distance divided by time**, so 150 km over 2.5 h is 60 km/h.', confidence: 'high', uncertainty: null }
-      : { subject: 'geography', type: 'short-answer', answer: 'The Nile, flowing into the Mediterranean Sea.', steps: [], explanation: 'The Nile is generally given as the longest river in Africa and ends in the Mediterranean.', confidence: 'medium', uncertainty: 'River lengths are measured differently by different sources.' }
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(answer) } }] }))
-  })
-})
-await new Promise((r) => server.listen(STUB, '127.0.0.1', r))
-
-const app = spawn(process.execPath, ['--no-warnings', 'server/server.js'], {
-  cwd: repo,
-  env: {
-    PATH: process.env.PATH, HOME: process.env.HOME, NUMZ_SKIP_ENV_FILES: '1', PORT: String(PORT), NODE_ENV: 'production', SPEECH_DATABASE_PATH: db,
-    AI_PROVIDER: 'custom', AI_API_KEY: 'stub', AI_BASE_URL: `http://127.0.0.1:${STUB}/v1`, AI_MODEL: 'stub',
-    CAMERA_VISION_PROVIDER: 'openai-compatible', CAMERA_VISION_API_KEY: 'stub', CAMERA_VISION_MODEL: 'stub', CAMERA_VISION_BASE_URL: `http://127.0.0.1:${STUB}/v1`
-  },
-  stdio: ['ignore', 'pipe', 'pipe']
-})
-let appLog = ''
-app.stdout.on('data', (c) => (appLog += c))
-app.stderr.on('data', (c) => (appLog += c))
-for (let i = 0; i < 80; i++) {
-  try { if ((await fetch(`http://127.0.0.1:${PORT}/api/v1/health`)).ok) break } catch {}
-  await new Promise((r) => setTimeout(r, 250))
-}
-
-const results = []
-const check = (name, ok, extra = '') => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`) }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-const browser = await chromium.launch({
-  args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${dir}/feed.mjpeg`, '--autoplay-policy=no-user-gesture-required']
-})
 const problems = []
 try {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, permissions: ['camera'] })
+  const context = await browser.newContext(phone)
   const page = await context.newPage()
   page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) problems.push(`${m.type()}: ${m.text()}`) })
   page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`))
-  await page.goto(`http://localhost:${PORT}/camera.html`, { waitUntil: 'load' })
+  await page.goto(`${appHandle.origin}/camera.html`, { waitUntil: 'load' })
   const kind = () => page.getAttribute('#cameraIndicator', 'data-kind')
   const label = () => page.textContent('#cameraIndicatorLabel')
 
@@ -180,7 +104,7 @@ try {
   desktop.on('console', (m) => { if (['error', 'warning'].includes(m.type())) problems.push(`desktop ${m.type()}: ${m.text()}`) })
   await desktop.setViewportSize({ width: 1280, height: 800 })
   stub.readings = 0
-  await desktop.goto(`http://localhost:${PORT}/camera.html`, { waitUntil: 'load' })
+  await desktop.goto(`${appHandle.origin}/camera.html`, { waitUntil: 'load' })
   await desktop.uncheck('#autoInput', { force: true }).catch(async () => desktop.click('#autoToggle'))
   check('review mode can be chosen', (await desktop.isChecked('#autoInput')) === false)
   await desktop.click('#startButton')
@@ -202,7 +126,7 @@ try {
 
   // A page left (hidden) must not keep scanning: simulate the tab going to the background.
   const third = await context.newPage()
-  await third.goto(`http://localhost:${PORT}/camera.html`, { waitUntil: 'load' })
+  await third.goto(`${appHandle.origin}/camera.html`, { waitUntil: 'load' })
   await third.click('#startButton')
   await third.waitForFunction(() => ['scanning', 'sending'].includes(document.getElementById('cameraIndicator').dataset.kind), null, { timeout: 15000 })
   await third.evaluate(() => { Object.defineProperty(document, 'hidden', { value: true, configurable: true }); document.dispatchEvent(new Event('visibilitychange')) })
@@ -211,11 +135,9 @@ try {
   check('no console errors, CSP violations or page errors', problems.length === 0, problems.slice(0, 4).join(' | '))
 } finally {
   await browser.close()
-  app.kill('SIGTERM')
-  await new Promise((r) => app.once('exit', r))
-  server.close()
+  await appHandle.stop()
+  stub.server.close()
 }
-async function kindOf(p) { return p.getAttribute('#cameraIndicator', 'data-kind') }
-console.log('---- server log mentions of the questions or picture bytes:', /Africa|150 km|average speed|\/9j\//.test(appLog) ? 'FOUND (bad)' : 'none (good)')
-console.log(results.every(Boolean) ? 'ALL PASS' : 'SOME FAILED')
-process.exit(results.every(Boolean) ? 0 : 1)
+const leaked = /Africa|150 km|average speed|\/9j\//.test(appHandle.log)
+check('the server log never mentions a question or picture bytes', !leaked)
+process.exit(finish() ? 0 : 1)
