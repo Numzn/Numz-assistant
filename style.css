@@ -2079,6 +2079,11 @@ body[data-page="camera"] [hidden] {
   white-space: nowrap;
 }
 
+/* On a phone the answer comes first: the person is holding the camera and cannot scroll to look for it. */
+#answerPanel {
+  order: -1;
+}
+
 #cameraPanels {
   display: grid;
   align-content: start;
@@ -2091,8 +2096,8 @@ body[data-page="camera"] [hidden] {
 #cameraStage {
   position: relative;
   width: 100%;
-  height: min(34vh, 320px);
-  min-height: 150px;
+  height: min(26vh, 240px);
+  min-height: 130px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   background: #000;
@@ -2611,6 +2616,11 @@ body[data-page="camera"] [hidden] {
 
   #cameraPanels {
     padding: 20px 24px 40px 20px;
+  }
+
+  /* With room for both columns the order is the natural one: the question, then its answer. */
+  #answerPanel {
+    order: 0;
   }
 }
 
