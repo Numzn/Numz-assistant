@@ -140,7 +140,7 @@ test('starting asks for the camera, opens a server session, and is READY and vis
 })
 
 test('a refused or missing camera is an error that says what to do, and nothing is left running', async () => {
-  for (const [name, message] of [['NotAllowedError', /blocked|allow/i], ['NotFoundError', /no camera/i], ['NotReadableError', /in use|another/i]]) {
+  for (const [name, message] of [['NotAllowedError', /blocked|allow/i], ['NotFoundError', /no camera/i], ['NotReadableError', /in use|another/i], ['InsecureContextError', /secure|https/i]]) {
     const rig = build()
     rig.device.failStart = Object.assign(new Error(name), { name })
     await rig.session.start({ now: 0 })
@@ -194,15 +194,69 @@ test('a question held steady in front of the camera is read, answered, shown, an
   assert.deepEqual(rig.api.calls.read[0].image.mimeType, 'image/jpeg')
 })
 
-test('the same question is never processed twice, however long the camera stays on it', async () => {
+/** The times (on the test's clock) at which pictures were sent to be read. */
+function readTimes(rig) {
+  const times = []
+  const read = rig.api.read
+  rig.api.read = async (...args) => {
+    times.push(rig.clock.now)
+    return read(...args)
+  }
+  return times
+}
+const DUPLICATE = { status: 'duplicate', questionId: 'q1', answer: ANSWER(1).answer }
+const seconds = (ms) => Math.round(ms / 1000)
+
+test('a scene that has not changed is not sent again straight away, and the same question is never answered twice', async () => {
   const rig = await started(build())
-  rig.api.reads = [QUESTION(1)]
+  const times = readTimes(rig)
+  rig.api.reads = [QUESTION(1), DUPLICATE]
   rig.api.answers = [ANSWER(1)]
   await watch(rig, page(1))
-  await watch(rig, withNoise(page(1), 5, 8), { for: 20_000 }) // the same page, noisier, for twenty seconds
-  assert.equal(rig.api.calls.read.length, 1)
+  assert.equal(times.length, 1)
+  await watch(rig, withNoise(page(1), 5, 8), { for: 12_000 }) // the same page, noisier, for twelve seconds
+  assert.equal(times.length, 1, 'no second send inside the first re-check interval')
   assert.equal(rig.api.calls.answer.length, 1)
   assert.equal(rig.session.getState().phase, CAMERA_STATES.WAITING_FOR_NEXT)
+})
+
+test('the camera cannot tell two questions in one layout apart, so an unchanged scene is re-checked now and then: the server has the last word', async () => {
+  const rig = await started(build())
+  const times = readTimes(rig)
+  rig.api.reads = [QUESTION(1), QUESTION(2)] // the screen moved on to question 2, but the picture looks the same to the phone
+  rig.api.answers = [ANSWER(1), ANSWER(2)]
+  await watch(rig, page(1), { for: 20_000 })
+  assert.equal(times.length, 2)
+  assert.ok(seconds(times[1] - times[0]) >= 15, 'not before the first re-check interval')
+  assert.deepEqual(rig.session.getState().history.map((h) => h.questionId), ['q2', 'q1'], 'and question 2 was not missed')
+})
+
+test('while nothing new is found the re-checks grow further apart, up to a limit; a new question starts them again', async () => {
+  const rig = await started(build())
+  const times = readTimes(rig)
+  rig.api.reads = [QUESTION(1), DUPLICATE, DUPLICATE, DUPLICATE, DUPLICATE, QUESTION(2), DUPLICATE]
+  rig.api.answers = [ANSWER(1), ANSWER(2)]
+  await watch(rig, page(1), { for: 200_000 })
+  const gaps = times.slice(1).map((t, i) => seconds(t - times[i]))
+  assert.deepEqual(gaps.slice(0, 4), [15, 30, 60, 60], 'doubling, then held at the limit')
+
+  const before = times.length
+  await watch(rig, page(2), { for: 3000 }) // a visibly different page: sent as soon as the minimum gap allows
+  assert.equal(times.length, before + 1)
+  assert.equal(seconds(times.at(-1) - times.at(-2)) >= 2, true)
+  assert.equal(rig.session.getState().history[0].questionId, 'q2')
+  await watch(rig, page(2), { for: 20_000 })
+  assert.equal(seconds(times.at(-1) - times.at(-2)), 15, 'after a new question the re-checks start again at the first interval')
+})
+
+test('re-checks that find nothing new do not keep the camera switched on: it still switches itself off after the quiet spell', async () => {
+  const rig = await started(build({ options: { idleStopMs: 90_000 } }))
+  rig.api.reads = [QUESTION(1), DUPLICATE]
+  rig.api.answers = [ANSWER(1)]
+  await watch(rig, page(1), { for: 120_000 })
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.IDLE)
+  assert.equal(rig.device.stopped, 1)
+  assert.match(rig.session.getState().message, /switched off/i)
 })
 
 test('a different page is a new question: it is read and answered, and both are kept in the history, newest first', async () => {

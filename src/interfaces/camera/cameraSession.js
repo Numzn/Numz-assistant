@@ -9,9 +9,15 @@ import { looksLikeText, signatureDistance, signatureOf, createStabilityTracker }
  * plus IDLE (camera off), STARTING (asking for the camera), AWAITING_CONFIRMATION (review mode: the question is
  * shown and waits for a tap), PAUSED and ERROR. The rules it keeps:
  *
- *   - A picture is sent only when the camera has held still, the scene looks like text, it is not one already sent,
- *     and a minimum time has passed since the last send. The server reads it; the server alone says whether the
- *     question is new, so the same question is never answered twice whatever the camera does.
+ *   - A picture is sent only when the camera has held still, the scene looks like text, and a minimum time has passed
+ *     since the last send. The server reads it; the server alone says whether the question is new, so the same
+ *     question is never answered twice whatever the camera does.
+ *   - "Looks like a picture already sent" can NOT mean "never send again": measured on rendered quiz screens, two
+ *     different questions in one layout sit as close together as sensor noise ("12 + 7" and "13 + 7" differ by 0.003),
+ *     while the same page jostled by a hand sits further apart than two different pages. So an unchanged-looking scene
+ *     is re-checked on a growing interval (15 s, 30 s, 60 s, then every 60 s), a changed-looking one is sent as soon as
+ *     the minimum gap allows, and the worst a wrong guess costs is a delay of a minute (or one extra read), never a
+ *     question skipped for good. The manual capture covers the delay.
  *   - Pictures are sent only while `scanning` is true, and `scanning` is what the page's indicator shows: never
  *     while paused, stopped, in error, at the session's limit, or with no vision service behind it.
  *   - Nothing is retried that cannot succeed; what can is retried with a growing pause, and then becomes an error the
@@ -42,8 +48,10 @@ const DEFAULTS = {
   auto: true,
   stableMs: 700, // held still this long before a picture is considered
   stillBelow: 0.12, // layout change between frames below this is "still"
-  changeAbove: 0.25, // a picture this far from every recent one is a different picture
+  changeAbove: 0.15, // a picture this far from every recent one looks different: sent without waiting for a re-check
   minGapMs: 2000, // never two sends closer than this
+  recheckMs: 15_000, // an unchanged-looking scene is read again after this...
+  recheckMaxMs: 60_000, // ...doubling each time nothing new turns up, up to this
   idleStopMs: 5 * 60_000, // the camera switches itself off after this long with nothing sent
   recentPictures: 6,
   retryDelaysMs: [1000, 2500],
@@ -55,7 +63,8 @@ const CAMERA_PROBLEMS = {
   SecurityError: 'The camera is blocked. Allow it in the browser, then try again.',
   NotFoundError: 'No camera was found on this device.',
   NotReadableError: 'The camera is in use by another app. Close it and try again.',
-  OverconstrainedError: 'This device has no camera that can be used here.'
+  OverconstrainedError: 'This device has no camera that can be used here.',
+  InsecureContextError: 'The camera only works on a secure (https) connection. Open this page over https.'
 }
 
 const SMALLER = { maxEdge: 800, quality: 0.6 }
@@ -95,7 +104,8 @@ export function createCameraSession({
   let previous = null // the signature of the last sampled frame
   let recent = [] // signatures of pictures already sent, newest last
   let lastReadAt = Number.NEGATIVE_INFINITY
-  let lastActivityAt = 0
+  let lastActivityAt = 0 // the last time something happened that the person did or caused: not a re-check that found nothing
+  let recheckGap = config.recheckMs
   let busy = false
   let epoch = 0 // bumped by pause, stop and clear: work started before then is abandoned
   let abort = null
@@ -184,7 +194,6 @@ export function createCameraSession({
     const myEpoch = epoch
     abort = new AbortController()
     lastReadAt = now
-    lastActivityAt = now
     remember(signature)
     set({ counts: { ...state.counts, reads: state.counts.reads + 1 }, canRetry: false, answer: null })
     try {
@@ -223,6 +232,7 @@ export function createCameraSession({
   async function handleReading(result, now, myEpoch) {
     switch (result?.status) {
       case 'new': {
+        recheckGap = config.recheckMs
         set({ current: { questionId: result.questionId, ...result.question }, answer: null, tone: 'info' })
         pendingAnswer = { questionId: result.questionId }
         if (state.auto) return answerQuestion({}, now, myEpoch)
@@ -230,14 +240,17 @@ export function createCameraSession({
         return
       }
       case 'duplicate':
+        recheckGap = Math.min(recheckGap * 2, config.recheckMaxMs)
         set({ phase: S.WAITING_FOR_NEXT, counts: { ...state.counts, duplicates: state.counts.duplicates + 1 } })
-        say('That question was already answered. Show the next one.', 'info')
+        say('That question was already read. Show the next one.', 'info')
         return
       case 'unclear':
+        recheckGap = Math.min(recheckGap * 2, config.recheckMaxMs)
         set({ phase: S.WAITING_FOR_NEXT })
         say(`The text was unclear${result.reason ? `: ${result.reason}` : ''}. Hold the camera steady and a little closer.`, 'warn')
         return
       default:
+        recheckGap = Math.min(recheckGap * 2, config.recheckMaxMs)
         set({ phase: S.WAITING_FOR_NEXT })
         say(result?.reason || 'That does not look like a question. Point the camera at one.', 'info')
     }
@@ -307,8 +320,9 @@ export function createCameraSession({
       say('Point the camera at a question.')
       return undefined
     }
-    if (recent.some((seen) => signatureDistance(seen, signature) < config.changeAbove)) return undefined
-    if (now - lastReadAt < config.minGapMs) return undefined
+    // A scene that looks like a picture already sent waits for its re-check; one that looks different waits only for the gap.
+    const looksSent = recent.some((seen) => signatureDistance(seen, signature) < config.changeAbove)
+    if (now - lastReadAt < (looksSent ? Math.max(config.minGapMs, recheckGap) : config.minGapMs)) return undefined
 
     set({ phase: S.QUESTION_DETECTED, message: 'A question. Hold still…', tone: 'info' })
     return readPicture(now, signature)
@@ -385,6 +399,7 @@ export function createCameraSession({
   async function captureNow(now = 0) {
     const allowed = WATCHING.has(state.phase) || (state.phase === S.ERROR && state.canRetry && !pendingAnswer)
     if (!allowed || busy || !state.visionConfigured || state.limitReached) return undefined
+    lastActivityAt = now // the person asked: that counts as being here
     return readPicture(now, previous)
   }
 

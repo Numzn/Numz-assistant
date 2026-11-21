@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#131215" />
+    <title>Smart Camera - NUMZ</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body data-page="camera">
+    <div id="app">
+      <header id="appHeader">
+        <a id="brand" href="/">NUMZ</a>
+        <div id="headerActions">
+          <a class="ghost" href="/history.html">Conversations</a>
+          <a class="ghost" href="/">Back to chat</a>
+        </div>
+      </header>
+
+      <main id="cameraMain">
+          <div id="cameraStageColumn">
+            <h1 id="cameraTitle">Smart Camera</h1>
+
+            <section id="cameraStage" data-on="false" aria-label="Camera preview">
+              <video id="cameraPreview" playsinline muted autoplay></video>
+              <div id="cameraGuide" aria-hidden="true"></div>
+              <div id="cameraIndicator" data-kind="off">
+                <span class="dot" aria-hidden="true"></span>
+                <span id="cameraIndicatorLabel">Camera off</span>
+              </div>
+              <div id="cameraPlaceholder">
+                <svg viewBox="0 0 24 24" width="36" height="36" aria-hidden="true" focusable="false"><path d="M4 8a2 2 0 0 1 2-2h1.6l1-1.5A1 1 0 0 1 9.4 4h5.2a1 1 0 0 1 .8.5l1 1.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" /><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5" /></svg>
+                <p>Point your phone at a practice question on another screen. The camera only turns on when you press Start.</p>
+              </div>
+            </section>
+
+            <p id="cameraStatus" role="status" aria-live="polite"></p>
+            <div id="cameraBusy" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <span id="cameraBusyLabel"></span>
+            </div>
+
+            <div id="cameraControls" role="group" aria-label="Camera controls">
+              <button id="startButton" type="button" class="pill primary">Start camera</button>
+              <button id="retryButton" type="button" class="pill primary" hidden>Try again</button>
+              <button id="captureButton" type="button" class="pill" hidden>Capture now</button>
+              <button id="pauseButton" type="button" class="pill" hidden>Pause</button>
+              <button id="resumeButton" type="button" class="pill primary" hidden>Resume</button>
+              <button id="stopButton" type="button" class="pill" hidden>Stop camera</button>
+            </div>
+
+            <div id="cameraOptions">
+              <label id="autoToggle" class="switch">
+                <input id="autoInput" type="checkbox" checked />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-text">Answer automatically</span>
+              </label>
+              <button id="flipButton" type="button" class="ghost" hidden>Switch camera</button>
+              <button id="torchButton" type="button" class="ghost" aria-pressed="false" hidden>Light</button>
+            </div>
+          </div>
+
+          <div id="cameraPanels">
+            <section id="questionPanel" class="cam-panel" aria-labelledby="questionHeading" hidden>
+              <h2 id="questionHeading" class="cam-label">Question</h2>
+              <ul id="questionTags" class="tags" aria-label="Kind of question"></ul>
+              <label for="questionText" class="sr-only">The question as read from the camera</label>
+              <textarea id="questionText" rows="3" readonly></textarea>
+              <ul id="questionOptions" class="q-options"></ul>
+              <ul id="questionNotes" class="q-notes"></ul>
+              <div id="questionActions" hidden>
+                <button id="confirmButton" type="button" class="pill primary">Answer this</button>
+                <button id="skipButton" type="button" class="pill">Skip</button>
+              </div>
+            </section>
+
+            <section id="answerPanel" class="cam-panel" aria-labelledby="answerHeading" aria-live="polite" hidden>
+              <h2 id="answerHeading" class="cam-label">Answer</h2>
+              <div id="answerBody"></div>
+            </section>
+
+            <section id="emptyPanel" class="cam-panel" aria-label="How it works">
+              <h2 class="cam-label">How it works</h2>
+              <ol id="howItWorks">
+                <li>Press <strong>Start camera</strong> and hold your phone steady on a question.</li>
+                <li>The question is read, answered, and shown here with the working.</li>
+                <li>Show the next question. One you have already had is not answered twice.</li>
+              </ol>
+            </section>
+
+            <section id="historyPanel" class="cam-panel" aria-labelledby="historyHeading" hidden>
+              <div id="historyHead">
+                <h2 id="historyHeading" class="cam-label">Previous questions</h2>
+                <button id="clearButton" type="button" class="link-danger" hidden>Clear history</button>
+              </div>
+              <ol id="historyList"></ol>
+            </section>
+
+          <aside id="cameraNotice" aria-label="About privacy and use">
+            <p>
+              <strong>Your pictures.</strong> While the light says <em>Scanning</em>, a picture of what the camera sees is sent to an AI
+              vision service to be read, and is not kept. Only the question text and its answer are saved, as a conversation you can
+              delete in Conversations, or clear here. Nothing is scanned while the camera is off or paused.
+            </p>
+            <p>
+              <strong>Use it for study.</strong> Point it only at material you are allowed to capture, such as your own practice
+              questions. Do not use it for exams or assessments where outside help is not allowed.
+            </p>
+          </aside>
+          </div>
+      </main>
+    </div>
+    <!-- The assistant asks for its access code here when the server requires one. -->
+    <section id="accessGate" role="dialog" aria-modal="true" aria-labelledby="accessTitle" hidden>
+      <form id="accessForm" autocomplete="on">
+        <h2 id="accessTitle">Enter the access code</h2>
+        <p id="accessHint">This assistant is protected. Ask whoever runs it for the code.</p>
+        <label for="accessCode" class="sr-only">Access code</label>
+        <input id="accessCode" name="access-code" type="password" autocomplete="current-password" spellcheck="false" />
+        <p id="accessError" role="alert" hidden></p>
+        <button id="accessSubmit" type="submit" class="pill primary">Unlock</button>
+      </form>
+    </section>
+
+    <script type="module" src="/src/camera.js"></script>
+  </body>
+</html>

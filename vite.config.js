@@ -12,10 +12,10 @@ export default defineConfig(({ mode }) => {
   return {
     root: '.',
     publicDir: 'public',
-    // Two pages: the Home screen and the conversation history screen.
+    // Three pages: the Home screen, the conversation history screen and the Smart Camera.
     build: {
       rollupOptions: {
-        input: { main: 'index.html', history: 'history.html' }
+        input: { main: 'index.html', history: 'history.html', camera: 'camera.html' }
       }
     },
     server: {

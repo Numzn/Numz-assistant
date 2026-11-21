@@ -13,7 +13,15 @@
  *
  * Every threshold here is an UNMEASURED default: no real phone footage of a screen has been run through it. The tests
  * pin the shape of each rule with synthetic frames. The server reads the text and has the last word on whether a
- * question is new, so a threshold that is too keen costs one wasted read, never a wrong answer.
+ * question is new.
+ *
+ * What the signature can and cannot do (measured on 18 rendered quiz screens in three templates, with simulated hand
+ * wobble: shift, rotation, scale, blur, noise, exposure): it tells "still" from "moving" well, and a clearly different
+ * page from the last one reasonably. It can NOT tell two different questions in one layout from the same page held
+ * slightly differently: "12 + 7" and "13 + 7" differ by 0.003 (below sensor noise), other same-layout pairs by 0.09 to
+ * 0.13, while one page jostled by a hand reaches 0.5 to 0.75. No pooling size or small-shift search separated them. So
+ * a distance is only ever used to decide how soon to look again (see cameraSession.js), never to decide that a question
+ * has been seen.
  */
 
 export const POOLED_WIDTH = 40
