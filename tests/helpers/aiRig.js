@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
@@ -43,14 +43,34 @@ const readBody = (req) =>
     req.on('end', () => resolve(Buffer.concat(chunks)))
   })
 
-/** An OpenAI-compatible text model that answers "echo: <what you asked>", reports token counts, and streams when asked to. */
+const READINGS = [
+  { isQuestion: true, text: 'Question 1. A car travels 150 km in 2.5 hours. What is its average speed?', options: [{ label: 'A', text: '40 km/h' }, { label: 'B', text: '60 km/h' }, { label: 'C', text: '75 km/h' }, { label: 'D', text: '100 km/h' }], type: 'multiple-choice', subject: 'physics', hasDiagram: false, confidence: 0.93, reason: '' },
+  { isQuestion: true, text: 'Question 2. Name the longest river in Africa and the sea into which it flows.', options: [], type: 'short-answer', subject: 'geography', hasDiagram: false, confidence: 0.9, reason: '' }
+]
+const CAMERA_ANSWER = { subject: 'physics', type: 'multiple-choice', answer: 'B) 60 km/h', steps: ['speed = distance / time', '150 / 2.5 = 60'], explanation: 'Average speed is **distance divided by time**.', confidence: 'high', uncertainty: null }
+
+/**
+ * An OpenAI-compatible model that answers "echo: <what you asked>", reports token counts, and streams when asked to. It also plays the
+ * vision model (a picture in the request -> the next question of two) and the camera's answering turn (a <question> in the request).
+ */
 export async function startFakeProvider() {
-  const state = { calls: 0, streamOptionsSeen: 0, lastKey: null, delayMs: 0 }
+  const state = { calls: 0, streamOptionsSeen: 0, lastKey: null, delayMs: 0, pictures: 0, readings: 0 }
   const server = await listen(async (req, res) => {
     const body = JSON.parse((await readBody(req)).toString() || '{}')
     state.calls++
     state.lastKey = req.headers.authorization
     if (body.stream_options?.include_usage) state.streamOptionsSeen++
+    const flat = JSON.stringify(body)
+    if (/data:image\/(jpeg|png|webp);base64,/.test(flat)) {
+      state.pictures++
+      const reading = READINGS[Math.min(state.readings++, READINGS.length - 1)]
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({ model: 'fake-vision', choices: [{ message: { content: JSON.stringify(reading) } }], usage: { prompt_tokens: 900, completion_tokens: 80 } }))
+    }
+    if (flat.includes('<question>')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({ model: 'fake-model', choices: [{ message: { content: JSON.stringify(CAMERA_ANSWER) } }], usage: { prompt_tokens: 300, completion_tokens: 120 } }))
+    }
     const last = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user')?.content ?? ''
     const reply = `echo: ${String(last).slice(0, 200)}`
     const usage = { prompt_tokens: 40 + String(last).length, completion_tokens: reply.length }
@@ -140,8 +160,13 @@ export async function startStack({ env = {}, front = null, appPort = null, authP
   const appEnv = {
     PATH: process.env.PATH,
     HOME: tmp,
+    NUMZ_SKIP_ENV_FILES: '1', // never read the real .env / .env.secrets
     NODE_ENV: 'production',
     PORT: String(ports.app),
+    CAMERA_VISION_PROVIDER: 'openai-compatible',
+    CAMERA_VISION_API_KEY: 'stub',
+    CAMERA_VISION_MODEL: 'fake-vision',
+    CAMERA_VISION_BASE_URL: `${provider.url}/v1`,
     SPEECH_DATABASE_PATH: dbFile,
     ASSISTANT_AUTH_MODE: 'broker',
     PUBLIC_ORIGIN: appOrigin,
@@ -189,6 +214,51 @@ export async function startStack({ env = {}, front = null, appPort = null, authP
       rig.kill('SIGTERM')
       await Promise.all([provider.close(), audio.close()])
       await new Promise((r) => setTimeout(r, 100))
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+}
+
+/**
+ * The real dashboard Caddyfile (the candidate in the infrastructure checkout), in a real Caddy container, in front of the app and
+ * numzlab-auth on one origin, the way the shared site is. Rendered by the rehearsal's own render() so it is the file that ships.
+ */
+export async function startFront({ stack, listen: port, dist }) {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'ai-front-'))
+  const unused = await freePort()
+  const ports = JSON.stringify({ auth: stack.ports.auth, check: stack.ports.check, ai: stack.ports.app, cv: unused, deploy: unused, network: unused })
+  const rendered = await new Promise((resolve, reject) => {
+    const py = spawn('python3', ['-c', `import sys, json
+sys.path.insert(0, ${JSON.stringify(path.join(NUMZLAB_AUTH_DIR, 'tests'))})
+import rehearse_caddy as r
+print(r.render(r.CADDYFILE, ${port}, '127.0.0.1/32', json.loads(${JSON.stringify(ports)})))`], { env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
+    let out = ''
+    let err = ''
+    py.stdout.on('data', (c) => (out += c))
+    py.stderr.on('data', (c) => (err += c))
+    py.on('exit', (code) => (code === 0 ? resolve(out) : reject(new Error(`render failed: ${err}`))))
+  })
+  const caddyfile = path.join(tmp, 'Caddyfile')
+  writeFileSync(caddyfile, rendered)
+  const api = path.join(tmp, 'api')
+  mkdirSync(api)
+  const name = `ai-front-${port}`
+  await new Promise((resolve, reject) => {
+    const run = spawn('docker', ['run', '-d', '--rm', '--name', name, '--network', 'host', '-v', `${caddyfile}:/etc/caddy/Caddyfile:ro`, '-v', `${dist}:/rehearsal/dist:ro`, '-v', `${api}:/rehearsal/api:ro`, 'caddy:2-alpine', 'caddy', 'run', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile'])
+    run.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('could not start Caddy'))))
+  })
+  for (let i = 0; i < 60; i++) {
+    try {
+      await fetch(`http://127.0.0.1:${port}/ai`, { redirect: 'manual' })
+      break
+    } catch {
+      await new Promise((r) => setTimeout(r, 250))
+    }
+  }
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    async close() {
+      await new Promise((resolve) => spawn('docker', ['rm', '-f', name]).on('exit', resolve))
       rmSync(tmp, { recursive: true, force: true })
     }
   }

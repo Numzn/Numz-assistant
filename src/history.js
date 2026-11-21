@@ -54,7 +54,7 @@ function row(conversation) {
 
   const open = document.createElement('a')
   open.className = 'conv-main'
-  open.href = `/?conversation=${encodeURIComponent(conversation.id)}`
+  open.href = `./?conversation=${encodeURIComponent(conversation.id)}` // relative: it must stay inside /ai/ when the app is served there
   const name = document.createElement('span')
   name.className = 'conv-title'
   name.textContent = title
