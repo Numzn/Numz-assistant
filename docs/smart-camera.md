@@ -82,7 +82,7 @@ paused.
 
 ## What is and is not verified
 
-Verified: 900 Node tests (the camera adds about 190: frame analysis, state machine, question identity, model-reply
+Verified: 900 Node tests (the camera adds about 150: frame analysis, state machine, question identity, model-reply
 parsing, the service, the routes with the real browser client over a real socket, the vision adapters against a fake
 `fetch`, the presenter); the production build within a bundle budget (25 KB gzipped for the camera page); and
 `scripts/camera-e2e/run.mjs`, 31 checks in real headless Chromium against the production build and its security headers,
