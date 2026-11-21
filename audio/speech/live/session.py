@@ -75,10 +75,11 @@ class LiveSpeechSession:
         )
         self._frame_vad = frame_vad or FrameVad()
         self._endpointer = Endpointer(endpointer_config or CONVERSATION_PROFILE)
-        self._diarizer = diarizer or SingleSpeakerLiveDiarizer()
+        # `is not None`, not `or`: a labeller with no levels yet has length 0, and must not be mistaken for "none given".
+        self._diarizer = diarizer if diarizer is not None else SingleSpeakerLiveDiarizer()
         self._reconciler = TranscriptReconciler(
             language=self.language,
-            speaker_resolver=lambda event: self._diarizer.current_speaker((event.start + event.end) / 2),
+            speaker_resolver=self._speaker_for,
             id_factory=lambda sequence: segment_id_for(self.session_id, sequence),
         )
         self._drained = 0
@@ -92,6 +93,22 @@ class LiveSpeechSession:
     def on_transcript_event(self, callback: Callable[[TranscriptEvent], None]):
         """Optional hook: called with every PARTIAL/STABILIZING/FINAL TranscriptEvent."""
         self._on_transcript_event = callback
+
+    def _speaker_for(self, event: TranscriptEvent):
+        """Who spoke a finished line: (label or None, uncertain). A diarizer that can judge a whole line is asked
+        about the line; one that only knows a moment is asked about the middle of it, as it always was."""
+        for_span = getattr(self._diarizer, "speaker_for_span", None)
+        if callable(for_span):
+            return for_span(event.start, event.end)
+        return self._diarizer.current_speaker((event.start + event.end) / 2)
+
+    def note_source_levels(self, timestamp_s: float, duration_s: float, mic, tab):
+        """How loud the microphone and the shared tab/system audio were in the frame that ends at timestamp_s.
+        Call it before ingest_audio_frame for that frame. A no-op unless the diarizer wants levels, so a session
+        that was not given a source-level labeller behaves exactly as before."""
+        note = getattr(self._diarizer, "note", None)
+        if callable(note):
+            note(timestamp_s, duration_s, mic, tab)
 
     def ingest_audio_frame(self, frame: np.ndarray, timestamp_s: float):
         """Hand it raw PCM frames and the stream position (seconds, at the end of `frame`)."""
@@ -266,7 +283,7 @@ class LiveSpeechSession:
             speakers=sorted(self.speakers),
             meta={
                 "asr": {"engine": self._streaming_asr.name},
-                "diarization": {"engine": self._diarizer.name, "enabled": False},
+                "diarization": {"engine": self._diarizer.name, "enabled": self._diarizer.name != "none"},
                 "sourceMode": "live",
                 "finalization": "live-only",
             },
