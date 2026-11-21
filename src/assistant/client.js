@@ -1,6 +1,7 @@
 import { createAssistantRealtimeClient } from './realtimeClient.js'
+import { withBase } from '../core/apiPaths.js'
 
-const BASE = '/api/v1/assistant'
+const BASE = withBase('/api/v1/assistant')
 
 async function parseJson(res) {
   const text = await res.text()

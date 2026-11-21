@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 import { getMediaDevices, pickMimeType, stopTracks } from './micUtils.js'
 import { parseJsonBody } from '../../utils/json.js'
 
@@ -10,7 +12,7 @@ function createUnsupportedError() {
  * Intended to be more accurate than browser SpeechRecognition.
  */
 export function createVoiceInputRecorderServer({
-  endpoint = '/api/v1/assistant/stt',
+  endpoint = withBase('/api/v1/assistant/stt'),
   lang = 'en-US',
   prompt = '',
   sttBackend = '',

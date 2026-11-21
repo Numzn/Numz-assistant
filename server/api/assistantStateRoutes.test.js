@@ -4,6 +4,7 @@ import test from 'node:test'
 import express from 'express'
 import { errorHandler } from '../http/errorHandler.js'
 import { assistantRouter } from '../routes/assistant.js'
+import { LEGACY_IDENTITY } from '../auth/identity.js'
 import { sessionService } from '../sessions/sessionService.js'
 import { STATES as BROWSER_STATES, createStateMachine } from '../../src/assistant/stateMachine.js'
 
@@ -61,7 +62,7 @@ async function serve() {
     req.id = 'state-test'
     next()
   })
-  app.use('/api/v1/assistant', assistantRouter)
+  app.use('/api/v1/assistant', (req, _res, next) => ((req.identity = LEGACY_IDENTITY), next()), assistantRouter)
   app.use(errorHandler({ logger: quiet }))
   const server = http.createServer(app)
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))

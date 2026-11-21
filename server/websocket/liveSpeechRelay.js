@@ -59,14 +59,14 @@ function firstMessageProblem(data, isBinary, principal, token) {
   return null
 }
 
-function bridge({ client, upstreamUrl, principal, token, active, logger, maxPayload, startTimeoutMs, onClosed = () => {} }) {
+function bridge({ client, upstreamUrl, upstreamHeaders = {}, principal, token, active, logger, maxPayload, startTimeoutMs, onClosed = () => {} }) {
   // Returns { close(reason) }: ends this connection now, on both sides (see closeMeeting).
   let started = false
   let closed = false
   let pendingBytes = 0
   const pending = []
 
-  const upstream = new WebSocket(upstreamUrl, { handshakeTimeout: UPSTREAM_CONNECT_TIMEOUT_MS, maxPayload })
+  const upstream = new WebSocket(upstreamUrl, { handshakeTimeout: UPSTREAM_CONNECT_TIMEOUT_MS, maxPayload, headers: upstreamHeaders })
   const startTimer = setTimeout(() => finish(1008, 'start-timeout'), startTimeoutMs)
 
   function finish(code, reason = '') {
@@ -128,6 +128,8 @@ export function attachLiveSpeechRelay({
   auth,
   upstreamUrl,
   path = LIVE_SPEECH_PATH,
+  access = null, // the per-person sign-in: when given, a live session of a signed-in person from our own origin is required IN ADDITION to the ticket
+  upstreamHeaders = {}, // sent to the speech service (its shared key)
   maxConnections = 4,
   maxPayloadBytes = 1024 * 1024,
   startTimeoutMs = DEFAULT_START_TIMEOUT_MS,
@@ -142,7 +144,7 @@ export function attachLiveSpeechRelay({
     handleProtocols: (protocols) => (protocols.has(TICKET_PROTOCOL) ? TICKET_PROTOCOL : false)
   })
 
-  upgrades.add(path, (req, socket, head) => {
+  upgrades.add(path, async (req, socket, head) => {
     const offered = String(req.headers['sec-websocket-protocol'] ?? '')
       .split(',')
       .map((value) => value.trim())
@@ -155,12 +157,24 @@ export function attachLiveSpeechRelay({
     if (principal.kind !== 'ticket') return rejectUpgrade(socket, 401, 'auth-required')
     if (active.size >= maxConnections) return rejectUpgrade(socket, 503, 'live-speech-busy')
 
+    // The ticket proves WHICH meeting; the session proves WHO is holding it (and that it is our own page, not another site, doing so).
+    let verdict = null
+    if (access) {
+      verdict = await access.authorizeUpgrade(req, 'voice')
+      if (!verdict.ok) return rejectUpgrade(socket, verdict.status, verdict.code)
+    }
+
     wss.handleUpgrade(req, socket, head, (client) => {
       active.add(client)
+      if (verdict?.identity) {
+        access.trackSocket(verdict.identity, client, verdict.idHash)
+        client.on('message', () => access.touchSession(verdict.idHash)) // a meeting being recorded is the person using the app
+      }
       logger.log(`[live-speech] relay opened meeting=${principal.meetingId} active=${active.size}`)
       const { close } = bridge({
         client,
         upstreamUrl,
+        upstreamHeaders,
         principal,
         token,
         active,

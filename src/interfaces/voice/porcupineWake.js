@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 /**
  * Thin Porcupine wake-word wrapper (browser, always-on mic via WebVoiceProcessor).
  *
@@ -9,7 +11,7 @@ const defaultLoadSdk = () => import('./porcupineSdk.js')
 export function createPorcupineWake({
   accessKey = '',
   keywordPublicPath = '',
-  modelPublicPath = '/porcupine/porcupine_params_en.pv',
+  modelPublicPath = withBase('/porcupine/porcupine_params_en.pv'),
   keywordLabel = 'numz',
   sensitivity = 0.55,
   wakeDebounceMs = 1500,

@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 /**
  * The browser's view of the meeting API. It can start a meeting, finish its own, and ask about its launch session:
  *   launch  - start a NEW meeting, with the launch code (X-Meeting-Launch-Code) typed by a person, OR with the
@@ -7,8 +9,9 @@
  * It never has, and the server never accepts from it, the admin token.
  */
 
-const MEETINGS = '/api/v1/meetings'
-const HEALTH = '/api/v1/health'
+const MEETINGS = withBase('/api/v1/meetings')
+// The details (does this server allow starting meetings from the browser?) are for signed-in people: the public health answer says only that it is up.
+const HEALTH = withBase('/api/v1/health/detail')
 
 export class MeetingApiError extends Error {
   constructor(message, { status = 0, code = 'network', details = null } = {}) {

@@ -5,9 +5,12 @@ import {
   createAccessApi,
   createAccessController,
   describeLoginError,
+  describeNotice,
+  installCsrfHeader,
   isAssistantRefusal,
   watchForUnauthorized
 } from '../src/interfaces/auth/access.js'
+import { BASE, withBase } from '../src/core/apiPaths.js'
 
 function apiRig(responses) {
   const calls = []
@@ -138,7 +141,7 @@ function controllerRig(answers) {
 test('no code needed: the card never appears', async () => {
   const { controller } = controllerRig({ status: { required: false, misconfigured: false, authenticated: true } })
   await controller.start()
-  assert.deepEqual(controller.getState(), { phase: 'open', error: '', canLock: false })
+  assert.deepEqual(controller.getState(), { phase: 'open', error: '', canLock: false, mode: 'code', user: null, notice: '', loginUrl: '' })
 })
 
 test('a code is needed and the user is not unlocked: the card appears', async () => {
@@ -150,7 +153,7 @@ test('a code is needed and the user is not unlocked: the card appears', async ()
 test('already unlocked: no card, and the Lock button is offered', async () => {
   const { controller } = controllerRig({ status: { required: true, misconfigured: false, authenticated: true } })
   await controller.start()
-  assert.deepEqual(controller.getState(), { phase: 'open', error: '', canLock: true })
+  assert.deepEqual(controller.getState(), { phase: 'open', error: '', canLock: true, mode: 'code', user: null, notice: '', loginUrl: '' })
 })
 
 test('a server that is set up wrongly is shown as locked, with no way to type a code', async () => {
@@ -173,7 +176,7 @@ test('the right code unlocks and reloads; the code is trimmed and sent once', as
   assert.equal(await controller.submit('  my access code  '), true)
   assert.deepEqual(calls.login, ['my access code'])
   assert.equal(calls.unlocked, 1)
-  assert.deepEqual(controller.getState(), { phase: 'open', error: '', canLock: true })
+  assert.deepEqual(controller.getState(), { phase: 'open', error: '', canLock: true, mode: 'code', user: null, notice: '', loginUrl: '' })
 })
 
 test('a wrong code keeps the card open with a message, and does not reload', async () => {
@@ -209,7 +212,7 @@ test('a refusal seen mid-session shows the card once, and does not disturb a log
   await controller.start()
   assert.equal(controller.getState().phase, 'open')
   controller.require()
-  assert.deepEqual(controller.getState(), { phase: 'needed', error: '', canLock: false })
+  assert.deepEqual(controller.getState(), { phase: 'needed', error: '', canLock: false, mode: 'code', user: null, notice: '', loginUrl: '' })
   const states = []
   controller.subscribe((s) => states.push(s.phase))
   controller.require()
@@ -221,4 +224,159 @@ test('lock signs out and reloads', async () => {
   await controller.lock()
   assert.equal(calls.logout, 1)
   assert.equal(calls.unlocked, 1)
+})
+
+
+// ---- signing in with Google (mode 'broker') ------------------------------------------------------------------------
+
+const BROKER_OUT = { mode: 'broker', required: true, misconfigured: false, authenticated: false, reason: 'session-required', loginUrl: '/ai/auth/login' }
+const BROKER_IN = { mode: 'broker', required: true, misconfigured: false, authenticated: true, loginUrl: '/ai/auth/login', csrf: 'tok-1', user: { id: 'u1', name: 'Ada', email: 'ada@example.com', role: 'admin', capabilities: ['chat'] } }
+
+function brokerRig(statuses, { search = '' } = {}) {
+  const calls = { logout: 0, unlocked: 0, login: 0, tidied: 0 }
+  const queue = [...statuses]
+  const api = {
+    status: async () => (queue.length > 1 ? queue.shift() : queue[0]),
+    login: async () => {
+      calls.login += 1
+    },
+    logout: async () => {
+      calls.logout += 1
+    }
+  }
+  const controller = createAccessController({ api, onUnlocked: () => (calls.unlocked += 1), search: () => search, tidy: () => (calls.tidied += 1) })
+  return { controller, calls }
+}
+
+test('the app lives at its base path when built for one, and at the root otherwise', () => {
+  assert.equal(BASE, '', 'the tests run without a base path')
+  assert.equal(withBase('/api/v1/x'), '/api/v1/x')
+})
+
+test('signed out: the card asks to continue with Google, says why, and offers the way in', async () => {
+  const { controller } = brokerRig([BROKER_OUT])
+  await controller.start()
+  assert.deepEqual(controller.getState(), { phase: 'needed', error: '', canLock: false, mode: 'broker', user: null, notice: '', loginUrl: '/ai/auth/login' })
+})
+
+test('signed in: no card, the person is known, and sign-out is offered', async () => {
+  const { controller } = brokerRig([BROKER_IN])
+  await controller.start()
+  const state = controller.getState()
+  assert.equal(state.phase, 'open')
+  assert.equal(state.canLock, true)
+  assert.equal(state.user.email, 'ada@example.com')
+})
+
+test('coming back from a failed or refused sign-in says so, once, and tidies the address', async () => {
+  for (const [search, expected] of [['?auth=denied', /not approved/], ['?auth=failed', /did not finish/], ['?auth=unavailable', /could not reach the sign-in service/], ['?x=1&auth=denied', /not approved/]]) {
+    const { controller, calls } = brokerRig([BROKER_OUT], { search })
+    await controller.start()
+    assert.match(controller.getState().notice, expected, search)
+    assert.equal(calls.tidied, 1)
+  }
+  const { controller } = brokerRig([BROKER_OUT], { search: '?auth=<script>' })
+  await controller.start()
+  assert.equal(controller.getState().notice, '', 'an unknown code shows nothing (and never echoes what the address said)')
+})
+
+test('a session that ended is explained: ended, removed, or the sign-in service unavailable', async () => {
+  for (const [reason, expected] of [['session-expired', /session ended/], ['access-revoked', /access to NUMZ AI has ended/], ['identity-unavailable', /cannot confirm/], ['session-required', /^$/]]) {
+    const { controller } = brokerRig([{ ...BROKER_OUT, reason }])
+    await controller.start()
+    assert.match(controller.getState().notice, expected, reason)
+  }
+  assert.equal(describeNotice('nonsense'), '')
+})
+
+test('a refusal in the middle of using the app asks for sign-in at once and then learns why', async () => {
+  const { controller } = brokerRig([BROKER_IN, { ...BROKER_OUT, reason: 'session-expired' }])
+  await controller.start()
+  assert.equal(controller.getState().phase, 'open')
+  controller.require()
+  assert.equal(controller.getState().phase, 'needed', 'immediately')
+  assert.equal(controller.getState().user, null)
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.match(controller.getState().notice, /session ended/)
+  controller.require() // a second refusal changes nothing
+  assert.equal(controller.getState().phase, 'needed')
+})
+
+test('there is no code to type in this mode, and signing out signs out this device and reloads', async () => {
+  const { controller, calls } = brokerRig([BROKER_OUT])
+  await controller.start()
+  assert.equal(await controller.submit('anything'), false)
+  assert.equal(calls.login, 0)
+  const signedIn = brokerRig([BROKER_IN])
+  await signedIn.controller.start()
+  await signedIn.controller.lock()
+  assert.deepEqual([signedIn.calls.logout, signedIn.calls.unlocked], [1, 1])
+})
+
+test('the page keeps the session\'s CSRF token from the status answer and sends it with sign-out', async () => {
+  const calls = []
+  const fetchFn = async (url, init) => {
+    calls.push({ url, method: init?.method, headers: init?.headers })
+    return url.endsWith('/status') ? { status: 200, ok: true, text: async () => JSON.stringify(BROKER_IN) } : { status: 204, ok: true, text: async () => '' }
+  }
+  const api = createAccessApi({ fetchFn })
+  assert.equal(api.csrfToken(), '')
+  await api.status()
+  assert.equal(api.csrfToken(), 'tok-1')
+  await api.logout()
+  assert.equal(calls[1].headers['X-CSRF-Token'], 'tok-1')
+})
+
+function fetchRig() {
+  const seen = []
+  const target = { fetch: async (input, init) => (seen.push({ input, init }), { status: 200 }) }
+  return { target, seen }
+}
+const headerOf = (init) => new Headers(init?.headers).get('x-csrf-token')
+
+test('the CSRF token goes on changes to the app\'s own API and on nothing else', async () => {
+  const { target, seen } = fetchRig()
+  const undo = installCsrfHeader(target, () => 'tok-9')
+  await target.fetch('/api/v1/assistant/chat', { method: 'POST', body: '{}' })
+  await target.fetch('/api/v1/assistant/conversations/abc', { method: 'DELETE' })
+  await target.fetch('/api/v1/assistant/state', { method: 'patch', headers: { 'Content-Type': 'application/json' } })
+  assert.deepEqual(seen.map((s) => headerOf(s.init)), ['tok-9', 'tok-9', 'tok-9'])
+  assert.equal(new Headers(seen[2].init.headers).get('content-type'), 'application/json', 'what the caller set is kept')
+  seen.length = 0
+  await target.fetch('/api/v1/assistant/conversations')
+  await target.fetch('/api/v1/assistant/conversations', { method: 'GET' })
+  await target.fetch('/style.css', { method: 'POST' })
+  await target.fetch('https://evil.example/api/v1/assistant/chat', { method: 'POST' })
+  await target.fetch('//evil.example/api/v1/assistant/chat', { method: 'POST' })
+  assert.deepEqual(seen.map((s) => headerOf(s.init)), [null, null, null, null, null], 'reads, other files and other sites never get the token')
+  undo()
+  await target.fetch('/api/v1/assistant/chat', { method: 'POST' })
+  assert.equal(headerOf(seen.at(-1).init), null)
+})
+
+test('a change asked for before the token is known waits for it, then goes; if it never comes the request still goes (and the server says no)', async () => {
+  const { target, seen } = fetchRig()
+  let token = ''
+  let release
+  const ready = new Promise((resolve) => (release = resolve))
+  installCsrfHeader(target, () => token, () => ready)
+  const pending = target.fetch('/api/v1/assistant/sessions', { method: 'POST' })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(seen.length, 0, 'held back')
+  token = 'tok-late'
+  release()
+  await pending
+  assert.equal(headerOf(seen[0].init), 'tok-late')
+  // no sign-in mode with tokens at all (the shared code): nothing to wait for, nothing added
+  const plain = fetchRig()
+  installCsrfHeader(plain.target, () => '')
+  await plain.target.fetch('/api/v1/assistant/chat', { method: 'POST' })
+  assert.equal(headerOf(plain.seen[0].init), null)
+})
+
+test('a Request object is understood too', async () => {
+  const { target, seen } = fetchRig()
+  installCsrfHeader(target, () => 'tok-r')
+  await target.fetch(new Request('http://placeholder.invalid/api/v1/assistant/chat', { method: 'POST', body: '{}' }))
+  assert.equal(headerOf(seen[0].init), 'tok-r')
 })

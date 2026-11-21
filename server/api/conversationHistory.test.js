@@ -5,6 +5,7 @@ import { createDatabase } from '../persistence/sqliteDatabase.js'
 import { createConversationRepository } from '../persistence/conversationRepository.js'
 import { createSessionService, sessionService } from '../sessions/sessionService.js'
 import { assistantRouter } from '../routes/assistant.js'
+import { LEGACY_IDENTITY } from '../auth/identity.js'
 import { errorHandler, notFoundHandler } from '../http/errorHandler.js'
 
 const quiet = { error() {}, warn() {}, info() {}, log() {} }
@@ -92,7 +93,7 @@ async function serve() {
     req.id = 'test-request'
     next()
   })
-  app.use('/api/v1/assistant', assistantRouter)
+  app.use('/api/v1/assistant', (req, _res, next) => ((req.identity = LEGACY_IDENTITY), next()), assistantRouter)
   app.use('/api', notFoundHandler)
   app.use(errorHandler({ logger: quiet }))
   const server = await new Promise((resolve) => {

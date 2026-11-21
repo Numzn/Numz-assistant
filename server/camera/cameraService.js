@@ -4,6 +4,7 @@ import { parseAnswer, parseReading, toMarkdown } from './cameraModelOutput.js'
 import { buildAnswerMessages, buildReadMessages } from './cameraPrompts.js'
 import { pictureKind } from './pictureKind.js'
 import { findKnownQuestion, identityText, sameQuestion, validateReading } from './questionIdentity.js'
+import { LEGACY_OWNER } from '../sessions/sessionService.js'
 
 /**
  * The server side of the Smart Camera: what is read from a picture, what counts as a question already seen, what is
@@ -24,8 +25,12 @@ import { findKnownQuestion, identityText, sameQuestion, validateReading } from '
  *   - logs carry ids, statuses and counts only: never a picture, a question or an answer, and never an upstream error's
  *     message (which can echo what was sent).
  *
- * `vision` is `{ configured, read({ messages, image, signal }) -> string, answer?({ messages, image, signal }) -> string }`.
- * `answerEngine` is `(messages, { signal }) -> string` (the configured text model, normally DeepSeek).
+ * `vision` is `{ configured, read({ messages, image, signal, onUsage }) -> string, answer?({ messages, image, signal, onUsage }) -> string }`.
+ * `answerEngine` is `(messages, { signal, onUsage }) -> string` (the configured text model, normally DeepSeek).
+ *
+ * A camera session belongs to the person who started it (`ctx.owner`, the same key the conversations use): every later call names
+ * its owner too, and a session id that is not that owner's is "not found". The saved conversation goes into that person's own
+ * history. `ctx.meter` / `ctx.identity` (optional) make each model call count against that person's limits and usage records.
  */
 
 export const CAMERA_LIMITS = Object.freeze({
@@ -33,6 +38,7 @@ export const CAMERA_LIMITS = Object.freeze({
   maxImageBytes: 1_500_000,
   minReadIntervalMs: 2000,
   maxActiveSessions: 20,
+  maxSessionsPerOwner: 3,
   sessionIdleMs: 30 * 60_000,
   pictureKeptMs: 2 * 60_000,
   maxConcurrentReads: 2,
@@ -48,6 +54,8 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
   let readsInFlight = 0
 
   const log = (message) => logger.info(`[camera] ${message}`)
+  const ownerOf = (ctx) => ctx?.owner ?? LEGACY_OWNER
+  const viewOf = (owner) => (typeof sessions.forOwner === 'function' ? sessions.forOwner(owner) : sessions)
 
   function dropPicture(entry) {
     entry.picture = null
@@ -58,7 +66,7 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     for (const [id, session] of active) {
       if (t - session.lastUsedAt > cap.sessionIdleMs && !session.busy) {
         active.delete(id)
-        sessions.forget(id)
+        session.view.forget(id)
         log(`session ${id} expired`)
         continue
       }
@@ -66,10 +74,10 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     }
   }
 
-  function find(sessionId) {
+  function find(sessionId, owner) {
     sweep()
     const session = active.get(sessionId)
-    if (!session) throw new CameraError(404, 'session-not-found', 'This camera session has ended. Start it again.')
+    if (!session || session.owner !== owner) throw new CameraError(404, 'session-not-found', 'This camera session has ended. Start it again.')
     session.lastUsedAt = now()
     return session
   }
@@ -95,24 +103,31 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     return Promise.race([Promise.resolve().then(() => run(controller.signal)), deadline]).finally(() => clearTimeout(timer))
   }
 
-  async function createSession() {
+  async function createSession(ctx = {}) {
     sweep()
-    while (active.size >= cap.maxActiveSessions) {
+    const owner = ownerOf(ctx)
+    const view = viewOf(owner)
+    const dropIdlest = (mine, why) => {
       let idlest = null
-      for (const session of active.values()) if (!idlest || session.lastUsedAt < idlest.lastUsedAt) idlest = session
+      for (const session of active.values()) if ((!mine || session.owner === owner) && (!idlest || session.lastUsedAt < idlest.lastUsedAt)) idlest = session
       active.delete(idlest.id)
-      sessions.forget(idlest.id)
-      log(`session ${idlest.id} dropped: too many sessions`)
+      idlest.view.forget(idlest.id)
+      log(`session ${idlest.id} dropped: ${why}`)
     }
-    const conversation = sessions.createSession({ source: 'camera' })
+    // One person cannot crowd everybody else out: past their own few sessions their idlest one makes room.
+    if (owner !== LEGACY_OWNER) {
+      while ([...active.values()].filter((session) => session.owner === owner).length >= cap.maxSessionsPerOwner) dropIdlest(true, 'too many sessions for one person')
+    }
+    while (active.size >= cap.maxActiveSessions) dropIdlest(false, 'too many sessions')
+    const conversation = view.createSession({ source: 'camera' })
     const t = now()
-    active.set(conversation.id, { id: conversation.id, createdAt: t, lastUsedAt: t, lastReadAt: null, reads: 0, busy: false, known: [], questions: new Map() })
+    active.set(conversation.id, { id: conversation.id, owner, view, createdAt: t, lastUsedAt: t, lastReadAt: null, reads: 0, busy: false, known: [], questions: new Map() })
     log(`session ${conversation.id} started`)
     return { sessionId: conversation.id, visionConfigured: Boolean(vision?.configured), limits: { maxReads: cap.maxReads, maxImageBytes: cap.maxImageBytes } }
   }
 
-  async function read(sessionId, picture) {
-    const session = find(sessionId)
+  async function read(sessionId, picture, ctx = {}) {
+    const session = find(sessionId, ownerOf(ctx))
 
     const bytes = picture?.bytes
     if (!(bytes instanceof Uint8Array) || bytes.length === 0) throw new CameraError(400, 'invalid-image', 'That is not a picture the camera can read.')
@@ -130,14 +145,18 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     }
     if (readsInFlight >= cap.maxConcurrentReads) throw new CameraError(503, 'camera-busy', 'The camera service is busy. Try again in a moment.', { retryAfterSeconds: 2 })
 
+    // The person's own limits (stopped, rate, daily allowance, spending) are checked before the picture goes anywhere.
+    const call = ctx.meter?.begin(ctx.identity, 'vision_read', { requestId: ctx.requestId, conversationId: sessionId })
     session.busy = true
     session.lastReadAt = t
     session.reads++
     readsInFlight++
     let raw
     try {
-      raw = await withDeadline((signal) => vision.read({ messages: buildReadMessages(), image: { bytes: buffer, mimeType }, signal }))
+      raw = await withDeadline((signal) => vision.read({ messages: buildReadMessages(), image: { bytes: buffer, mimeType }, signal, onUsage: call?.usage }))
+      call?.finish({ images: 1, provider: vision?.name })
     } catch (err) {
+      call?.fail(err)
       log(`session ${session.id} read failed (${err?.statusCode ?? err?.status ?? err?.name ?? 'error'})`)
       throw new CameraError(502, 'read-failed', 'The picture could not be read just now. Try again.')
     } finally {
@@ -199,15 +218,23 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     return value.trim()
   }
 
-  async function ask(entry, text) {
+  async function ask(entry, text, ctx = {}) {
     // A note about what could not be read no longer applies once the person has corrected the question.
     const messages = buildAnswerMessages({ text, options: entry.options, type: entry.type, subject: entry.subject, readerNote: text === entry.text ? entry.note : '' })
     const seesFigure = entry.hasDiagram && entry.picture && typeof vision?.answer === 'function'
-    const raw = await withDeadline((signal) =>
-      seesFigure
-        ? vision.answer({ messages, image: { bytes: entry.picture.bytes, mimeType: entry.picture.mimeType }, signal })
-        : answerEngine(messages, { signal })
-    )
+    const call = ctx.meter?.begin(ctx.identity, 'vision_answer', { requestId: ctx.requestId, conversationId: ctx.conversationId })
+    let raw
+    try {
+      raw = await withDeadline((signal) =>
+        seesFigure
+          ? vision.answer({ messages, image: { bytes: entry.picture.bytes, mimeType: entry.picture.mimeType }, signal, onUsage: call?.usage })
+          : answerEngine(messages, { signal, onUsage: call?.usage })
+      )
+      call?.finish(seesFigure ? { images: 1, provider: vision?.name } : {})
+    } catch (err) {
+      call?.fail(err)
+      throw err
+    }
     const { answer } = parseAnswer(raw)
     if (entry.hasDiagram && !seesFigure) {
       // Nobody looked at the figure the question depends on: never claim to be sure.
@@ -217,8 +244,8 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     return answer
   }
 
-  async function answer(sessionId, { questionId, text } = {}) {
-    const session = find(sessionId)
+  async function answer(sessionId, { questionId, text } = {}, ctx = {}) {
+    const session = find(sessionId, ownerOf(ctx))
     const entry = session.questions.get(questionId)
     if (!entry) throw new CameraError(404, 'question-not-found', 'That question is no longer in this session. Point the camera at it again.')
     const corrected = editedText(text)
@@ -235,8 +262,9 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     entry.pending = (async () => {
       let result
       try {
-        result = await ask(entry, asked)
+        result = await ask(entry, asked, { ...ctx, conversationId: sessionId })
       } catch (err) {
+        if (err?.name === 'AiLimitError') throw err // a limit is the person's to see, not a failure of the model
         log(`session ${session.id} answer failed (${err?.statusCode ?? err?.status ?? err?.name ?? 'error'})`)
         throw new CameraError(502, 'answer-failed', 'An answer could not be worked out just now. Try again.')
       }
@@ -261,16 +289,18 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
 
   function save(session, asked, entry, markdown) {
     const options = entry.options.map((option, i) => `${option.label || String.fromCharCode(65 + i)}) ${option.text}`)
-    sessions.appendMessage(session.id, { role: 'user', content: [asked, ...options].join('\n') })
-    sessions.appendMessage(session.id, { role: 'assistant', content: markdown })
+    session.view.appendMessage(session.id, { role: 'user', content: [asked, ...options].join('\n') })
+    session.view.appendMessage(session.id, { role: 'assistant', content: markdown })
   }
 
-  async function clear(sessionId) {
+  async function clear(sessionId, ctx = {}) {
     if (typeof sessionId !== 'string' || !sessionId) return true
-    active.delete(sessionId)
-    sessions.forget(sessionId)
+    const owner = ownerOf(ctx)
+    const view = viewOf(owner)
+    if (active.get(sessionId)?.owner === owner) active.delete(sessionId) // someone else's session is not this person's to end
+    view.forget(sessionId)
     try {
-      sessions.getHistory()?.remove(sessionId)
+      view.getHistory()?.remove(sessionId) // removes only THIS person's saved conversation under that id
     } catch (err) {
       logger.error(`[camera] session ${sessionId} could not be cleared from the saved history (${err?.name ?? 'error'})`)
       throw new CameraError(500, 'clear-failed', 'The saved history could not be cleared. Try again.')

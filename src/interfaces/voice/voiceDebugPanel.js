@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 /**
  * Lightweight debug overlay for voice pipeline stabilization (?debug=1).
  */
@@ -14,7 +16,7 @@ export function createVoiceDebugPanel({
 
   async function pollHealth() {
     try {
-      const res = await fetch('/api/v1/assistant/audio-health')
+      const res = await fetch(withBase('/api/v1/assistant/audio-health'))
       const data = await res.json().catch(() => ({}))
       sidecarOk = Boolean(data?.ok)
     } catch {

@@ -155,6 +155,119 @@ const MIGRATIONS = [
         CREATE INDEX idx_assistant_conversations_updated ON assistant_conversations(updated_at DESC);
       `)
     }
+  },
+  {
+    version: 5,
+    name: 'people and their sessions',
+    run(database) {
+      // NUMZ AI 2.0: the people who use the assistant, their own sessions, and the security audit trail.
+      // external_id is the NUMZLAB user id (stable for life, see numzlab-auth); it is the identity key.
+      // Nothing here ever holds a cookie secret (only its SHA-256), a prompt, a reply or an attachment.
+      database.exec(`
+        CREATE TABLE ai_users (
+          id TEXT PRIMARY KEY,
+          external_provider TEXT NOT NULL DEFAULT 'numzlab',
+          external_id TEXT NOT NULL,
+          email TEXT NOT NULL,
+          name TEXT,
+          role TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+          created_at TEXT NOT NULL,
+          last_login_at TEXT,
+          last_verified_at TEXT,
+          UNIQUE (external_provider, external_id)
+        );
+
+        CREATE TABLE ai_sessions (
+          id_hash TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES ai_users(id),
+          csrf TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          last_activity_at INTEGER NOT NULL,
+          ip TEXT,
+          user_agent_hash TEXT,
+          revoked_at INTEGER,
+          revoked_reason TEXT
+        );
+        CREATE INDEX idx_ai_sessions_user ON ai_sessions(user_id);
+
+        CREATE TABLE ai_user_settings (
+          user_id TEXT PRIMARY KEY REFERENCES ai_users(id) ON DELETE CASCADE,
+          settings_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE ai_audit (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          event TEXT NOT NULL,
+          user_id TEXT,
+          session_ref TEXT,
+          ip TEXT,
+          request_id TEXT,
+          detail_json TEXT
+        );
+        CREATE INDEX idx_ai_audit_ts ON ai_audit(ts);
+      `)
+    }
+  },
+  {
+    version: 6,
+    name: 'conversation ownership',
+    run(database) {
+      // Every conversation belongs to one person. Rows that exist today have no owner (NULL): they are QUARANTINED. A person's
+      // queries always say owner_user_id = ?, which can never match NULL, so nobody sees them until the administrator releases them
+      // on the host (scripts/ai-admin.js legacy claim). Additive only: an older server image simply ignores the new columns.
+      database.exec(`
+        ALTER TABLE assistant_conversations ADD COLUMN owner_user_id TEXT REFERENCES ai_users(id);
+        ALTER TABLE assistant_conversations ADD COLUMN origin TEXT;
+        CREATE INDEX idx_assistant_conversations_owner ON assistant_conversations(owner_user_id, updated_at DESC);
+
+        CREATE TRIGGER trg_conversation_owner_is_permanent
+        BEFORE UPDATE OF owner_user_id ON assistant_conversations
+        WHEN OLD.owner_user_id IS NOT NULL AND NEW.owner_user_id IS NOT OLD.owner_user_id
+        BEGIN
+          SELECT RAISE(ABORT, 'conversation-owner-is-permanent');
+        END;
+      `)
+    }
+  },
+  {
+    version: 7,
+    name: 'usage records and runtime switches',
+    run(database) {
+      // One row per cost-bearing call, for the person who made it. Counts and sizes only: never any text, image or audio.
+      // user_id is deliberately not a foreign key: the single-tenant fallback records its calls as 'legacy'.
+      database.exec(`
+        CREATE TABLE ai_usage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          provider TEXT,
+          model TEXT,
+          tokens_in INTEGER,
+          tokens_out INTEGER,
+          audio_seconds REAL,
+          images INTEGER,
+          est_cost_micro_usd INTEGER,
+          status TEXT NOT NULL,
+          duration_ms INTEGER,
+          request_id TEXT,
+          conversation_id TEXT
+        );
+        CREATE INDEX idx_ai_usage_user_ts ON ai_usage(user_id, ts);
+        CREATE INDEX idx_ai_usage_ts ON ai_usage(ts);
+
+        CREATE TABLE ai_runtime_flags (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          updated_by TEXT
+        );
+      `)
+    }
   }
 ]
 

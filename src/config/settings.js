@@ -1,3 +1,5 @@
+import { withBase } from '../core/apiPaths.js'
+
 export const settings = {
   colors: {
     // A quiet steel blue on charcoal. The earlier cyan glow on navy read as neon.
@@ -204,7 +206,7 @@ export const settings = {
     porcupineAccessKey: import.meta.env.VITE_PICOVOICE_ACCESS_KEY ?? '',
     porcupineKeywordPublicPath: import.meta.env.VITE_PORCUPINE_KEYWORD_PUBLIC_PATH ?? '',
     porcupineModelPublicPath:
-      import.meta.env.VITE_PORCUPINE_MODEL_PUBLIC_PATH ?? '/porcupine/porcupine_params_en.pv',
+      import.meta.env.VITE_PORCUPINE_MODEL_PUBLIC_PATH ?? withBase('/porcupine/porcupine_params_en.pv'),
     wakePhrases: ['numz', 'hello numz', 'hi numz'],
     debugTiming: import.meta.env.DEV,
     debugOverlay: false,

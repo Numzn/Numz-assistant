@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 /**
  * The browser's view of the Smart Camera routes (server/routes/camera.js), all under the assistant's own sign-in:
  *
@@ -9,7 +11,7 @@
  * `image` is { bytes, mimeType }: sent as the request body as it is, never as text, never kept.
  */
 
-const BASE = '/api/v1/assistant/camera'
+const BASE = withBase('/api/v1/assistant/camera')
 
 // Refusals that retrying cannot change: say so at once instead of asking again.
 const PERMANENT = new Set([

@@ -1,23 +1,24 @@
 import { createOpenAiCompatibleProvider } from '../../ai/providers/openAiCompatibleProvider.js'
 import { formatChatMessages } from './formatter.js'
 
-export function createDeepSeekProvider({ apiKey, baseUrl, model }) {
+export function createDeepSeekProvider({ apiKey, baseUrl, model, streamUsage = true }) {
   const provider = createOpenAiCompatibleProvider({
     name: 'deepseek',
     apiKey,
     baseUrl,
-    model
+    model,
+    streamUsage
   })
 
   return {
     name: provider.name,
 
-    async generate({ messages, signal }) {
-      return provider.generate({ messages: formatChatMessages(messages), signal })
+    async generate({ messages, signal, onUsage }) {
+      return provider.generate({ messages: formatChatMessages(messages), signal, onUsage })
     },
 
-    async *stream({ messages, signal }) {
-      yield* provider.stream({ messages: formatChatMessages(messages), signal })
+    async *stream({ messages, signal, onUsage }) {
+      yield* provider.stream({ messages: formatChatMessages(messages), signal, onUsage })
     }
   }
 }

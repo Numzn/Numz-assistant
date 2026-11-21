@@ -25,7 +25,8 @@ export function createOpenAiCompatibleProvider({
   apiKey,
   baseUrl,
   model,
-  defaultHeaders = {}
+  defaultHeaders = {},
+  streamUsage = true // ask for token counts in the last streamed chunk (OpenAI-compatible `stream_options.include_usage`)
 }) {
   const normalizedBaseUrl = normalizeOpenAiCompatibleBaseUrl(baseUrl)
 
@@ -37,6 +38,17 @@ export function createOpenAiCompatibleProvider({
     }
     if (!normalizedBaseUrl) throw new Error(`${name} provider requires AI_BASE_URL`)
     if (!model) throw new Error(`${name} provider requires AI_MODEL`)
+  }
+
+  /** Tells the caller (the usage meter) what the provider says the call used. Counts only: nothing of the text. */
+  function report(onUsage, data) {
+    if (typeof onUsage !== 'function' || !data?.usage) return
+    onUsage({
+      promptTokens: data.usage.prompt_tokens,
+      completionTokens: data.usage.completion_tokens,
+      model: data.model ?? model,
+      provider: name
+    })
   }
 
   async function requestChat({ messages, stream = false, signal }) {
@@ -51,7 +63,8 @@ export function createOpenAiCompatibleProvider({
       body: JSON.stringify({
         model,
         messages,
-        stream
+        stream,
+        ...(stream && streamUsage ? { stream_options: { include_usage: true } } : {})
       }),
       signal
     })
@@ -68,13 +81,14 @@ export function createOpenAiCompatibleProvider({
   return {
     name,
 
-    async generate({ messages, signal }) {
+    async generate({ messages, signal, onUsage }) {
       const res = await requestChat({ messages, signal })
       const data = await res.json()
+      report(onUsage, data)
       return getChoiceText(data).trim()
     },
 
-    async *stream({ messages, signal }) {
+    async *stream({ messages, signal, onUsage }) {
       const res = await requestChat({ messages, stream: true, signal })
       const reader = res.body?.getReader()
       if (!reader) {
@@ -106,6 +120,7 @@ export function createOpenAiCompatibleProvider({
 
           try {
             const data = JSON.parse(payload)
+            report(onUsage, data)
             const token = getDeltaText(data)
             if (token) {
               final += token

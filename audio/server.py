@@ -8,6 +8,7 @@ import os
 
 from flask import Flask, jsonify, request
 
+import access_key
 from startup_guard import StartupDeadline, seconds_from_env
 from transcribe import health_info, transcribe_blob, warmup
 from live_speech_ws import register_live_speech_route
@@ -27,7 +28,11 @@ WARMUP_ON_START = os.environ.get("AUDIO_WARMUP", "1") != "0"
 WARMUP_TIMEOUT_S = seconds_from_env("AUDIO_WARMUP_TIMEOUT_S", 180)
 DOWNLOAD_TIMEOUT_S = seconds_from_env("AUDIO_DOWNLOAD_TIMEOUT_S", 900)
 
+AUDIO_SERVICE_KEY = os.environ.get("AUDIO_SERVICE_KEY", "")
+access_key.check_configuration(AUDIO_SERVICE_KEY, os.environ.get("AUDIO_REQUIRE_KEY", "0") == "1")  # a mistake stops the start, never opens the door
+
 app = Flask(__name__)
+access_key.install(app, AUDIO_SERVICE_KEY, logger)  # before anything else is registered: it covers /health, /transcribe and the WebSocket
 register_live_speech_route(app)  # ws://<host>:<port>/live-speech — see live_speech_ws.py
 
 

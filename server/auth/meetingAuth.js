@@ -66,6 +66,7 @@ export function createMeetingAuth({
   launchCode = '',
   ticketTtlSeconds = 12 * 3600,
   launchSessionTtlSeconds = DEFAULT_LAUNCH_SESSION_TTL_SECONDS,
+  launchSessionPath = LAUNCH_SESSION_PATH, // '/ai/api/v1/meetings' when the app is served under /ai/: the browser only sends a cookie to its own path
   clock = () => Date.now(),
   logger = console
 } = {}) {
@@ -115,7 +116,7 @@ export function createMeetingAuth({
   }
 
   const launchCookie = (req, value, maxAge) =>
-    sessionCookieHeader(req, { name: LAUNCH_COOKIE, value, path: LAUNCH_SESSION_PATH, maxAge })
+    sessionCookieHeader(req, { name: LAUNCH_COOKIE, value, path: launchSessionPath, maxAge })
 
   /** Sets the session cookie on the response. Call only after the launch code has been verified. */
   function startLaunchSession(req, res) {

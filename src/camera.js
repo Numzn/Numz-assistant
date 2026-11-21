@@ -15,7 +15,7 @@ import { createCameraApi } from './interfaces/camera/cameraApi.js'
 import { createCameraDevice } from './interfaces/camera/cameraDevice.js'
 import { createCameraSession } from './interfaces/camera/cameraSession.js'
 import { createCameraView } from './interfaces/camera/cameraView.js'
-import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
+import { createAccessApi, createAccessController, installCsrfHeader, watchForUnauthorized } from './interfaces/auth/access.js'
 import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 import { enableWebFonts } from './interfaces/layout/workspace.js'
 
@@ -23,10 +23,13 @@ const TICK_MS = 250
 
 enableWebFonts()
 
-const accessController = createAccessController({ api: createAccessApi(), onUnlocked: () => location.reload() })
+const accessApi = createAccessApi()
+const accessController = createAccessController({ api: accessApi, onUnlocked: () => location.reload() })
 createAccessGateView({ controller: accessController })
 watchForUnauthorized(globalThis, () => accessController.require())
-accessController.start()
+let accessStarted = null
+installCsrfHeader(globalThis, () => accessApi.csrfToken(), () => accessStarted)
+accessStarted = accessController.start()
 
 const device = createCameraDevice({ video: document.getElementById('cameraPreview') })
 const session = createCameraSession({ device, api: createCameraApi() })

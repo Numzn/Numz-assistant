@@ -4,7 +4,7 @@
  */
 
 import { createHistoryApi } from './interfaces/history/historyApi.js'
-import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
+import { createAccessApi, createAccessController, installCsrfHeader, watchForUnauthorized } from './interfaces/auth/access.js'
 import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 import { enableWebFonts } from './interfaces/layout/workspace.js'
 
@@ -14,10 +14,13 @@ const ARM_MS = 4000
 enableWebFonts()
 
 const api = createHistoryApi()
-const accessController = createAccessController({ api: createAccessApi(), onUnlocked: () => location.reload() })
+const accessApi = createAccessApi()
+const accessController = createAccessController({ api: accessApi, onUnlocked: () => location.reload() })
 createAccessGateView({ controller: accessController })
 watchForUnauthorized(globalThis, () => accessController.require())
-accessController.start()
+let accessStarted = null
+installCsrfHeader(globalThis, () => accessApi.csrfToken(), () => accessStarted)
+accessStarted = accessController.start()
 const $ = (id) => document.getElementById(id)
 const list = $('conversationList')
 const status = $('historyStatus')
@@ -51,7 +54,7 @@ function row(conversation) {
 
   const open = document.createElement('a')
   open.className = 'conv-main'
-  open.href = `/?conversation=${encodeURIComponent(conversation.id)}`
+  open.href = `./?conversation=${encodeURIComponent(conversation.id)}` // relative: it must stay inside /ai/ when the app is served there
   const name = document.createElement('span')
   name.className = 'conv-title'
   name.textContent = title

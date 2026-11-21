@@ -11,9 +11,9 @@
   <body data-page="history">
     <div id="app">
       <header id="appHeader">
-        <a id="brand" href="/">NUMZ</a>
+        <a id="brand" href="./">NUMZ</a>
         <div id="headerActions">
-          <a class="ghost" href="/">Back to chat</a>
+          <a class="ghost" href="./">Back to chat</a>
         </div>
       </header>
 
@@ -37,8 +37,14 @@
         </div>
       </main>
     </div>
-    <!-- The assistant asks for its access code here when the server requires one. -->
+    <!-- The assistant asks for sign-in here when the server requires it: with Google (each person's own account) or, in the fallback, an access code. -->
     <section id="accessGate" role="dialog" aria-modal="true" aria-labelledby="accessTitle" hidden>
+      <div id="accessGoogle" hidden>
+        <h2 id="accessGoogleTitle">Sign in to NUMZ</h2>
+        <p id="accessGoogleHint">Use the Google account NUMZ has approved for you.</p>
+        <p id="accessGoogleNotice" role="alert" hidden></p>
+        <a id="accessGoogleButton" class="pill primary" href="#">Continue with Google</a>
+      </div>
       <form id="accessForm" autocomplete="on">
         <h2 id="accessTitle">Enter the access code</h2>
         <p id="accessHint">This assistant is protected. Ask whoever runs it for the code.</p>

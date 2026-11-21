@@ -24,6 +24,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3103"
+      # The production build is made for /ai/ (Dockerfile.production): the app takes that prefix off itself, at any address.
+      PUBLIC_BASE_PATH: /ai
       AUDIO_SERVICE_URL: http://host.docker.internal:8765
       SPEECH_DATABASE_PATH: /data/speech.sqlite
     volumes:

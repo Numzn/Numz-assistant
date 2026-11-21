@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 /**
  * Browser client for the live Speech Intelligence transport
  * (audio/live_speech_ws.py). Captures real microphone audio as raw 16kHz
@@ -25,7 +27,7 @@ const SAMPLE_RATE = 16000
 // How long stop() waits for the speech service to finish. It may still be decoding audio it has queued,
 // then it saves the last lines and reports how many it produced; closing earlier cuts that off.
 const DEFAULT_STOP_TIMEOUT_MS = 45000
-const WORKLET_URL = '/worklets/pcm-capture-processor.js'
+const WORKLET_URL = withBase('/worklets/pcm-capture-processor.js')
 // Audio the network could not take is dropped, not queued without limit. f32le at 16 kHz is 64,000 bytes a second,
 // so 4 MiB is about a minute of backlog: past that the connection is stalled, and holding more only costs memory.
 const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024

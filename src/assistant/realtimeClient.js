@@ -1,4 +1,5 @@
 import { safeJsonParse } from '../utils/json.js'
+import { withBase } from '../core/apiPaths.js'
 
 /**
  * Minimal WS streaming client.
@@ -6,7 +7,7 @@ import { safeJsonParse } from '../utils/json.js'
  * - Re-emits server events into the existing SSE-like `onEvent({event,data})` shape.
  */
 export function createAssistantRealtimeClient({
-  url = '/api/v1/assistant/ws',
+  url = withBase('/api/v1/assistant/ws'),
   connectTimeoutMs = 1500
 } = {}) {
   let ws = null

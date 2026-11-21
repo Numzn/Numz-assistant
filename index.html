@@ -24,7 +24,7 @@
           <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M10 4v12M4 10h12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
           <span>New chat</span>
         </button>
-        <a id="cameraLink" class="nav-btn" href="/camera.html" title="Read a practice question with your camera">
+        <a id="cameraLink" class="nav-btn" href="./camera.html" title="Read a practice question with your camera">
           <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h1l.9-1.4A1 1 0 0 1 7.7 3h4.6a1 1 0 0 1 .8.6L14 5h1a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" /><circle cx="10" cy="10.5" r="2.7" fill="none" stroke="currentColor" stroke-width="1.5" /></svg>
           <span>Smart Camera</span>
         </a>
@@ -32,7 +32,7 @@
           <p id="recentLabel">Recent</p>
           <ul id="recentList"></ul>
           <p id="recentStatus" role="status"></p>
-          <a id="historyLink" class="ghost" href="/history.html" hidden>All conversations</a>
+          <a id="historyLink" class="ghost" href="./history.html" hidden>All conversations</a>
         </nav>
       </aside>
       <div id="sidebarScrim" aria-hidden="true"></div>
@@ -225,8 +225,14 @@
     <div id="voiceTranscript" hidden></div>
     <div id="assistantResponse" hidden></div>
 
-    <!-- The assistant asks for its access code here when the server requires one. -->
+    <!-- The assistant asks for sign-in here when the server requires it: with Google (each person's own account) or, in the fallback, an access code. -->
     <section id="accessGate" role="dialog" aria-modal="true" aria-labelledby="accessTitle" hidden>
+      <div id="accessGoogle" hidden>
+        <h2 id="accessGoogleTitle">Sign in to NUMZ</h2>
+        <p id="accessGoogleHint">Use the Google account NUMZ has approved for you.</p>
+        <p id="accessGoogleNotice" role="alert" hidden></p>
+        <a id="accessGoogleButton" class="pill primary" href="#">Continue with Google</a>
+      </div>
       <form id="accessForm" autocomplete="on">
         <h2 id="accessTitle">Enter the access code</h2>
         <p id="accessHint">This assistant is protected. Ask whoever runs it for the code.</p>
