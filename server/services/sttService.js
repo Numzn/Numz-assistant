@@ -12,6 +12,12 @@ export function resolveSttBackend({ headerBackend, env = process.env }) {
   return fromEnv === 'local' ? 'local' : 'cloud'
 }
 
+/** The speech service accepts only callers that know its shared key (AUDIO_SERVICE_KEY, in .env.secrets on both sides). */
+function audioHeaders(env, extra = {}) {
+  const key = getEnv('AUDIO_SERVICE_KEY', env)
+  return key ? { ...extra, 'X-Audio-Key': key } : extra
+}
+
 /** @type {{ ok: boolean, checkedAt: number, data: Record<string, unknown> } | null} */
 let audioHealthCache = null
 
@@ -38,7 +44,7 @@ export async function checkAudioServiceHealth({ env = process.env, force = false
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const res = await fetch(`${baseUrl}/health`, { signal: controller.signal })
+    const res = await fetch(`${baseUrl}/health`, { signal: controller.signal, headers: audioHeaders(env) })
     if (!res.ok) {
       const fail = { ok: false, error: `Health check failed: ${res.status}` }
       audioHealthCache = { ok: false, checkedAt: now, data: fail }
@@ -91,11 +97,11 @@ export async function transcribeAudioLocal({
   try {
     const res = await fetch(`${baseUrl}/transcribe`, {
       method: 'POST',
-      headers: {
+      headers: audioHeaders(env, {
         'Content-Type': safeMime,
         'X-Stt-Lang': language ? String(language) : '',
         'X-Stt-Prompt': prompt ? String(prompt) : ''
-      },
+      }),
       body: audioBuffer,
       signal: controller.signal
     })

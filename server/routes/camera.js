@@ -1,5 +1,6 @@
 import express, { Router } from 'express'
 import { CameraError } from '../camera/cameraError.js'
+import { requireIdentity } from '../auth/identity.js'
 
 /**
  * The Smart Camera's HTTP routes, mounted at /api/v1/assistant/camera behind the assistant's access gate:
@@ -14,7 +15,13 @@ import { CameraError } from '../camera/cameraError.js'
  * show); a Retry-After header is added when the service says when to come back.
  */
 
-const wrap = (handler) => (req, res, next) => Promise.resolve(handler(req, res)).catch(next)
+const wrap = (handler) => (req, res, next) => Promise.resolve().then(() => handler(req, res)).catch(next)
+
+/** Who is asking, and where their usage is counted: the camera session belongs to this person. */
+function contextOf(req) {
+  const identity = requireIdentity(req)
+  return { owner: identity.ownerKey, identity, meter: req.meter, requestId: req.id }
+}
 
 export function createCameraRouter({ service }) {
   const router = Router()
@@ -28,7 +35,7 @@ export function createCameraRouter({ service }) {
   router.post(
     '/sessions',
     wrap(async (_req, res) => {
-      res.status(201).json(await service.createSession())
+      res.status(201).json(await service.createSession(contextOf(_req)))
     })
   )
 
@@ -41,7 +48,7 @@ export function createCameraRouter({ service }) {
         throw new CameraError(415, 'invalid-image', 'Send the picture itself, as image/jpeg, image/png or image/webp.')
       }
       const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      res.json(await service.read(req.params.id, { bytes, mimeType: type }))
+      res.json(await service.read(req.params.id, { bytes, mimeType: type }, contextOf(req)))
     })
   )
 
@@ -49,14 +56,14 @@ export function createCameraRouter({ service }) {
     '/sessions/:id/answer',
     wrap(async (req, res) => {
       const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
-      res.json(await service.answer(req.params.id, { questionId: body.questionId, text: body.text }))
+      res.json(await service.answer(req.params.id, { questionId: body.questionId, text: body.text }, contextOf(req)))
     })
   )
 
   router.delete(
     '/sessions/:id',
     wrap(async (req, res) => {
-      await service.clear(req.params.id)
+      await service.clear(req.params.id, contextOf(req))
       res.status(204).end()
     })
   )

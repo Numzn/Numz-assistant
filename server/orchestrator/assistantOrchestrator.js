@@ -1,9 +1,12 @@
-import { ASSISTANT_STATES, sessionService } from '../sessions/sessionService.js'
+import { ASSISTANT_STATES, LEGACY_OWNER, sessionService } from '../sessions/sessionService.js'
 import { streamResponse } from '../services/aiService.js'
 
 /**
  * Orchestrates a single assistant "turn" (user message -> streamed reply -> final message persisted).
  * Transport-agnostic: callers provide `emit(eventType, data)`.
+ *
+ * A turn belongs to one owner (a person, or the single-tenant fallback): it only ever reads and writes that owner's sessions.
+ * `signal` stops the model call when nobody is listening any more; `onUsage` receives the provider's token counts.
  *
  * Canonical AI stream event types (per project requirement):
  * - AI_RESPONSE_STARTED
@@ -12,19 +15,20 @@ import { streamResponse } from '../services/aiService.js'
  * - AI_RESPONSE_ERROR
  */
 export function createAssistantOrchestrator() {
-  function setState(sessionId, state, emit) {
-    const session = sessionService.setState(sessionId, state)
+  function setState(sessions, sessionId, state, emit) {
+    const session = sessions.setState(sessionId, state)
     emit?.('STATE', { state: session.state, sessionId: session.id })
     // Back-compat with existing SSE consumer:
     emit?.('state', { state: session.state, sessionId: session.id })
     return session
   }
 
-  async function runStreamingTurn({ sessionId, message, requestId, emit }) {
-    const session = sessionService.getOrCreateSession(sessionId)
+  async function runStreamingTurn({ sessionId, message, requestId, emit, owner = LEGACY_OWNER, signal, onUsage }) {
+    const sessions = sessionService.forOwner(owner)
+    const session = sessions.getOrCreateSession(sessionId)
 
     const userMessage = { role: 'user', content: message.trim() }
-    sessionService.appendMessage(session.id, userMessage)
+    sessions.appendMessage(session.id, userMessage)
 
     emit?.('AI_RESPONSE_STARTED', { sessionId: session.id })
     emit?.('session', {
@@ -34,14 +38,14 @@ export function createAssistantOrchestrator() {
       updatedAt: session.updatedAt
     })
 
-    setState(session.id, ASSISTANT_STATES.THINKING, emit)
-    setState(session.id, ASSISTANT_STATES.GENERATING, emit)
+    setState(sessions, session.id, ASSISTANT_STATES.THINKING, emit)
+    setState(sessions, session.id, ASSISTANT_STATES.GENERATING, emit)
 
     const messages = session.messages.map(({ role, content }) => ({ role, content }))
 
     let finalReply = ''
     try {
-      for await (const chunk of streamResponse(messages)) {
+      for await (const chunk of streamResponse(messages, { signal, onUsage })) {
         if (chunk.type === 'token') {
           finalReply += chunk.token
           emit?.('AI_TOKEN', { token: chunk.token, sessionId: session.id })
@@ -52,20 +56,29 @@ export function createAssistantOrchestrator() {
         }
       }
 
-      sessionService.appendMessage(session.id, { role: 'assistant', content: finalReply })
+      sessions.appendMessage(session.id, { role: 'assistant', content: finalReply })
 
-      setState(session.id, ASSISTANT_STATES.SPEAKING, emit)
+      setState(sessions, session.id, ASSISTANT_STATES.SPEAKING, emit)
 
       emit?.('AI_RESPONSE_FINISHED', { reply: finalReply, sessionId: session.id })
       // Back-compat SSE final message:
       emit?.('message', { reply: finalReply, sessionId: session.id })
 
-      setState(session.id, ASSISTANT_STATES.IDLE, emit)
+      setState(sessions, session.id, ASSISTANT_STATES.IDLE, emit)
       emit?.('done', { sessionId: session.id })
 
       return { reply: finalReply, sessionId: session.id }
     } catch (err) {
-      setState(session.id, ASSISTANT_STATES.ERROR, emit)
+      if (signal?.aborted && err?.name !== 'TimeoutError' && signal.reason?.name !== 'TimeoutError') {
+        // Nobody is listening any more (the connection closed, or the person pressed stop): not an error, and nothing half-finished is kept.
+        try {
+          setState(sessions, session.id, ASSISTANT_STATES.INTERRUPTED, null)
+        } catch {
+          /* the session may have been cleared meanwhile */
+        }
+        return { reply: finalReply, sessionId: session.id, interrupted: true }
+      }
+      setState(sessions, session.id, ASSISTANT_STATES.ERROR, emit)
 
       const isClientError = err?.statusCode && err.statusCode < 500
       const errorMessage = isClientError ? err.message : 'Internal Server Error'

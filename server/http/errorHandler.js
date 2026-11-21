@@ -41,6 +41,7 @@ export function errorHandler({ logger = console } = {}) {
       typeof err.code === 'string' && /^[a-z0-9-]{1,64}$/.test(err.code) ? err.code : DEFAULT_CODES[status] ?? 'request-error'
     logger.warn(`[api] ${status} ${req.method} ${req.path}: ${code}`)
     const body = { error: message, code, requestId: req.id }
+    if (Number.isFinite(err.retryAfterSeconds) && err.retryAfterSeconds > 0) res.set('Retry-After', String(Math.ceil(err.retryAfterSeconds)))
     // Structured facts a caller can act on (set only by our own domain errors, never by a thrown stack).
     if (err.expose === true && err.details && typeof err.details === 'object') body.details = err.details
     return res.status(status).json(body)

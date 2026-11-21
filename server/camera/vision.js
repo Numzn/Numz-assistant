@@ -31,6 +31,18 @@ const ANTHROPIC_VERSION = '2023-06-01'
 
 const text = (value) => (typeof value === 'string' ? value.trim() : '')
 
+/** What the provider says the call used (counts only), for the usage records. */
+function usageOf(body, name) {
+  const usage = body?.usage
+  if (!usage) return null
+  return {
+    promptTokens: usage.prompt_tokens ?? usage.input_tokens,
+    completionTokens: usage.completion_tokens ?? usage.output_tokens,
+    model: body.model,
+    provider: name
+  }
+}
+
 function failure(status) {
   return Object.assign(new Error(`The vision service answered ${status}`), { statusCode: status, name: 'VisionError' })
 }
@@ -59,7 +71,7 @@ async function post(fetchFn, url, headers, body, signal) {
 
 function anthropicAdapter({ apiKey, model, baseUrl, fetchFn }) {
   const root = (baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '').replace(/\/v1$/, '')
-  async function ask({ messages, image, signal }) {
+  async function ask({ messages, image, signal, onUsage }) {
     const { system, user } = split(messages)
     const body = await post(
       fetchFn,
@@ -82,6 +94,8 @@ function anthropicAdapter({ apiKey, model, baseUrl, fetchFn }) {
       signal
     )
     const reply = (Array.isArray(body?.content) ? body.content : []).filter((block) => block?.type === 'text').map((block) => block.text).join('')
+    const used = usageOf(body, 'anthropic')
+    if (used) onUsage?.(used)
     if (!text(reply)) throw Object.assign(new Error('The vision service returned no text'), { name: 'VisionError' })
     return reply
   }
@@ -98,7 +112,7 @@ function openAiAdapter({ apiKey, model, baseUrl, fetchFn, official = false, reas
   const limits = official
     ? { max_completion_tokens: OPENAI_REPLY_TOKENS, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }
     : { temperature: 0, max_tokens: MAX_REPLY_TOKENS }
-  async function ask({ messages, image, signal }) {
+  async function ask({ messages, image, signal, onUsage }) {
     const { system, user } = split(messages)
     const body = await post(
       fetchFn,
@@ -121,6 +135,8 @@ function openAiAdapter({ apiKey, model, baseUrl, fetchFn, official = false, reas
       signal
     )
     const reply = body?.choices?.[0]?.message?.content
+    const used = usageOf(body, official ? 'openai' : 'openai-compatible')
+    if (used) onUsage?.(used)
     if (!text(reply)) throw Object.assign(new Error('The vision service returned no text'), { name: 'VisionError' })
     return reply
   }

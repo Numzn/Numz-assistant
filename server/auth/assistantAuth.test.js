@@ -66,7 +66,7 @@ test('with no access code set nothing changes: the assistant stays open, and the
   const s = await serve({ accessCode: '' })
   try {
     assert.equal((await s.call('/assistant/ping')).status, 200)
-    assert.deepEqual((await s.call('/assistant/auth/status')).json, { required: false, misconfigured: false, authenticated: true })
+    assert.deepEqual((await s.call('/assistant/auth/status')).json, { mode: 'code', required: false, misconfigured: false, authenticated: true })
     assert.deepEqual((await s.login()).json, { required: false, authenticated: true })
     assert.ok(s.logger.lines.some((line) => /not set.*open to anyone/.test(line)), 'a warning names the open state')
   } finally {
@@ -81,7 +81,7 @@ test('with a code set, the protected routes refuse a request without the session
     assert.equal(refused.status, 401)
     assert.equal(refused.json.code, 'assistant-auth-required')
     assert.equal(refused.headers.get('www-authenticate'), 'Cookie')
-    assert.deepEqual((await s.call('/assistant/auth/status')).json, { required: true, misconfigured: false, authenticated: false })
+    assert.deepEqual((await s.call('/assistant/auth/status')).json, { mode: 'code', required: true, misconfigured: false, authenticated: false })
     assert.equal((await s.call('/health')).status, 200, 'the health check stays public')
   } finally {
     await s.close()
@@ -225,7 +225,7 @@ test('a code that is set but too short LOCKS the assistant (it never falls back 
     assert.equal(ping.status, 503)
     assert.equal(ping.json.code, 'assistant-auth-misconfigured')
     assert.equal((await s.login('short')).status, 503, 'even typing the short code does not unlock it')
-    assert.deepEqual((await s.call('/assistant/auth/status')).json, { required: true, misconfigured: true, authenticated: false })
+    assert.deepEqual((await s.call('/assistant/auth/status')).json, { mode: 'code', required: true, misconfigured: true, authenticated: false })
     assert.ok(s.logger.lines.some((line) => /at least 12 characters.*LOCKED/.test(line)))
   } finally {
     await s.close()

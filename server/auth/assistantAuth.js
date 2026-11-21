@@ -83,7 +83,7 @@ export function createAssistantAuth({ accessCode = '', ttlSeconds = 12 * 3600, c
       const router = Router()
 
       router.get('/status', (req, res) => {
-        res.json({ ...status(), authenticated: check(req).ok })
+        res.json({ mode: 'code', ...status(), authenticated: check(req).ok })
       })
 
       router.post('/login', (req, res) => {

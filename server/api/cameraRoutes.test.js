@@ -3,6 +3,7 @@ import test from 'node:test'
 import express from 'express'
 import { CameraApiError, createCameraApi } from '../../src/interfaces/camera/cameraApi.js'
 import { createAssistantAuth } from '../auth/assistantAuth.js'
+import { createCodeAccess } from '../auth/codeAccess.js'
 import { createCameraService } from '../camera/cameraService.js'
 import { errorHandler } from '../http/errorHandler.js'
 import { createConversationRepository } from '../persistence/conversationRepository.js'
@@ -43,7 +44,7 @@ async function serve({ accessCode = '', configured = true, limits = {}, reads = 
   const app = express()
   app.use(express.json({ limit: '256kb' })) // as in server.js: the camera's picture route must still receive its raw body
   app.use('/api/v1/assistant/auth', auth.router())
-  app.use('/api/v1/assistant/camera', auth.requireAccess, createCameraRouter({ service }))
+  app.use('/api/v1/assistant/camera', createCodeAccess(auth).requireSession(), createCameraRouter({ service }))
   app.use(errorHandler({ logger: quiet }))
   const server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s))

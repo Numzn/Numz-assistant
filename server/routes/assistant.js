@@ -9,11 +9,29 @@ import {
 import { ASSISTANT_STATES, isValidAssistantState, sessionService } from '../sessions/sessionService.js'
 import { createSseStream } from '../transport/sse.js'
 import { createAssistantOrchestrator } from '../orchestrator/assistantOrchestrator.js'
+import { can, requireIdentity } from '../auth/identity.js'
+import { NO_METER } from '../usage/meter.js'
+import { abortOnClose } from '../http/abortOnClose.js'
 
 export const assistantRouter = Router()
 
-const legacySession = sessionService.createSession({ source: 'legacy' })
 const orchestrator = createAssistantOrchestrator()
+
+/** Every handler works inside the signed-in person's own view of the sessions and the saved conversations, never the shared one. */
+const sessionsOf = (req) => sessionService.forOwner(requireIdentity(req).ownerKey)
+const meterOf = (req) => req.meter ?? NO_METER
+
+// The "no session named" conversation (the old /state and /chat): one per person, so nobody ever shares it with anybody.
+const defaultSessions = new Map()
+function defaultSessionOf(req) {
+  const sessions = sessionsOf(req)
+  const known = defaultSessions.get(sessions.owner)
+  const found = known ? sessions.getSession(known) : null
+  if (found) return found
+  const fresh = sessions.createSession({ source: 'legacy' })
+  defaultSessions.set(sessions.owner, fresh.id)
+  return fresh
+}
 
 function serializeSession(session) {
   return {
@@ -29,7 +47,7 @@ function getSessionId(req) {
     req.params?.sessionId ||
     req.body?.sessionId ||
     req.headers['x-assistant-session-id']?.toString() ||
-    legacySession.id
+    defaultSessionOf(req).id
   )
 }
 
@@ -37,12 +55,12 @@ assistantRouter.post('/sessions', (req, res) => {
   const metadata = typeof req.body?.metadata === 'object' && req.body.metadata !== null
     ? req.body.metadata
     : {}
-  const session = sessionService.createSession(metadata)
+  const session = sessionsOf(req).createSession(metadata)
   res.status(201).json(serializeSession(session))
 })
 
-assistantRouter.get('/state', (_req, res) => {
-  res.json(serializeSession(legacySession))
+assistantRouter.get('/state', (req, res) => {
+  res.json(serializeSession(defaultSessionOf(req)))
 })
 
 assistantRouter.patch('/state', (req, res) => {
@@ -59,12 +77,12 @@ assistantRouter.patch('/state', (req, res) => {
       requestId: req.id
     })
   }
-  const session = sessionService.setState(legacySession.id, nextState)
+  const session = sessionsOf(req).setState(defaultSessionOf(req).id, nextState)
   res.json(serializeSession(session))
 })
 
 assistantRouter.get('/sessions/:sessionId/state', (req, res) => {
-  const session = sessionService.getSession(req.params.sessionId)
+  const session = sessionsOf(req).getSession(req.params.sessionId)
   if (!session) {
     return res.status(404).json({ error: 'Session not found', requestId: req.id })
   }
@@ -85,7 +103,7 @@ assistantRouter.patch('/sessions/:sessionId/state', (req, res) => {
       requestId: req.id
     })
   }
-  const session = sessionService.setState(req.params.sessionId, nextState)
+  const session = sessionsOf(req).setState(req.params.sessionId, nextState)
   res.json(serializeSession(session))
 })
 
@@ -99,15 +117,26 @@ async function handleChat(req, res, next) {
       })
     }
 
-    const session = sessionService.getOrCreateSession(getSessionId(req))
-    const userMessage = { role: 'user', content: message.trim() }
-    sessionService.appendMessage(session.id, userMessage)
+    const identity = requireIdentity(req)
+    const sessions = sessionsOf(req)
+    const session = sessions.getOrCreateSession(getSessionId(req))
+    // The checks (stopped, rate, daily allowance, spending) come BEFORE anything is saved or sent.
+    const call = meterOf(req).begin(identity, 'chat', { requestId: req.id, conversationId: session.id, signal: abortOnClose(res) })
+    try {
+      const userMessage = { role: 'user', content: message.trim() }
+      sessions.appendMessage(session.id, userMessage)
 
-    const messages = session.messages.map(({ role, content }) => ({ role, content }))
-    const reply = await generateResponse(messages)
-    sessionService.appendMessage(session.id, { role: 'assistant', content: reply })
+      const messages = session.messages.map(({ role, content }) => ({ role, content }))
+      const reply = await generateResponse(messages, { signal: call.signal, onUsage: call.usage })
+      call.estimate({ inText: messages.map((m) => m.content).join(''), outText: reply })
+      sessions.appendMessage(session.id, { role: 'assistant', content: reply })
+      call.finish()
 
-    res.json({ reply, sessionId: session.id })
+      res.json({ reply, sessionId: session.id })
+    } catch (err) {
+      call.fail(err)
+      throw err
+    }
   } catch (err) {
     next(err)
   }
@@ -127,7 +156,7 @@ function requireConversationId(req, res) {
 
 // When history is off, the list answers { enabled: false } so the app can hide its link without an error.
 assistantRouter.get('/conversations', (req, res) => {
-  const history = sessionService.getHistory()
+  const history = sessionsOf(req).getHistory()
   if (!history) return res.json({ enabled: false, total: 0, conversations: [] })
   res.json({ enabled: true, ...history.list({ limit: req.query.limit, offset: req.query.offset }) })
 })
@@ -135,7 +164,7 @@ assistantRouter.get('/conversations', (req, res) => {
 assistantRouter.get('/conversations/:conversationId', (req, res) => {
   const id = requireConversationId(req, res)
   if (!id) return
-  const history = sessionService.getHistory()
+  const history = sessionsOf(req).getHistory()
   const conversation = history?.get(id) ?? null
   if (!conversation) return res.status(404).json({ error: 'Conversation not found', requestId: req.id })
   res.json(conversation)
@@ -144,17 +173,17 @@ assistantRouter.get('/conversations/:conversationId', (req, res) => {
 assistantRouter.delete('/conversations/:conversationId', (req, res) => {
   const id = requireConversationId(req, res)
   if (!id) return
-  const history = sessionService.getHistory()
+  const history = sessionsOf(req).getHistory()
   if (!history) return res.status(404).json({ error: 'Conversation history is off', requestId: req.id })
   const removed = history.remove(id)
-  sessionService.forget(id)
+  sessionsOf(req).forget(id)
   if (!removed) return res.status(404).json({ error: 'Conversation not found', requestId: req.id })
   res.status(204).end()
 })
 
 // Deleting everything needs the explicit confirmation, so a stray request cannot do it.
 assistantRouter.delete('/conversations', (req, res) => {
-  const history = sessionService.getHistory()
+  const history = sessionsOf(req).getHistory()
   if (!history) return res.status(404).json({ error: 'Conversation history is off', requestId: req.id })
   if (req.query.confirm !== 'all') {
     return res.status(400).json({ error: 'Deleting every conversation needs ?confirm=all', requestId: req.id })
@@ -167,6 +196,8 @@ assistantRouter.post('/sessions/:sessionId/chat', handleChat)
 
 assistantRouter.get('/audio-health', async (req, res, next) => {
   try {
+    // A diagnostic of the host's own speech service: for administrators only, and not a way to make it do work.
+    if (!can(requireIdentity(req), 'ai.admin')) return res.status(403).json({ error: 'Not allowed', code: 'forbidden', requestId: req.id })
     const health = await checkAudioServiceHealth({ force: req.query.force === '1' })
     res.json({ ...health, requestId: req.id })
   } catch (err) {
@@ -174,11 +205,18 @@ assistantRouter.get('/audio-health', async (req, res, next) => {
   }
 })
 
+// One recording at a time: a spoken sentence, not a lecture. (The old limit was 12 MB.)
+const STT_MAX_BYTES = Number.parseInt(process.env.STT_MAX_BYTES ?? '', 10) || 6 * 1024 * 1024
+// A browser recording is Opus/WebM, a few kilobytes a second: a size is the only measure of its length before it is decoded.
+const estimateSeconds = (bytes) => Math.max(1, Math.round(bytes / 4000))
+
 assistantRouter.post(
   '/stt',
-  express.raw({ type: 'application/octet-stream', limit: '12mb' }),
+  express.raw({ type: 'application/octet-stream', limit: STT_MAX_BYTES }),
   async (req, res, next) => {
+    let call = null
     try {
+      const identity = requireIdentity(req)
       const audioBuffer = req.body
       if (!audioBuffer || !(audioBuffer instanceof Buffer) || audioBuffer.length === 0) {
         return res.status(400).json({ error: 'Missing audio body', requestId: req.id })
@@ -187,15 +225,21 @@ assistantRouter.post(
       const mimeType = req.headers['x-audio-mime']?.toString() || 'audio/webm'
       const language = req.headers['x-stt-lang']?.toString() || ''
       const prompt = req.headers['x-stt-prompt']?.toString() || ''
-      const backend = req.headers['x-stt-backend']?.toString() || ''
+      // The server decides where audio goes. A browser may ask for the free local engine, never for the paid cloud one.
+      const asked = String(req.headers['x-stt-backend'] ?? '').toLowerCase()
+      const backend = asked === 'local' ? 'local' : resolveSttBackend({ headerBackend: '' })
 
-      if (resolveSttBackend({ headerBackend: backend }) === 'local') {
+      call = meterOf(req).begin(identity, 'stt', { requestId: req.id, signal: abortOnClose(res) })
+      const audioSeconds = estimateSeconds(audioBuffer.length)
+
+      if (backend === 'local') {
         const result = await transcribeAudioLocalWithMetrics({
           audioBuffer,
           mimeType,
           language,
           prompt
         })
+        call.finish({ audioSeconds, provider: 'local-whisper' })
         return res.json({ text: result.text, ...result.metrics, requestId: req.id })
       }
 
@@ -206,9 +250,15 @@ assistantRouter.post(
         prompt,
         backend
       })
+      call.finish({ audioSeconds, provider: 'cloud-stt' })
 
       res.json({ text, requestId: req.id })
     } catch (err) {
+      if (err?.code === 'no-speech') {
+        call?.finish({ audioSeconds: 1, provider: 'local-whisper' })
+      } else {
+        call?.fail(err)
+      }
       if (err?.code === 'no-speech') {
         return res.json({ text: '', error: 'no-speech', requestId: req.id })
       }
@@ -233,19 +283,34 @@ async function handleChatStream(req, res, next) {
     })
   }
 
+  // The checks come before the stream opens, so a refusal is an ordinary JSON answer (429 / 503 with Retry-After).
+  let identity, sessions, sessionId, call
+  try {
+    identity = requireIdentity(req)
+    sessions = sessionsOf(req)
+    sessionId = getSessionId(req)
+    call = meterOf(req).begin(identity, 'stream', { requestId: req.id, conversationId: sessionId, signal: abortOnClose(res) })
+  } catch (err) {
+    return next(err)
+  }
+
   const stream = createSseStream(req, res)
 
   try {
-    const sessionId = getSessionId(req)
+    let replyText = ''
     await orchestrator.runStreamingTurn({
       sessionId,
       message,
       requestId: req.id,
+      owner: identity.ownerKey,
+      signal: call.signal,
+      onUsage: call.usage,
       emit(eventType, data) {
+        if (eventType === 'AI_TOKEN' && typeof data?.token === 'string') replyText += data.token
         if (stream.closed) {
           try {
-            const existing = sessionService.getOrCreateSession(sessionId)
-            sessionService.setState(existing.id, ASSISTANT_STATES.INTERRUPTED)
+            const existing = sessions.getOrCreateSession(sessionId)
+            sessions.setState(existing.id, ASSISTANT_STATES.INTERRUPTED)
           } catch {
             // ignore
           }
@@ -254,8 +319,11 @@ async function handleChatStream(req, res, next) {
         return stream.send(eventType, data)
       }
     })
+    call.estimate({ inText: message, outText: replyText })
+    call.finish()
     stream.end()
   } catch (err) {
+    call.fail(err)
     try {
       stream.send('AI_RESPONSE_ERROR', {
         error: err.statusCode && err.statusCode < 500 ? err.message : 'Internal Server Error',

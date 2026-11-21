@@ -28,7 +28,11 @@ export function rejectUpgrade(socket, status, code) {
   socket.destroy()
 }
 
-export function createUpgradeRouter(httpServer, { logger = console } = {}) {
+/**
+ * `basePath` ('/ai' when the app is served under /ai/) is accepted in front of every registered path, so the same build answers at
+ * the root and under its base path. Handlers may be async: a handler that throws, or rejects, is answered 500 and never crashes the server.
+ */
+export function createUpgradeRouter(httpServer, { logger = console, basePath = '' } = {}) {
   const routes = new Map()
 
   httpServer.on('upgrade', (req, socket, head) => {
@@ -38,13 +42,17 @@ export function createUpgradeRouter(httpServer, { logger = console } = {}) {
     } catch {
       return rejectUpgrade(socket, 400, 'bad-request')
     }
+    if (basePath && (pathname === basePath || pathname.startsWith(`${basePath}/`))) pathname = pathname.slice(basePath.length) || '/'
     const handler = routes.get(pathname)
     if (!handler) return rejectUpgrade(socket, 404, 'not-found')
-    try {
-      handler(req, socket, head)
-    } catch (err) {
+    const failed = (err) => {
       logger.error(`[ws] upgrade handler for ${pathname} failed:`, err)
       rejectUpgrade(socket, 500, 'internal-error')
+    }
+    try {
+      Promise.resolve(handler(req, socket, head)).catch(failed)
+    } catch (err) {
+      failed(err)
     }
   })
 

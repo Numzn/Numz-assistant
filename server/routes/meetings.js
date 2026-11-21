@@ -57,9 +57,13 @@ function titleFrom(body) {
   return trimmed || null
 }
 
-export function createMeetingsRouter({ meetingService, auth, intelligenceService = null, liveIntelligence = null, closeLiveSpeech = () => 0 }) {
+export function createMeetingsRouter({ meetingService, auth, intelligenceService = null, liveIntelligence = null, closeLiveSpeech = () => 0, launchGuard = null }) {
   if (!meetingService || !auth) throw new Error('meetingService and auth are required')
   const router = Router()
+  // Starting a meeting from the browser also needs a signed-in person when the assistant has per-person sign-in (`launchGuard`). The
+  // admin token and the meeting tickets (used by the speech service and for ending one's own meeting) are not browser credentials and
+  // are unchanged.
+  const signedIn = launchGuard ?? ((_req, _res, next) => next())
 
   router.post('/', auth.requireAdmin(), (req, res) => {
     const meeting = meetingService.createMeeting(metadataFrom(req.body))
@@ -68,16 +72,16 @@ export function createMeetingsRouter({ meetingService, auth, intelligenceService
 
   // Launch session: type the code once and meetings can then be started (by voice or button) without it. The
   // session is a cookie the browser's JavaScript cannot read, and it authorises starting a meeting only.
-  router.get('/launch/session', (req, res) => {
+  router.get('/launch/session', signedIn, (req, res) => {
     res.json(auth.launchSessionStatus(req))
   })
 
-  router.post('/launch/session', auth.requireLaunchCode(), (req, res) => {
+  router.post('/launch/session', signedIn, auth.requireLaunchCode(), (req, res) => {
     const { expiresAt } = auth.startLaunchSession(req, res)
     res.json({ authenticated: true, expiresAt })
   })
 
-  router.delete('/launch/session', (req, res) => {
+  router.delete('/launch/session', signedIn, (req, res) => {
     auth.endLaunchSession(req, res)
     res.status(204).end()
   })
@@ -86,7 +90,7 @@ export function createMeetingsRouter({ meetingService, auth, intelligenceService
   // Nothing is created unless a ticket can be issued, and a meeting that cannot be started is cancelled.
   // With an Idempotency-Key, repeating the same attempt returns the same meeting (200, `reused`) with a fresh
   // ticket, so a double trigger or a retry after a lost answer cannot leave two meetings recording.
-  router.post('/launch', auth.requireLaunchAccess(), (req, res) => {
+  router.post('/launch', signedIn, auth.requireLaunchAccess(), (req, res) => {
     const title = titleFrom(req.body)
     const launchKey = idempotencyKeyFrom(req)
     if (req.launchVia === 'code') auth.startLaunchSession(req, res)
