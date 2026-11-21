@@ -279,6 +279,11 @@ export function createCameraSession({
   // ---- the loop the page drives ------------------------------------------------------------------------------
 
   async function tick(now) {
+    // A camera left paused is not left open for ever: the same quiet spell applies, counted from the pause.
+    if (state.phase === S.PAUSED && now - lastActivityAt >= config.idleStopMs) {
+      stop('The camera was switched off after being paused for a while.')
+      return undefined
+    }
     if (!WATCHING.has(state.phase) || busy) return undefined
     const frame = device.sampleFrame()
     if (!frame) return undefined
@@ -356,8 +361,9 @@ export function createCameraSession({
     set({ phase: S.IDLE, message, tone: 'info', canRetry: false, current: null })
   }
 
-  function pause() {
+  function pause(now) {
     if (!SCANNING.has(state.phase)) return
+    if (now !== undefined) lastActivityAt = now // the quiet spell of a paused camera is counted from here
     epoch += 1
     abort?.abort()
     abort = null
@@ -367,11 +373,12 @@ export function createCameraSession({
     set({ phase: S.PAUSED, message: 'Paused. Nothing is being scanned or sent.', tone: 'info' })
   }
 
-  function resume() {
+  function resume(now) {
     if (state.phase !== S.PAUSED && !(state.phase === S.ERROR && state.canRetry && !pendingAnswer)) return
     tracker.reset()
     previous = null
-    lastActivityAt = Math.max(lastActivityAt, 0)
+    // Carrying on counts as activity: without this a long pause would be taken for a long quiet spell.
+    if (now !== undefined) lastActivityAt = now
     set({ phase: S.READY, message: 'Point the camera at a question.', tone: 'info', canRetry: false })
   }
 

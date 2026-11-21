@@ -379,6 +379,35 @@ test('pause stops scanning and sending, and drops a request in flight; resume ca
   release?.()
 })
 
+test('resuming after a long pause starts the quiet-spell clock afresh, instead of switching the camera off at once', async () => {
+  const rig = await started(build({ options: { idleStopMs: 10_000 } }))
+  rig.session.pause(1000)
+  rig.session.resume(9_000) // paused for 8 s: inside the limit
+  rig.device.show(flat(100))
+  await rig.session.tick(9_250)
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.READY)
+  assert.equal(rig.device.stopped, 0)
+  await rig.session.tick(18_000) // 9 s after the resume: still inside it
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.READY)
+  await rig.session.tick(19_500) // more than 10 s of nothing since the resume
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.IDLE)
+})
+
+test('a camera left paused is switched off after the same quiet spell, so it is never open forever', async () => {
+  const rig = await started(build({ options: { idleStopMs: 10_000 } }))
+  rig.device.show(flat(100))
+  rig.session.pause(2_000)
+  await rig.session.tick(8_000)
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.PAUSED, 'not yet')
+  assert.equal(rig.device.stopped, 0)
+  await rig.session.tick(12_500)
+  const state = rig.session.getState()
+  assert.equal(state.phase, CAMERA_STATES.IDLE)
+  assert.equal(state.cameraOn, false)
+  assert.equal(rig.device.stopped, 1)
+  assert.match(state.message, /paused/i)
+})
+
 test('stop turns the camera off, ends the scanning, and later ticks do nothing', async () => {
   const rig = await started(build())
   rig.api.reads = [QUESTION(1)]
