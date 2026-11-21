@@ -59,7 +59,9 @@ cited segment carries that label.
 - The grounding check is lexical: it tells a claim that shares no words with its citation from one that does, not a
   true claim from a plausible false one that reuses the same words.
 - Whether the model's notes are *good* has not been measured; only that they cannot cite what does not exist.
-- A meeting recorded through a microphone that hears everyone has no speaker labels (the live path does not run
-  diarization), so owners are rare by design.
+- A meeting recorded through a microphone that hears everyone has no speaker labels, and with both a microphone and a
+  shared tab lines are only tagged `you` / `others` (see [meeting-speakers.md](meeting-speakers.md)); there is no
+  per-person diarization on the live path. Owners are rare by design: a name said in the words, or "I will ..." from
+  a clear `you`.
 - Rolling (during the meeting) notes are now wired: see [live-meeting-intelligence.md](live-meeting-intelligence.md).
   Everything here (admin routes, grounding, evidence labels) is the same machinery that pipeline uses.

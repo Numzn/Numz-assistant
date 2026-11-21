@@ -47,6 +47,7 @@ stored. Generated intelligence is derived and must keep evidence references.
 | Live hypothesis reconciliation | `audio/speech/reconciler.py` | Implemented |
 | Segment identity | `audio/speech/live/ids.py` | Implemented |
 | Live session lifecycle | `audio/speech/live/session.py` | Implemented |
+| Live "you" / "others" labels | `audio/speech/live/source_labels.py` (see [meeting-speakers.md](meeting-speakers.md)) | Implemented; thresholds unmeasured with real audio |
 | Durable outbox | `audio/speech/live/outbox.py` | Implemented, file-based |
 | Meeting persistence client | `audio/speech/live/persistence.py` | Implemented |
 | Live transport | `audio/live_speech_ws.py` | Implemented |

@@ -112,6 +112,6 @@ server with `MEETING_LIVE_INTELLIGENCE=off`.
 - Intelligence is held in memory and rebuilt from the saved transcript after a restart (the model catches up in
   batches; a lost final record is regenerated on the next request).
 - One server process.
-- Live transcripts carry no speaker labels, so owners exist only where a speaker said a name.
+- Live lines are tagged `you` / `others` only when both the microphone and a shared tab are recorded (see [meeting-speakers.md](meeting-speakers.md)); otherwise they carry no label. Owners exist only where a speaker said a name, or where `you` said "I will ...".
 - Polling (4 s, 20 s when the tab is hidden, 3 s while a final record is pending), not push.
 - Voice during a live recording: see above.
