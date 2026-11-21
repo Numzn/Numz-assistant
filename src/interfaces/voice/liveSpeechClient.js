@@ -35,6 +35,14 @@ const DEFAULT_MONITOR_INTERVAL_MS = 500
 const MIX_GAIN = 0.7 // two sources are summed: leave headroom so loud speech on both does not clip
 // How long to wait for a suspended AudioContext to start. Past this, the browser is waiting for a user gesture.
 const DEFAULT_RESUME_TIMEOUT_MS = 1500
+// With both sources recorded, each also feeds its own input of the recorder, to be measured and not recorded
+// (input 0 is the mix). See public/worklets/pcm-capture-processor.js.
+const LEVEL_INPUTS = Object.freeze({ microphone: 1, tab: 2 })
+
+/** A level as it goes on the wire: a non-negative number to 6 decimals, or null for anything else. */
+function levelOf(value) {
+  return Number.isFinite(value) && value >= 0 ? Math.round(value * 1e6) / 1e6 : null
+}
 
 /**
  * A page that starts recording without a click (a voice command, a reconnect) can be handed an AudioContext the
@@ -122,6 +130,7 @@ export function createLiveSpeechClient({
   let sourceNodes = [] // { id, node, analyser }
   let monitorTimer = null
   let droppedFrames = 0
+  let levelsAccepted = false // this connection's service said it will use per-source levels (see 'ready')
   let ws = null
   let active = false
   let stoppedWaiters = [] // resolved when the server confirms the session is finished
@@ -135,6 +144,7 @@ export function createLiveSpeechClient({
     const type = msg?.type
 
     if (type === 'ready') {
+      levelsAccepted = msg.sourceLevels === true
       onReady({ sessionId: msg.sessionId, meetingId: msg.meetingId ?? null, persistence: msg.persistence ?? null })
       return
     }
@@ -256,6 +266,7 @@ export function createLiveSpeechClient({
     try {
       const deviceId = typeof getDeviceId === 'function' ? getDeviceId() : ''
       droppedFrames = 0
+      levelsAccepted = false
       capture = await acquireCapture({
         mode: normalizeCaptureMode(captureMode),
         mediaDevices: navigator.mediaDevices,
@@ -290,11 +301,15 @@ export function createLiveSpeechClient({
 
       await audioContext.audioWorklet.addModule(WORKLET_URL)
       if (!active) return releaseCancelledStart()
+      const live = capture.sources.filter((source) => source.stream)
+      // With both sources the recorder also measures each on its own (inputs 1 and 2) so lines can be told apart as
+      // "you" or "others". The audio it records is the same either way; with one source nothing changes at all.
+      const reportLevels = live.length > 1
       workletNode = new window.AudioWorkletNode(audioContext, 'pcm-capture-processor', {
-        processorOptions: { frameSamples: FRAME_SAMPLES }
+        processorOptions: { frameSamples: FRAME_SAMPLES, ...(reportLevels ? { reportLevels: true } : {}) },
+        ...(reportLevels ? { numberOfInputs: 1 + Object.keys(LEVEL_INPUTS).length } : {})
       })
       // One recording stream: a single source goes straight to the recorder, several are summed first.
-      const live = capture.sources.filter((source) => source.stream)
       if (live.length > 1 && typeof audioContext.createGain === 'function') {
         mixNode = audioContext.createGain()
         mixNode.gain.value = MIX_GAIN
@@ -330,6 +345,7 @@ export function createLiveSpeechClient({
           language,
           saveRecording,
           reprocessOnStop,
+          sources: live.map((source) => source.id),
           ...(meetingId ? { meetingId, meetingTicket } : {})
         })
       )
@@ -337,18 +353,28 @@ export function createLiveSpeechClient({
       workletNode.port.onmessage = (ev) => {
         const socket = ws
         if (socket?.readyState !== WebSocket.OPEN) return
+        // The worklet posts a bare frame, or { frame, mic, tab } when it measures the sources.
+        const message = ev.data
+        const frame = message?.frame ?? message
         if (socket.bufferedAmount > maxBufferedBytes) {
           // The connection is not keeping up. Say so rather than grow without bound: the transcript has a gap.
+          // The frame's levels go with it: they describe audio that is not being sent.
           droppedFrames += 1
           if (droppedFrames === 1 || droppedFrames % DROP_REPORT_EVERY_FRAMES === 0) {
             onDropped({ frames: droppedFrames, seconds: droppedFrames * FRAME_SECONDS })
           }
           return
         }
-        socket.send(ev.data)
+        // Levels describe the frame that follows them. Not before the service has said it will use them: an older
+        // service answers any message it does not know with an error, which ends the recording.
+        if (levelsAccepted && message?.frame !== undefined) {
+          socket.send(JSON.stringify({ type: 'levels', mic: levelOf(message.mic), tab: levelOf(message.tab) }))
+        }
+        socket.send(frame)
       }
       for (const entry of sourceNodes) {
         entry.node.connect(mixNode ?? workletNode)
+        if (reportLevels && LEVEL_INPUTS[entry.id]) entry.node.connect(workletNode, 0, LEVEL_INPUTS[entry.id])
         entry.analyser && entry.node.connect(entry.analyser)
       }
       startMonitor()

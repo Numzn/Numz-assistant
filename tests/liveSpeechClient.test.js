@@ -75,7 +75,16 @@ class FakeAudioContext {
     log.audioContexts.push(this)
   }
   createMediaStreamSource(stream) {
-    const node = { stream, connectedTo: [], connect(target) { this.connectedTo.push(target) }, disconnect() {} }
+    const node = {
+      stream,
+      connectedTo: [],
+      connections: [], // [target, output, input] as the page asked for each
+      connect(target, output, input) {
+        this.connectedTo.push(target)
+        this.connections.push([target, output, input])
+      },
+      disconnect() {}
+    }
     log.sourceNodes.push(node)
     return node
   }
@@ -107,7 +116,9 @@ class FakeAudioContext {
 }
 
 class FakeAudioWorkletNode {
-  constructor() {
+  constructor(context, name, options) {
+    this.name = name
+    this.options = options // what the page asked the worklet for (inputs, frame size, whether to report levels)
     this.port = { onmessage: null, close() {} }
     log.worklets.push(this)
   }
@@ -557,4 +568,159 @@ test('a mode this browser cannot offer fails before anything is granted', async 
   await assert.rejects(() => client.start(), (err) => err.code === 'capture-unsupported')
   assert.equal(log.tracks.length, 0)
   assert.equal(FakeWebSocket.instances.length, 0)
+})
+
+// ---- "you" / "others": per-source levels beside the mixed audio ------------------------------------------------
+
+function bothSources() {
+  const state = { shared: null }
+  install({ getUserMedia: async () => grantedStream(), getDisplayMedia: async () => (state.shared = sharedStream()) })
+}
+
+const framesOf = (socket) => socket.sent.filter((message) => typeof message !== 'string')
+const jsonOf = (socket) => socket.sent.filter((message) => typeof message === 'string').map((message) => JSON.parse(message))
+
+test('both: the recorder gets the mix on input 0 as before, and each source also on its own measuring input', async () => {
+  bothSources()
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  await client.start()
+  const [worklet] = log.worklets
+  assert.deepEqual(worklet.options, { processorOptions: { frameSamples: 1600, reportLevels: true }, numberOfInputs: 3 })
+  const [mic, tab] = log.sourceNodes
+  assert.ok(log.gainNodes[0].connectedTo.includes(worklet), 'the mix still goes to the recorder')
+  assert.deepEqual(mic.connections.find(([target]) => target === worklet), [worklet, 0, 1], 'the microphone on input 1')
+  assert.deepEqual(tab.connections.find(([target]) => target === worklet), [worklet, 0, 2], 'the shared tab on input 2')
+  await client.stop()
+})
+
+test('one source: the recorder is built exactly as it always was, with nothing extra connected', async () => {
+  install({ getUserMedia: async () => grantedStream() })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  await client.start()
+  const [worklet] = log.worklets
+  assert.deepEqual(worklet.options, { processorOptions: { frameSamples: 1600 } })
+  const toRecorder = log.sourceNodes[0].connections.filter(([target]) => target === worklet)
+  assert.deepEqual(toRecorder.map(([, output, input]) => [output, input]), [[undefined, undefined]], 'one plain connection to the recorder, no extra input')
+  await client.stop()
+})
+
+test('the start message names the sources that are in the mix', async () => {
+  bothSources()
+  const both = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  await both.start()
+  assert.deepEqual(JSON.parse(FakeWebSocket.instances[0].sent[0]).sources, ['microphone', 'tab'])
+  await both.stop()
+
+  install({ getUserMedia: async () => grantedStream() })
+  const one = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech' })
+  await one.start()
+  assert.deepEqual(JSON.parse(FakeWebSocket.instances[0].sent[0]).sources, ['microphone'])
+  await one.stop()
+})
+
+test('both: when only one source could be started, the page declares one and asks for no levels', async () => {
+  install({
+    getUserMedia: async () => grantedStream(),
+    getDisplayMedia: async () => {
+      throw new Error('cancelled')
+    }
+  })
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  await client.start()
+  assert.deepEqual(JSON.parse(FakeWebSocket.instances[0].sent[0]).sources, ['microphone'])
+  assert.deepEqual(log.worklets[0].options, { processorOptions: { frameSamples: 1600 } })
+  await client.stop()
+})
+
+test('levels are sent only once the service says it will use them, each just before its frame', async () => {
+  bothSources()
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+  const [worklet] = log.worklets
+  const frame = new ArrayBuffer(6400)
+
+  worklet.port.onmessage({ data: { frame, mic: 0.12, tab: 0 } }) // before 'ready': the service has not agreed yet
+  assert.equal(framesOf(socket).length, 1, 'the audio goes regardless')
+  assert.equal(jsonOf(socket).filter((m) => m.type === 'levels').length, 0, 'but no levels: an older service would call it an error')
+
+  socket.serverSays({ type: 'ready', sessionId: 's-1', persistence: 'meeting', sourceLevels: true })
+  const before = socket.sent.length
+  worklet.port.onmessage({ data: { frame, mic: 0.12, tab: 0 } })
+  worklet.port.onmessage({ data: { frame, mic: null, tab: 0.034 } })
+  const sent = socket.sent.slice(before)
+  assert.equal(sent.length, 4)
+  assert.deepEqual(JSON.parse(sent[0]), { type: 'levels', mic: 0.12, tab: 0 })
+  assert.equal(sent[1], frame, 'the frame follows its levels, untouched')
+  assert.deepEqual(JSON.parse(sent[2]), { type: 'levels', mic: null, tab: 0.034 }, 'a source with no reading is null, not zero')
+  assert.equal(sent[3], frame)
+  await client.stop()
+})
+
+test('a service that does not say sourceLevels never gets levels, in either mode', async () => {
+  bothSources()
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+  const [worklet] = log.worklets
+  for (const ready of [{ type: 'ready', sessionId: 's-1' }, { type: 'ready', sessionId: 's-1', sourceLevels: false }, { type: 'ready', sessionId: 's-1', sourceLevels: 'yes' }]) {
+    socket.serverSays(ready)
+    worklet.port.onmessage({ data: { frame: new ArrayBuffer(6400), mic: 0.1, tab: 0.1 } })
+  }
+  assert.equal(framesOf(socket).length, 3)
+  assert.equal(jsonOf(socket).filter((m) => m.type === 'levels').length, 0)
+  await client.stop()
+})
+
+test('levels that are not usable numbers are sent as null, rounded readings keep their precision', async () => {
+  bothSources()
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+  const [worklet] = log.worklets
+  socket.serverSays({ type: 'ready', sessionId: 's-1', sourceLevels: true })
+  const before = socket.sent.length
+  worklet.port.onmessage({ data: { frame: new ArrayBuffer(6400), mic: 'loud', tab: NaN } })
+  worklet.port.onmessage({ data: { frame: new ArrayBuffer(6400), mic: -1, tab: 0.0031622776601683794 } })
+  worklet.port.onmessage({ data: { frame: new ArrayBuffer(6400) } })
+  const levels = socket.sent.slice(before).filter((m) => typeof m === 'string').map((m) => JSON.parse(m))
+  assert.deepEqual(levels, [
+    { type: 'levels', mic: null, tab: null },
+    { type: 'levels', mic: null, tab: 0.003162 },
+    { type: 'levels', mic: null, tab: null }
+  ])
+  await client.stop()
+})
+
+test('a frame dropped because the connection is behind takes its levels with it', async () => {
+  bothSources()
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both', maxBufferedBytes: 1000 })
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+  const [worklet] = log.worklets
+  socket.serverSays({ type: 'ready', sessionId: 's-1', sourceLevels: true })
+  const before = socket.sent.length
+  FakeWebSocket.bufferedAmount = 5000
+  worklet.port.onmessage({ data: { frame: new ArrayBuffer(6400), mic: 0.1, tab: 0.1 } })
+  assert.equal(socket.sent.length, before, 'neither the frame nor its levels were queued')
+  FakeWebSocket.bufferedAmount = 0
+  worklet.port.onmessage({ data: { frame: new ArrayBuffer(6400), mic: 0.1, tab: 0.1 } })
+  assert.equal(socket.sent.length, before + 2, 'and the next frame goes out with its own')
+  await client.stop()
+})
+
+test('the service agreeing to levels is remembered per connection, not across a Reconnect', async () => {
+  bothSources()
+  const client = createLiveSpeechClient({ wsUrl: 'ws://x/live-speech', captureMode: 'both' })
+  await client.start()
+  FakeWebSocket.instances[0].serverSays({ type: 'ready', sessionId: 's-1', sourceLevels: true })
+  await client.stop()
+
+  bothSources()
+  await client.start()
+  const [socket] = FakeWebSocket.instances
+  const [worklet] = log.worklets
+  worklet.port.onmessage({ data: { frame: new ArrayBuffer(6400), mic: 0.1, tab: 0 } })
+  assert.equal(jsonOf(socket).filter((m) => m.type === 'levels').length, 0, 'the new connection has not agreed yet')
+  await client.stop()
 })
