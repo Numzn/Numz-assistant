@@ -32,6 +32,7 @@ export function createAiAuth({ repo, broker, config = {}, clock = Date.now, logg
     maxS: 8 * 3600,
     revalidateS: 60,
     graceS: 600,
+    maintainS: 30,
     secure: true,
     allowedExternalIds: null, // a Set: only these NUMZLAB user ids may sign in (a staged roll-out); null = everyone NUMZLAB approves
     ...config
@@ -47,6 +48,7 @@ export function createAiAuth({ repo, broker, config = {}, clock = Date.now, logg
   const touched = new Map() // id_hash -> last write (s)
   const sockets = new Map() // user id -> Set<{ ws, idHash }>
   const logins = new Map() // ip -> timestamps
+  const usedStates = new Map() // sign-in state -> expiry (s): a sign-in attempt can be completed once
   let unavailableLogged = 0
   let timer = null
 
@@ -262,6 +264,13 @@ export function createAiAuth({ repo, broker, config = {}, clock = Date.now, logg
         audit('auth.login_refused', { ip: req.ip, requestId: req.id, detail: { why: 'state-mismatch' } })
         return back('failed')
       }
+      // The sealed state is a cookie, so on its own it could be offered twice: remember what has been used.
+      for (const [used, until] of usedStates) if (until <= nowS()) usedStates.delete(used)
+      if (usedStates.has(state)) {
+        audit('auth.login_refused', { ip: req.ip, requestId: req.id, detail: { why: 'state-reused' } })
+        return back('failed')
+      }
+      usedStates.set(state, saved.exp)
       if (typeof error === 'string') {
         audit('auth.login_denied', { ip: req.ip, requestId: req.id, detail: { why: error === 'access_denied' ? 'denied' : 'upstream' } })
         return back(error === 'access_denied' ? 'denied' : 'unavailable')
@@ -398,7 +407,7 @@ export function createAiAuth({ repo, broker, config = {}, clock = Date.now, logg
     status: () => ({ mode: 'broker', required: true, misconfigured: false }),
     start() {
       if (!timer) {
-        timer = setInterval(maintain, 30_000)
+        timer = setInterval(maintain, Math.max(1, cfg.maintainS) * 1000)
         timer.unref?.()
       }
     },
