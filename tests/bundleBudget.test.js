@@ -19,7 +19,8 @@ const BUDGET = {
   indexScriptsRaw: 220 * KB,
   indexScriptsGzip: 80 * KB,
   indexTotalBrotli: 75 * KB,
-  historyTotalGzip: 20 * KB
+  historyTotalGzip: 20 * KB,
+  cameraTotalGzip: 38 * KB // measured 25.2 KB: the shared stylesheet, the access gate, the markdown renderer and the camera code
 }
 
 /** Markers that appear only in the heavy libraries' code. */
@@ -54,10 +55,12 @@ test('the first load of the app is within budget', { timeout: 120_000 }, () => {
   assert.ok(index.totals.brotli <= BUDGET.indexTotalBrotli, `page is ${kb(index.totals.brotli)} in Brotli, budget ${kb(BUDGET.indexTotalBrotli)}`)
   const history = firstLoad(dist, 'history.html')
   assert.ok(history.totals.gzip <= BUDGET.historyTotalGzip, `history page is ${kb(history.totals.gzip)} gzipped, budget ${kb(BUDGET.historyTotalGzip)}`)
+  const camera = firstLoad(dist, 'camera.html')
+  assert.ok(camera.totals.gzip <= BUDGET.cameraTotalGzip, `camera page is ${kb(camera.totals.gzip)} gzipped, budget ${kb(BUDGET.cameraTotalGzip)}`)
 })
 
 test('no script loaded up front contains Three.js or the Picovoice SDK', () => {
-  for (const page of ['index.html', 'history.html']) {
+  for (const page of ['index.html', 'history.html', 'camera.html']) {
     for (const file of firstLoad(dist, page).files.filter((f) => f.kind === 'script')) {
       const code = readText(dist, file.url)
       for (const marker of [...THREE_MARKERS, ...PICOVOICE_MARKERS]) {
@@ -84,7 +87,7 @@ test('every file under /assets/ has a content hash, because the server caches th
 })
 
 test('the HTML pages do not name any file by a path that could change under the same URL', () => {
-  for (const page of ['index.html', 'history.html']) {
+  for (const page of ['index.html', 'history.html', 'camera.html']) {
     const unhashed = firstLoad(dist, page).files.filter((f) => f.url !== `/${page}` && !f.url.startsWith('/assets/'))
     assert.deepEqual(unhashed.map((f) => f.url), [], `${page} loads a file outside /assets/ up front`)
   }

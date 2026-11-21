@@ -1,0 +1,155 @@
+# Smart Camera
+
+Point a phone at a practice question on another screen. The question is read off the picture, answered with the
+working shown, and the camera goes back to waiting for the next one. Open it from **Smart Camera** in the sidebar
+(`/camera.html`). Built on branch `feature/smart-camera`; **not merged, not deployed**.
+
+## Flow
+
+```
+READY -> QUESTION_DETECTED -> CAPTURING -> EXTRACTING -> ANALYSING -> ANSWER_READY -> WAITING_FOR_NEXT
+```
+
+plus `IDLE` (camera off), `STARTING`, `AWAITING_CONFIRMATION` (review mode: the question waits for a tap), `PAUSED`
+and `ERROR`. The state machine is `src/interfaces/camera/cameraSession.js`; it has no screen, camera or network of its
+own, so it is tested with scripted ones.
+
+1. **On the phone** (`frameAnalysis.js`, `cameraSession.js`): the live preview is sampled about four times a second at
+   160x120 grayscale. A picture is considered only when the camera has held still for 0.7 s, the scene looks like
+   text, and 2 s have passed since the last one.
+2. **Read** (`POST .../read`): the picture (JPEG, at most 1568 px on the long side) goes to the vision provider, which
+   returns the question as JSON (text, options, type, subject, whether it needs a figure, confidence). The question is
+   validated: not a question, too little text and low confidence are refused with a reason and nothing is answered.
+   If the reader says part of the picture could not be read (a covered option, a glare patch) while still finding a
+   question, that note is shown with the question and handed to the answering model, so a partly read question is not
+   answered as if it were whole.
+3. **Same question?** (`questionIdentity.js`): the text is normalised (case, numbering, punctuation, maths symbols)
+   and compared with the session's earlier questions. Numbers and option letters must match exactly; the rest must be
+   96% alike. A match is reported as a duplicate with the answer it already has: no model is asked again.
+4. **Answer** (`POST .../answer`): the configured text model (DeepSeek in production) gets the question inside
+   `<question>` markers with its own prompt, and returns structured JSON: answer, steps, explanation, confidence
+   (high/medium/low) and what it is unsure of. Maths is plain-text steps. A reply that is not JSON is shown as text with
+   low confidence and a note. A question that depends on a figure is answered by the vision model with the picture
+   (kept in memory for 2 minutes for that, then dropped); if the picture has expired the answer is capped at medium
+   confidence and says it could not see the figure.
+5. **Saved**: each answered question is saved as an ordinary assistant conversation whose id is the camera session id,
+   so it appears in Conversations and can be deleted there. Only text is saved, never a picture.
+
+Review mode (the switch on the page, remembered per device) stops after step 2 and shows the question, editable, with
+Answer / Skip. Automatic mode (the default, as chosen) goes straight on. "Capture now" reads what the camera sees now,
+steady or not.
+
+## Server API (all behind the assistant's access gate, nothing cacheable)
+
+| Route | Body | Returns |
+| --- | --- | --- |
+| `POST /api/v1/assistant/camera/sessions` | `{}` | `201 { sessionId, visionConfigured, limits }` |
+| `POST .../sessions/:id/read` | the picture itself, `Content-Type: image/*` | `{ status: 'new'\|'duplicate'\|'not-a-question'\|'unclear', ... }` |
+| `POST .../sessions/:id/answer` | `{ questionId, text? }` (text = the person's correction) | `{ status: 'answered', questionId, answer, markdown, cached? }` |
+| `DELETE .../sessions/:id` | | `204`; idempotent; removes the session and the saved conversation |
+
+Error codes the page acts on: `vision-not-configured`, `session-limit`, `image-too-large`, `invalid-image` (permanent);
+`session-not-found` (the page starts a new session), `camera-rate-limited` (429 + `Retry-After`), `camera-busy`,
+`read-failed`, `answer-failed`, `question-not-found`, `invalid-question`.
+
+## Turning it on
+
+The page opens without any of this, but cannot read pictures. In `.env.secrets` (the key never goes in `.env`):
+
+| Setting | |
+| --- | --- |
+| `CAMERA_VISION_PROVIDER` | `openai`, `anthropic`, or `openai-compatible` (any other service with OpenAI's protocol) |
+| `CAMERA_VISION_API_KEY` | the provider's key |
+| `CAMERA_VISION_MODEL` | a model that accepts pictures. No default on purpose: it sets what each picture costs and how well glare is read |
+| `CAMERA_VISION_BASE_URL` | optional for `openai` and `anthropic` (a gateway); required for `openai-compatible` |
+| `CAMERA_VISION_REASONING_EFFORT` | optional, `openai` only: `low`, `medium`, `high` (and `minimal` on models that accept it). Measured with `gpt-6.2-astra`: `minimal` is refused and `low` is not faster, so leave it unset |
+
+`openai` sends the parameters OpenAI's newer models accept (`max_completion_tokens`, no `temperature`; they refuse
+`max_tokens`). `openai-compatible` keeps the older shape for other services.
+
+Answers use the assistant's existing text model (`AI_PROVIDER`). The start-up log says which settings are missing, never
+a value. Optional: `CAMERA_MAX_READS` (1 to 1000, default 100) caps the pictures one camera session may read, which is
+the cost control; anything else is ignored.
+
+**Prove a key works without a phone:** `node scripts/camera-vision-check.js` (or `... photo.jpg` with your own picture)
+sends one picture to the configured provider exactly as the camera would, and says what happened: which settings are
+missing, that the provider rejected the key or the model name or address, that it was unreachable, slow, out of quota or
+overloaded, that the reply was not the expected JSON, or `OK` with the question it read. It never prints the key or
+anything the provider said about an error. One run is one paid call.
+
+## Limits (all in `CAMERA_LIMITS`, `server/camera/cameraService.js`)
+
+100 pictures per session (`CAMERA_MAX_READS`), 1.5 MB per picture, one read per 2 s per session, 2 reads at once across the server, 20
+live sessions (the idlest is dropped), a session expires after 30 minutes idle, every model call has a 40 s deadline.
+On the phone: the camera switches itself off after 5 minutes with nothing new (also when paused), and a hidden page is
+paused.
+
+## Privacy
+
+- The camera opens only when **Start camera** is pressed. The indicator on the preview always says *Camera off*,
+  *Scanning*, *Scanning · picture sent to be read*, *Paused · nothing is sent*, or why it is not scanning.
+- While scanning, each picture is sent to the configured vision provider (a third party) and is not kept by this app.
+  The page says so, and says to use it only on material you are allowed to capture, not in exams that forbid help.
+- Hidden page: paused. Page closed: camera released. Camera taken away by the OS: stopped, with a message.
+- Logs carry ids, statuses and counts only: no picture, question, answer, or upstream error text.
+- **Clear history** (two taps) deletes the session and its saved conversation on the server.
+
+## What is and is not verified
+
+Verified: 924 Node tests (the camera adds about 170: frame analysis, state machine, question identity, model-reply
+parsing, the service, the routes with the real browser client over a real socket, the vision adapters and the live check
+against a fake `fetch`, the presenter, the limits); the production build within a bundle budget (25 KB gzipped for the
+camera page); and two scripts in `scripts/camera-e2e/` that drive real headless Chromium against the production build and
+its security headers, with a fake camera feed and stub models: `run.mjs` (31 checks: the working path) and `unhappy.mjs`
+(42 checks: no vision provider, camera refused / in use / missing / on a page that is not https and then "Try again",
+the assistant locked with a wrong and the right access code, the vision model failing and the answer model failing, the
+session limit and clearing to continue, the camera taken away mid-session, keyboard use and control names). No console or
+CSP errors on the working path.
+
+**Measured with a real provider** (OpenAI, `gpt-6.2-astra`, 2026-11-21; about 25 calls in all). The first live call
+found that the generic request shape was refused (`max_tokens`), which is why `openai` is its own mode.
+- A clean rendered question: text, all four options, type, subject and confidence read exactly, in about 3 to 4 s.
+- The same question after blur, a 5 degree tilt, dim and noisy light, a moire grid, a screen a third of the frame, and a
+  perspective angle: the stem read exactly every time. Three differently degraded pictures of one screen all count as
+  the same question for the duplicate check.
+- Glare hiding options A to C: the model did not invent them. It returned only the visible option and said the rest were
+  too faint (confidence 0.88), which is why that note is now passed on (see above).
+- End to end (fake camera feed -> the real camera page and server -> OpenAI for both the reading and the answer): both
+  questions read, answered with the working, confidence shown, history built, a repeat caught as a duplicate, no console
+  errors, and the server log held only ids and statuses.
+
+These are synthetic screens photographed by a fake camera, so they show the reading is robust, not that a real phone in
+a real room will match; glare on a real glossy screen and real moire are still untested.
+
+**Not verified, and why it matters:**
+
+- **The Anthropic adapter has not been called live** (only `openai` has). Its request shape follows the public docs and
+  is pinned by tests. Cost per picture has not been measured against a bill.
+- **No real phone has run it.** Switching camera and the torch are written defensively and untested on hardware. The
+  frame thresholds (still, text-like, 0.15 "looks different") are unmeasured defaults.
+- **The phone cannot tell two questions in one layout apart.** Measured on 18 rendered quiz screens with simulated hand
+  wobble: "12 + 7" and "13 + 7" differ by 0.003 (below sensor noise); a page jostled by a hand reaches 0.5 to 0.75. So
+  "looks unchanged" is never treated as "already seen": it only slows re-checking (15 s, 30 s, then every 60 s), and the
+  server's text comparison decides. A change the phone cannot see is therefore picked up within about a minute at the
+  worst, or at once with Capture now. A re-check that finds nothing costs one read and does not keep the camera on.
+
+## Before it can ship
+
+1. **Lock the assistant API.** `ASSISTANT_ACCESS_CODE` is unset in production, so these routes (and the vision key
+   behind them) would be open to anyone who can reach the server. Set a code of at least 12 characters first.
+2. A vision provider, key and model (see above), proved with `node scripts/camera-vision-check.js`, and a decision on
+   cost: every picture sent is a paid call (`CAMERA_MAX_READS` caps a session).
+3. A rebuilt image (the page is a third Vite page; nothing else about the build changes).
+4. One real test on a real phone over https (cameras need a secure page; `localhost` or the tailnet https name).
+
+## Running the browser check
+
+```bash
+npx vite build
+CAMERA_E2E_DIR=/tmp/camera-e2e FFMPEG=/path/to/ffmpeg node scripts/camera-e2e/run.mjs      # the working path
+CAMERA_E2E_DIR=/tmp/camera-e2e FFMPEG=/path/to/ffmpeg node scripts/camera-e2e/unhappy.mjs  # what goes wrong
+```
+
+They need Playwright (`PLAYWRIGHT_FROM` points at a project that has it; on this host ZEDFOOTBALL's) and ffmpeg, start the
+real server on spare ports with a throwaway database and a stub in place of the models, and write the uploaded picture and
+screenshots (phone and desktop sizes) to `CAMERA_E2E_DIR`. Run them one after the other: they share ports.

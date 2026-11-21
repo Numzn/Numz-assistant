@@ -243,6 +243,18 @@ body[data-mode="voice"] #composerWrap {
   background: var(--accent-hover);
 }
 
+a.nav-btn {
+  margin-top: 6px;
+  justify-content: flex-start;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+a.nav-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 #recent {
   display: flex;
   flex: 1;
@@ -2027,6 +2039,588 @@ a.ghost {
 
   .msg[data-card="meeting"] .body {
     padding: 16px;
+  }
+}
+
+/* ---- Smart Camera (camera.html) ---- */
+
+/* The camera's own layout: the preview and its controls stay put while the panels (question, answer, history)
+   scroll beneath them, because a person holding a phone at a screen cannot also scroll to find the answer. */
+body[data-page="camera"] #app {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+body[data-page="camera"] [hidden] {
+  display: none !important;
+}
+
+#cameraMain {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+#cameraStageColumn {
+  display: grid;
+  gap: 10px;
+  padding: 10px 16px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+#cameraTitle {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* On a phone the answer comes first: the person is holding the camera and cannot scroll to look for it. */
+#answerPanel {
+  order: -1;
+}
+
+#cameraPanels {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  padding: 14px 16px max(28px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+#cameraStage {
+  position: relative;
+  width: 100%;
+  height: min(26vh, 240px);
+  min-height: 130px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: #000;
+  color: var(--text-muted);
+  overflow: hidden;
+}
+
+/* The preview shows exactly what would be sent (contain, not cover). */
+#cameraPreview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+#cameraStage[data-on="false"] #cameraPreview {
+  visibility: hidden;
+}
+
+#cameraPlaceholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px 28px;
+  text-align: center;
+  font-size: 14px;
+}
+
+#cameraPlaceholder p {
+  max-width: 34ch;
+  margin: 0;
+}
+
+/* Corner marks that show where to aim, only while the camera is on. */
+#cameraGuide {
+  position: absolute;
+  inset: 12% 10%;
+  display: none;
+  pointer-events: none;
+  --corner: 22px;
+  --mark: color-mix(in srgb, var(--text) 70%, transparent);
+  background:
+    linear-gradient(var(--mark), var(--mark)) top left / var(--corner) 2px,
+    linear-gradient(var(--mark), var(--mark)) top left / 2px var(--corner),
+    linear-gradient(var(--mark), var(--mark)) top right / var(--corner) 2px,
+    linear-gradient(var(--mark), var(--mark)) top right / 2px var(--corner),
+    linear-gradient(var(--mark), var(--mark)) bottom left / var(--corner) 2px,
+    linear-gradient(var(--mark), var(--mark)) bottom left / 2px var(--corner),
+    linear-gradient(var(--mark), var(--mark)) bottom right / var(--corner) 2px,
+    linear-gradient(var(--mark), var(--mark)) bottom right / 2px var(--corner);
+  background-repeat: no-repeat;
+}
+
+#cameraStage[data-on="true"] #cameraGuide {
+  display: block;
+}
+
+/* The indicator: always in view, always says whether the camera is scanning or sending. */
+#cameraIndicator {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 20px);
+  padding: 6px 12px 6px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.66);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+#cameraIndicator .dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+#cameraIndicator[data-kind="scanning"] .dot {
+  background: var(--ok);
+  animation: cam-pulse 1.8s ease-in-out infinite;
+}
+
+#cameraIndicator[data-kind="sending"] .dot,
+#cameraIndicator[data-kind="working"] .dot {
+  background: var(--accent);
+  animation: cam-pulse 0.9s ease-in-out infinite;
+}
+
+#cameraIndicator[data-kind="starting"] .dot {
+  animation: cam-pulse 0.9s ease-in-out infinite;
+}
+
+#cameraIndicator[data-kind="review"] .dot,
+#cameraIndicator[data-kind="paused"] .dot {
+  background: var(--warn);
+}
+
+#cameraIndicator[data-kind="error"] .dot,
+#cameraIndicator[data-kind="unavailable"] .dot {
+  background: var(--danger);
+}
+
+@keyframes cam-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 28%, transparent);
+    opacity: 0.65;
+  }
+}
+
+#cameraStatus {
+  min-height: 1.5em;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+#cameraStatus[data-tone="error"] {
+  color: var(--danger);
+}
+
+#cameraStatus[data-tone="warn"] {
+  color: var(--warn);
+}
+
+#cameraStatus[data-tone="ok"] {
+  color: var(--ok);
+}
+
+#cameraBusy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: cam-spin 0.8s linear infinite;
+}
+
+@keyframes cam-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#cameraControls,
+#cameraOptions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+#cameraControls .pill {
+  min-height: 44px;
+  padding-inline: 20px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-input);
+  transition: background var(--ease);
+}
+
+.switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--ease), background var(--ease);
+}
+
+.switch input:checked + .switch-track {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.switch input:checked + .switch-track::after {
+  background: var(--accent);
+  transform: translateX(16px);
+}
+
+.switch input:focus-visible + .switch-track {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.cam-panel {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.cam-label {
+  margin: 0 0 10px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.cam-sublabel {
+  margin: 14px 0 6px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.tag {
+  padding: 2px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+#questionText {
+  display: block;
+  width: 100%;
+  min-height: 3.2em;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 17px;
+  line-height: 1.45;
+  resize: none;
+  overflow: hidden;
+}
+
+#questionText:not([readonly]) {
+  border-color: var(--border-strong);
+  background: var(--surface-input);
+}
+
+.q-options,
+.q-notes {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+.q-options li {
+  padding: 4px 0;
+}
+
+.q-notes {
+  color: var(--warn);
+  font-size: 13px;
+}
+
+#questionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.ans-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.ans-headline {
+  margin: 0;
+  color: var(--accent);
+  font-size: clamp(22px, 6vw, 28px);
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.ans-confidence {
+  flex: none;
+  padding: 2px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ans-confidence[data-level="high"] {
+  border-color: color-mix(in srgb, var(--ok) 55%, transparent);
+  color: var(--ok);
+}
+
+.ans-confidence[data-level="medium"] {
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  color: var(--warn);
+}
+
+.ans-confidence[data-level="low"] {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  color: var(--danger);
+}
+
+.ans-steps {
+  margin: 0;
+  padding-left: 22px;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.ans-steps li {
+  padding: 2px 0;
+}
+
+.ans-explanation {
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.ans-explanation > :first-child {
+  margin-top: 0;
+}
+
+.ans-explanation > :last-child {
+  margin-bottom: 0;
+}
+
+.ans-uncertain {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--text);
+  font-size: 14px;
+}
+
+#howItWorks {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 15px;
+}
+
+#historyHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#historyList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hist {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.hist-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+}
+
+.hist-toggle:hover {
+  background: var(--surface-hover);
+}
+
+.hist-number {
+  color: var(--text-faint);
+}
+
+.hist-title {
+  overflow-wrap: anywhere;
+}
+
+.hist-headline {
+  grid-column: 2;
+  color: var(--accent);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.hist-detail {
+  padding: 4px 12px 14px 12px;
+  border-top: 1px solid var(--border);
+}
+
+#cameraNotice {
+  padding: 4px 2px 0;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+#cameraNotice p {
+  margin: 0 0 8px;
+}
+
+@media (min-width: 900px) {
+  #cameraMain {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  #cameraStageColumn {
+    align-content: start;
+    min-height: 0;
+    padding: 20px 20px 24px 24px;
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+    overflow-y: auto;
+  }
+
+  #cameraTitle {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    font-size: clamp(24px, 3vw, 30px);
+    font-weight: 500;
+    white-space: normal;
+  }
+
+  #cameraStage {
+    height: auto;
+    min-height: 0;
+    aspect-ratio: 4 / 3;
+    max-height: 62vh;
+  }
+
+  #cameraPanels {
+    padding: 20px 24px 40px 20px;
+  }
+
+  /* With room for both columns the order is the natural one: the question, then its answer. */
+  #answerPanel {
+    order: 0;
   }
 }
 
