@@ -304,6 +304,22 @@ test('a reply that is not JSON is still shown, as an explanation with low confid
   assert.match(answer.uncertainty, /expected format/i)
 })
 
+test('a model that never answers is given up on, so a hung provider cannot hang the page', async () => {
+  const { service, script, vision } = rig({ limits: { modelTimeoutMs: 20 } })
+  const { sessionId } = await service.createSession()
+  script.reads = [() => new Promise(() => {})]
+  await rejects(service.read(sessionId, image()), { statusCode: 502, code: 'read-failed' })
+  assert.equal(vision.readCalls[0].signal.aborted, true, 'and the request is told to stop')
+  script.reads = [reading()]
+  const { questionId } = await service.read(sessionId, image()) // the session is not left "busy"
+  const hung = rig({ limits: { modelTimeoutMs: 20 } })
+  hung.script.answers = [() => new Promise(() => {})]
+  const session = await hung.service.createSession()
+  const read = await hung.service.read(session.sessionId, image())
+  await rejects(hung.service.answer(session.sessionId, { questionId: read.questionId }), { statusCode: 502, code: 'answer-failed' })
+  assert.ok(questionId)
+})
+
 // ---- diagrams ---------------------------------------------------------------------------------------------------
 
 test('a question that depends on a figure is answered by the vision model with the picture, which is then dropped', async () => {

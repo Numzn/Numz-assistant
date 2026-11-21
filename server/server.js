@@ -8,6 +8,9 @@ import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
+import { createCameraRouter } from './routes/camera.js'
+import { createCameraService } from './camera/cameraService.js'
+import { createVisionFromEnv, describeVision } from './camera/vision.js'
 import { createMeetingsRouter } from './routes/meetings.js'
 import { createMeetingIntelligenceService } from './services/meetingIntelligenceService.js'
 import { generateGroundedNotes } from './services/speechNotesService.js'
@@ -97,6 +100,20 @@ const assistantAuth = createAssistantAuth({
   ttlSeconds: Number.parseInt(process.env.ASSISTANT_SESSION_TTL_S ?? '43200', 10) || 43200
 })
 logMeetingsConfig({ auth: meetingAuth })
+// The Smart Camera reads questions off a picture with a vision model (CAMERA_VISION_*; the picture goes to that provider
+// and nowhere else) and answers them with the same text model as the assistant. Without a vision provider the page opens
+// but says it cannot read pictures. Each answered question is saved as an ordinary conversation (see cameraService.js).
+const cameraVision = createVisionFromEnv(process.env)
+console.log(describeVision(cameraVision))
+const cameraService = createCameraService({
+  vision: cameraVision,
+  answerEngine: async (messages) => {
+    requireAi()
+    return generateResponse(messages)
+  },
+  sessions: sessionService
+})
+setInterval(() => cameraService.sweep(), 30_000).unref()
 // No live connection survives a process restart: interrupted meetings move to RECOVERING.
 const meetingRecovery = meetingService.recoverInterruptedMeetings()
 console.log(
@@ -161,6 +178,8 @@ function createApp() {
 
   // Login, logout and status stay outside the protected area; everything else under /assistant needs the cookie.
   app.use('/api/v1/assistant/auth', assistantAuth.router())
+  // The camera takes a raw picture body, so it is mounted ahead of the generic assistant router; same access gate.
+  app.use('/api/v1/assistant/camera', assistantAuth.requireAccess, createCameraRouter({ service: cameraService }))
   app.use('/api/v1/assistant', assistantAuth.requireAccess, assistantRouter)
   app.use(
     '/api/v1/meetings',

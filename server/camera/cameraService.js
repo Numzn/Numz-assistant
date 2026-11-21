@@ -85,7 +85,21 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     if (active.get(session.id) !== session) throw new CameraError(404, 'session-not-found', 'This camera session has ended. Start it again.')
   }
 
-  const modelSignal = () => AbortSignal.timeout(cap.modelTimeoutMs)
+  /**
+   * Runs one model call with a deadline. The call is handed an AbortSignal and is also raced against the clock, because
+   * the shared text-model entry point takes no signal: a provider that hangs must not hang the page.
+   */
+  function withDeadline(run) {
+    const controller = new AbortController()
+    let timer
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        reject(Object.assign(new Error('The model did not answer in time'), { name: 'TimeoutError' }))
+      }, cap.modelTimeoutMs)
+    })
+    return Promise.race([Promise.resolve().then(() => run(controller.signal)), deadline]).finally(() => clearTimeout(timer))
+  }
 
   async function createSession() {
     sweep()
@@ -128,7 +142,7 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     readsInFlight++
     let raw
     try {
-      raw = await vision.read({ messages: buildReadMessages(), image: { bytes: buffer, mimeType }, signal: modelSignal() })
+      raw = await withDeadline((signal) => vision.read({ messages: buildReadMessages(), image: { bytes: buffer, mimeType }, signal }))
     } catch (err) {
       log(`session ${session.id} read failed (${err?.statusCode ?? err?.status ?? err?.name ?? 'error'})`)
       throw new CameraError(502, 'read-failed', 'The picture could not be read just now. Try again.')
@@ -193,9 +207,11 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
   async function ask(entry, text) {
     const messages = buildAnswerMessages({ text, options: entry.options, type: entry.type, subject: entry.subject })
     const seesFigure = entry.hasDiagram && entry.picture && typeof vision?.answer === 'function'
-    const raw = seesFigure
-      ? await vision.answer({ messages, image: { bytes: entry.picture.bytes, mimeType: entry.picture.mimeType }, signal: modelSignal() })
-      : await answerEngine(messages, { signal: modelSignal() })
+    const raw = await withDeadline((signal) =>
+      seesFigure
+        ? vision.answer({ messages, image: { bytes: entry.picture.bytes, mimeType: entry.picture.mimeType }, signal })
+        : answerEngine(messages, { signal })
+    )
     const { answer } = parseAnswer(raw)
     if (entry.hasDiagram && !seesFigure) {
       // Nobody looked at the figure the question depends on: never claim to be sure.
@@ -273,6 +289,8 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     answer,
     clear,
     sweep,
+    /** The limits in force (the routes size their body parser from these). */
+    limits: Object.freeze({ ...cap }),
     /** For tests: how many pictures are being held in memory right now. */
     _retainedPictures() {
       let count = 0
