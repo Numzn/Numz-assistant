@@ -1249,3 +1249,19 @@ test('a recording that never says it has stopped does not hold up ending the mee
   assert.equal(api.calls.end.length, 1, 'it asked the server after the ceiling, and the server decides')
   assert.equal(controller.getState().phase, 'done')
 })
+
+test('a line keeps who said it and whether that is certain, for the panel to show', async () => {
+  const { controller, clients } = build({ api: fakeApi({ end: [completed(4)] }) })
+  await controller.start({ code: 'the-code', title: '' })
+  const live = clients.made[0]
+  live.emit.ready()
+  live.emit.final({ ...seg(1), speaker: 'you', uncertain: false }, 'INSERTED')
+  live.emit.final({ ...seg(2), speaker: 'others', uncertain: false }, 'INSERTED')
+  live.emit.final({ ...seg(3), speaker: null, uncertain: true }, 'INSERTED')
+  live.emit.final(seg(4), 'INSERTED') // from a speech service that does not send either
+  assert.deepEqual(
+    controller.getState().lines.map((line) => [line.speaker, line.uncertain]),
+    [['you', false], ['others', false], [null, true], [null, false]]
+  )
+  await controller.stop()
+})

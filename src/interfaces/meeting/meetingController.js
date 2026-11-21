@@ -61,7 +61,7 @@ function emptyState() {
     title: '',
     startedAt: null, // when this meeting began (ISO time), for the timer in the panel
     partial: '',
-    lines: [], // { key, text, start, end, persisted } (the newest MAX_LINES)
+    lines: [], // { key, text, start, end, speaker, uncertain, persisted } (the newest MAX_LINES)
     counts: { saved: 0, waiting: 0, notSaved: 0 },
     message: '',
     tone: 'info', // info | ok | warn | error
@@ -221,6 +221,8 @@ export function createMeetingController({
       text: String(segment?.text ?? ''),
       start: segment?.start ?? null,
       end: segment?.end ?? null,
+      speaker: segment?.speaker ?? null, // 'you' | 'others' | a placeholder | null (see server/intelligence/speakerLabels.js)
+      uncertain: segment?.uncertain === true,
       persisted: persisted ?? 'UNKNOWN'
     }
     const lines = [...state.lines, line]

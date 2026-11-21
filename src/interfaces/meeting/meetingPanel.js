@@ -29,13 +29,39 @@ const SOURCE_HINTS = {
     "browser tab. This needs a click, so a voice command always uses the microphone.",
   both:
     'Your browser will ask which tab or screen to share; tick "Share audio". The microphone and the shared sound are ' +
-    'mixed into one recording. With speakers, use headphones, or the same voices are recorded twice.'
+    'mixed into one recording, and each line is tagged You or Others by which of the two was sounding. With speakers, ' +
+    'use headphones: otherwise the same voices are recorded twice and the tags become unsure.'
 }
 
 const LINE_LABELS = {
   saved: ['✓ saved', 'The server stored this line'],
   waiting: ['… waiting', 'The line is queued and will be saved when the server is reachable'],
   notSaved: ['✕ not saved', 'The server did not store this line']
+}
+
+const SPEAKER_TAGS = {
+  you: {
+    label: 'You',
+    title: 'Your microphone was sounding and the shared audio was not',
+    unsure: 'Probably you: your microphone and the shared audio were both sounding, and the microphone was much louder'
+  },
+  others: {
+    label: 'Others',
+    title: 'The shared tab or system audio was sounding and your microphone was not',
+    unsure: 'Probably someone on the call: your microphone and the shared audio were both sounding, and the shared audio was much louder'
+  }
+}
+
+/**
+ * Who said a line, as far as the page can tell: "you" or "others" (the speech service's labels, from which source
+ * was sounding), with a question mark when both were. Anything else (no label, a placeholder such as speaker_00)
+ * is not shown: it tells the reader nothing. -> { label, title, uncertain } | null
+ */
+export function speakerTag(line) {
+  const known = Object.hasOwn(SPEAKER_TAGS, line?.speaker) ? SPEAKER_TAGS[line.speaker] : null
+  if (!known) return null
+  const uncertain = line.uncertain === true
+  return { label: uncertain ? `${known.label}?` : known.label, uncertain, title: uncertain ? known.unsure : known.title }
 }
 
 function chipFor(state) {
@@ -75,6 +101,35 @@ export function formatElapsed(ms) {
 function lineKind(persisted) {
   if (persisted === 'INSERTED' || persisted === 'ALREADY_EXISTS') return 'saved'
   return persisted === 'FAILED' ? 'waiting' : 'notSaved'
+}
+
+/** One transcript line: its time, who said it (when known), its words, and whether the server saved it. */
+export function lineElement(doc, line) {
+  const kind = lineKind(line.persisted)
+  const item = doc.createElement('li')
+  item.dataset.state = kind
+  const time = doc.createElement('span')
+  time.className = 'time'
+  time.textContent = Number.isFinite(line.start) ? timestamp(line.start) : ''
+  const text = doc.createElement('span')
+  const tag = speakerTag(line)
+  if (tag) {
+    const who = doc.createElement('span')
+    who.className = 'who'
+    who.dataset.speaker = line.speaker
+    who.dataset.uncertain = String(tag.uncertain)
+    who.textContent = tag.label
+    who.title = tag.title
+    text.append(who, ' ')
+  }
+  // The words are a text node: whatever was said is never read as markup.
+  text.append(doc.createTextNode(line.text))
+  const label = doc.createElement('span')
+  label.className = 'line-state'
+  label.textContent = LINE_LABELS[kind][0]
+  label.title = `${LINE_LABELS[kind][1]} (${line.persisted})`
+  item.append(time, text, label)
+  return item
 }
 
 function forgetOldRememberedCode() {
@@ -285,23 +340,6 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     sourceHint.hidden = !text
   }
 
-  function lineElement(line) {
-    const kind = lineKind(line.persisted)
-    const item = doc.createElement('li')
-    item.dataset.state = kind
-    const time = doc.createElement('span')
-    time.className = 'time'
-    time.textContent = Number.isFinite(line.start) ? timestamp(line.start) : ''
-    const text = doc.createElement('span')
-    text.textContent = line.text
-    const label = doc.createElement('span')
-    label.className = 'line-state'
-    label.textContent = LINE_LABELS[kind][0]
-    label.title = `${LINE_LABELS[kind][1]} (${line.persisted})`
-    item.append(time, text, label)
-    return item
-  }
-
   // Lines only ever append (or the oldest fall off), so add what is new instead of rebuilding the list.
   function renderLines(lines) {
     if (lines.length === 0) {
@@ -317,7 +355,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     }
     if (from >= lines.length) return
     const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40
-    list.append(...lines.slice(from).map(lineElement))
+    list.append(...lines.slice(from).map((line) => lineElement(doc, line)))
     while (list.children.length > MAX_RENDERED_LINES) list.firstElementChild.remove()
     renderedLastKey = lines.at(-1).key
     if (nearBottom) list.scrollTop = list.scrollHeight

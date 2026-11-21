@@ -1727,6 +1727,27 @@ a.ghost {
   font: 10px var(--font-mono);
 }
 
+/* Who said it: "You" in the accent colour, "Others" quieter; dashed with a "?" when both sources were sounding. */
+#meetingLines .who {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+#meetingLines .who[data-speaker="you"] {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border-strong));
+  color: var(--accent);
+}
+
+#meetingLines .who[data-uncertain="true"] {
+  border-style: dashed;
+}
+
 #meetingLines .line-state {
   font-size: 12px;
   white-space: nowrap;
