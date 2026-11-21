@@ -536,6 +536,51 @@ test('an answer that fails keeps the question, and the person can ask for the an
   assert.equal(rig.api.calls.read.length, 1, 'the picture is not read again to retry the answer')
 })
 
+test('"try again" does the one thing that failed: the camera, the picture, or the answer', async () => {
+  // the camera would not start
+  const cam = build()
+  cam.device.failStart = Object.assign(new Error('NotAllowedError'), { name: 'NotAllowedError' })
+  await cam.session.start({ now: 0 })
+  assert.equal(cam.session.getState().phase, CAMERA_STATES.ERROR)
+  cam.device.failStart = null
+  await cam.session.retry(1000)
+  assert.equal(cam.session.getState().phase, CAMERA_STATES.READY)
+  assert.equal(cam.session.getState().cameraOn, true)
+
+  // the picture could not be read
+  const pic = await started(build({ options: { retryDelaysMs: [] } }))
+  pic.api.reads = [new CameraApiError('boom', { status: 502, code: 'request-error' }), QUESTION(1)]
+  pic.api.answers = [ANSWER(1)]
+  await watch(pic, page(1))
+  assert.equal(pic.session.getState().phase, CAMERA_STATES.ERROR)
+  await pic.session.retry(pic.clock.now)
+  assert.equal(pic.session.getState().history.length, 1, 'a fresh picture was taken and read')
+  assert.equal(pic.api.calls.read.length, 2)
+
+  // the answer could not be worked out
+  const ans = await started(build({ options: { retryDelaysMs: [] } }))
+  ans.api.reads = [QUESTION(1)]
+  ans.api.answers = [new CameraApiError('model down', { status: 502, code: 'request-error' }), ANSWER(1)]
+  await watch(ans, page(1))
+  assert.equal(ans.session.getState().phase, CAMERA_STATES.ERROR)
+  await ans.session.retry(ans.clock.now)
+  assert.equal(ans.session.getState().history.length, 1)
+  assert.equal(ans.api.calls.read.length, 1, 'the picture is not read again to retry the answer')
+})
+
+test('"try again" does nothing when nothing can be retried', async () => {
+  const rig = await started(build())
+  await rig.session.retry(0) // not in an error
+  assert.equal(rig.session.getState().phase, CAMERA_STATES.READY)
+  assert.equal(rig.api.calls.read.length, 0)
+
+  const none = await started(build({ api: fakeApi({ visionConfigured: false }) }))
+  none.api.reads = [new CameraApiError('no vision', { status: 503, code: 'vision-not-configured' })]
+  await none.session.captureNow(0)
+  await none.session.retry(0)
+  assert.equal(none.api.calls.read.length, 0, 'a refusal that retrying cannot change is not retried')
+})
+
 // ---- limits, history, observers ------------------------------------------------------------------------------
 
 test('the session\'s read limit is respected, automatic or manual', async () => {
@@ -570,6 +615,22 @@ test('clearing the history removes it here and on the server, and the next quest
   assert.equal(rig.api.calls.read.at(-1).sessionId, 's2')
   state = rig.session.getState()
   assert.equal(state.history.length, 1)
+})
+
+test('a history that cannot be cleared on the server says so, keeps what it has, and scanning carries on', async () => {
+  const rig = await started(build())
+  rig.api.reads = [QUESTION(1)]
+  rig.api.answers = [ANSWER(1)]
+  await watch(rig, page(1))
+  rig.api.clear = async () => {
+    throw new Error('server down')
+  }
+  await rig.session.clearHistory()
+  const state = rig.session.getState()
+  assert.equal(state.history.length, 1, 'nothing is forgotten here that the server still has')
+  assert.equal(state.phase, CAMERA_STATES.WAITING_FOR_NEXT, 'not turned into an error of the whole session')
+  assert.match(state.message, /could not clear/i)
+  assert.equal(state.tone, 'error')
 })
 
 test('observers get every change and can stop listening', async () => {

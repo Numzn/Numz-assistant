@@ -395,6 +395,14 @@ export function createCameraSession({
     return answerQuestion({ text }, now ?? lastActivityAt, epoch)
   }
 
+  /** "Try again" after an error: does whichever one thing failed (open the camera, take the picture, work out the answer). */
+  async function retry(now = lastActivityAt) {
+    if (state.phase !== S.ERROR || !state.canRetry) return undefined
+    if (pendingAnswer) return confirm({}, now)
+    if (!deviceOn) return start({ now })
+    return captureNow(now)
+  }
+
   function skip() {
     if (state.phase !== S.AWAITING_CONFIRMATION) return
     pendingAnswer = null
@@ -415,7 +423,8 @@ export function createCameraSession({
       try {
         await api.clear(id)
       } catch {
-        problem('Could not clear the history on the server. Try again.')
+        // Not an error of the whole session: scanning can carry on, and the person can press Clear again.
+        say('Could not clear the history on the server. Try again.', 'error')
         return
       }
     }
@@ -449,6 +458,7 @@ export function createCameraSession({
     tick,
     captureNow,
     confirm,
+    retry,
     skip,
     setAuto,
     clearHistory
