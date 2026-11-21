@@ -22,7 +22,8 @@ Rules:
 - Every item's "source" must cite real segmentIds/timestamps from what you were given — prefer the newest segment(s) that best support it. Never invent a source.
 - Keep it compact — this is a live glance view, not a full summary.
 - "owner" and "due" are ONLY what a speaker explicitly said, in their words ("Priya will send it", "by Friday"). If nobody said, they are null. Never infer an owner from who was speaking or a deadline from context.
-- A decision is something the speakers actually settled ("we agreed", "let's go with"), not something merely discussed.`
+- A decision is something the speakers actually settled ("we agreed", "let's go with"), not something merely discussed.
+- Each segment line starts with a [seg_ID | start-end | speaker] tag, which is metadata, not spoken text. Lines are tagged \`you\` (the person who recorded the meeting), \`others\` (everyone else: possibly several different people, so never treat \`others\` as one person) or \`unknown\`/\`speaker_00\` (not identified). A tag only says where the sound came from. It is never a name and never an owner.`
 
 function emptySnapshot() {
   return { currentTopics: [], decisions: [], openQuestions: [], actionItems: [], importantPoints: [] }

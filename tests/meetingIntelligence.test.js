@@ -53,7 +53,7 @@ test('a sentence that merely starts with a question word is not a question witho
 
 test('an explicit commitment is confirmed, a suggestion is inferred, and the deadline is quoted verbatim', () => {
   const found = extractSignals([
-    seg(1, "I'll send the revised budget by Friday.", { speaker: 'speaker_01' }),
+    seg(1, "I'll send the revised budget by Friday.", { speaker: 'you' }),
     seg(2, "Let's move the review to next week."),
     seg(3, 'The weather is nice today.')
   ])
@@ -61,7 +61,7 @@ test('an explicit commitment is confirmed, a suggestion is inferred, and the dea
   const [first, second] = found.actionItems
   assert.equal(first.status, 'confirmed')
   assert.equal(first.due, 'by Friday')
-  assert.deepEqual(first.owner, { name: 'speaker_01', evidence: 'speaker-label' })
+  assert.deepEqual(first.owner, { name: 'you', evidence: 'speaker-label' }, '"I will" from the clearly identified person recording')
   assert.equal(second.status, 'inferred')
   assert.equal(second.owner.name, null)
   assert.equal(second.due, null, '"next week" alone is not a deadline phrase here; nothing is parsed or guessed')
@@ -203,7 +203,7 @@ test('a cited line recognised with low confidence makes the item uncertain', () 
   assert.ok(items[0].caveats.includes('low-asr-confidence'))
 })
 
-test('an action owner is kept only if the cited text names them or the cited segment carries the label', () => {
+test('an action owner is kept only if the cited text names them or the cited segment clearly carries a label that names one person', () => {
   const { items } = groundNotes(
     {
       actionItems: [
@@ -218,10 +218,11 @@ test('an action owner is kept only if the cited text names them or the cited seg
   assert.deepEqual(items.map((i) => i.owner), [
     { name: 'Priya', evidence: 'named-in-cited-text' },
     { name: null, evidence: null },
-    { name: 'speaker_01', evidence: 'speaker-label' },
+    { name: null, evidence: null },
     { name: null, evidence: null }
   ])
   assert.ok(items[1].caveats.includes('owner-unverified'))
+  assert.ok(items[2].caveats.includes('owner-unverified'), 'a placeholder tag such as speaker_01 is not a name (see speakerLabels.test.js for "you")')
 })
 
 test('a deadline is kept only when the cited words contain it', () => {

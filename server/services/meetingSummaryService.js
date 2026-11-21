@@ -19,6 +19,8 @@ The transcript is a sequence of lines like:
 
 Each line's leading [seg_ID | start-end | speaker] tag is metadata, not part of the spoken text.
 
+Lines are tagged \`you\` (the person who recorded the meeting), \`others\` (everyone else: possibly several different people, so never treat \`others\` as one person) or \`unknown\`/\`speaker_00\` (not identified). A tag only says where the sound came from. It is never a name and never an owner.
+
 Respond with ONLY a single valid JSON object (no markdown fences, no commentary), exactly this shape:
 
 {

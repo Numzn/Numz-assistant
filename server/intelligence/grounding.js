@@ -8,10 +8,13 @@
  *   - times and quotes always come from the segments themselves, never from the model
  *   - an item is `inferred` when its words are mostly found in what it cites, `uncertain` when they are not
  *     (or when a cited segment was recognised with low confidence)
- *   - an owner is kept only if the cited text names them or the cited segment carries that speaker label
+ *   - an owner is kept only if the cited text names them or the cited segment clearly carries that speaker label
+ *     AND the label names one person ("you": see speakerLabels.js; never "others" or a placeholder)
  *   - a summary is listed with any number or proper name in it that appears nowhere in the transcript
  * Only deterministic findings (meetingSignals.js) can be `confirmed`. A model's reading is at best `inferred`.
  */
+
+import { namesOnePerson } from './speakerLabels.js'
 
 const CATEGORIES = {
   keyTopics: { field: 'topic', kind: 'topic' },
@@ -116,7 +119,14 @@ function groundItem(raw, { field, kind }, byId) {
     if (claimed) {
       const lower = claimed.toLowerCase()
       if (evidenceText.toLowerCase().includes(lower)) owner = { name: claimed, evidence: 'named-in-cited-text' }
-      else if (segments.some((segment) => String(segment.speaker ?? '').toLowerCase() === lower)) {
+      else if (
+        segments.some(
+          (segment) =>
+            segment.uncertain !== true &&
+            namesOnePerson(segment.speaker) &&
+            String(segment.speaker).toLowerCase() === lower
+        )
+      ) {
         owner = { name: claimed, evidence: 'speaker-label' }
       } else caveats.push('owner-unverified')
     }

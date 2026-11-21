@@ -9,8 +9,11 @@
  *   inferred   the wording suggests it without stating it ("let's ...", a question with no question mark)
  *   uncertain  the finding is there but the transcript under it is shaky (a low recognition confidence)
  * Who said it is never guessed: `speaker` is passed through only when the segment carries a real, unambiguous
- * label, and an owner is named only when the text names one or the speaker says "I will".
+ * label, and an owner is named only when the text names one or the speaker says "I will" and the label names one
+ * person (see speakerLabels.js: "you", not "others" and not a placeholder such as "speaker_00").
  */
+
+import { namesOnePerson } from './speakerLabels.js'
 
 const WEEKDAYS = 'monday|tuesday|wednesday|thursday|friday|saturday|sunday'
 const DEADLINE = new RegExp(
@@ -93,7 +96,7 @@ function ownerFor(segment, match) {
   const named = text.match(NAMED_OWNER)
   if (named && !NOT_NAMES.has(named[1])) return { name: named[1], evidence: 'named-in-text' }
   const speaker = attributable(segment)
-  if (match.first && speaker) return { name: speaker, evidence: 'speaker-label' }
+  if (match.first && speaker && namesOnePerson(speaker)) return { name: speaker, evidence: 'speaker-label' }
   return { name: null, evidence: null }
 }
 
