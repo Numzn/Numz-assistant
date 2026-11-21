@@ -66,14 +66,15 @@ export function createMeetingApi({ fetchFn = (...args) => globalThis.fetch(...ar
     /**
      * Whether this browser may start a meeting without typing the code (the server set its launch session cookie
      * after a correct code). The server decides; the cookie is invisible to scripts. Never throws.
-     * -> { available, authenticated }
+     * With per-person sign-in there is no code at all: `authenticated` is simply "you are signed in" and `signedIn` is true.
+     * -> { available, authenticated, signedIn }
      */
     async launchSession() {
       try {
         const body = await request(`${MEETINGS}/launch/session`, { method: 'GET', credentials: 'same-origin' })
-        return { available: body?.available === true, authenticated: body?.authenticated === true }
+        return { available: body?.available === true, authenticated: body?.authenticated === true, signedIn: body?.signedIn === true }
       } catch {
-        return { available: false, authenticated: false }
+        return { available: false, authenticated: false, signedIn: false }
       }
     },
 

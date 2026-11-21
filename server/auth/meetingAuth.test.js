@@ -8,7 +8,7 @@ const quiet = { warn() {}, error() {}, info() {}, log() {} }
 const MEETING = '00000000-0000-4000-8000-000000000001'
 
 /** Runs a middleware against a fake request/response and reports what it decided. */
-function run(middleware, { authorization, headers = {}, params = { meetingId: MEETING } } = {}) {
+function run(middleware, { authorization, headers = {}, params = { meetingId: MEETING }, identity } = {}) {
   const res = {
     statusCode: 200,
     body: undefined,
@@ -26,12 +26,12 @@ function run(middleware, { authorization, headers = {}, params = { meetingId: ME
       return this
     }
   }
-  const req = { headers: { ...(authorization ? { authorization } : {}), ...headers }, params, id: 'r1' }
+  const req = { headers: { ...(authorization ? { authorization } : {}), ...headers }, params, id: 'r1', ...(identity ? { identity } : {}) }
   let passed = false
   middleware(req, res, () => {
     passed = true
   })
-  return { passed, status: passed ? 200 : res.statusCode, body: res.body, principal: req.principal, responseHeaders: res.headers }
+  return { passed, status: passed ? 200 : res.statusCode, body: res.body, principal: req.principal, responseHeaders: res.headers, launchVia: req.launchVia }
 }
 
 test('tickets carry the meeting, expire, and cannot be re-signed by anyone without the secret', () => {
@@ -167,4 +167,60 @@ test('authenticateToken tells admin, live ticket, expired ticket and rubbish apa
   assert.equal(auth.authenticateToken(undefined).kind, 'anonymous')
   now += 61_000
   assert.equal(auth.authenticateToken(token).kind, 'expired')
+})
+
+// ---- per-person sign-in: no launch code at all -----------------------------------------------------------------------------------------
+
+const PERSON = { legacy: false, userId: 'a1b2c3d4e5f6', ownerKey: 'a1b2c3d4e5f6', role: 'viewer' }
+
+test('signed-in launch: a signed-in person starts a meeting with no code, and nothing else is accepted', () => {
+  const auth = createMeetingAuth({ adminToken: ADMIN, ticketSecret: SECRET, signedInLaunch: true, logger: quiet })
+  assert.equal(auth.launchEnabled, true, 'no launch code is configured, and none is needed')
+  assert.equal(auth.signedInLaunch, true)
+  const gate = auth.requireLaunchAccess()
+  const ok = run(gate, { identity: PERSON })
+  assert.equal(ok.passed, true)
+  assert.equal(ok.launchVia, 'signed-in')
+  // the only way in is the person: no identity, the shared fallback owner, or the system worker are all refused
+  for (const identity of [undefined, { legacy: true, userId: null, ownerKey: 'legacy' }, { system: true, userId: null, ownerKey: 'system' }, { userId: '' }]) {
+    const refused = run(gate, { identity })
+    assert.equal(refused.passed, false)
+    assert.equal(refused.status, 401)
+    assert.equal(refused.body.code, 'sign-in-required')
+  }
+  // a header is never a credential here, right or wrong
+  assert.equal(run(gate, { headers: { 'x-meeting-launch-code': 'anything-at-all-12345' } }).status, 401)
+})
+
+test('signed-in launch ignores a launch code that is still set on the server and never issues a launch cookie', () => {
+  const auth = createMeetingAuth({ adminToken: ADMIN, ticketSecret: SECRET, launchCode: 'a-launch-code-123', signedInLaunch: true, logger: quiet })
+  const typed = run(auth.requireLaunchCode(), { headers: { 'x-meeting-launch-code': 'a-launch-code-123' }, identity: PERSON })
+  assert.equal(typed.passed, false, 'typing the old code gets nowhere')
+  assert.equal(typed.status, 404)
+  assert.equal(typed.body.code, 'launch-code-not-used')
+  const viaGate = run(auth.requireLaunchAccess(), { headers: { 'x-meeting-launch-code': 'a-launch-code-123' } })
+  assert.equal(viaGate.status, 401, 'the code does not stand in for the person')
+  // the status the page reads: unlocked exactly when a person is signed in
+  assert.deepEqual(auth.launchSessionStatus({ headers: {}, identity: PERSON }), { available: true, authenticated: true, signedIn: true })
+  assert.deepEqual(auth.launchSessionStatus({ headers: {} }), { available: true, authenticated: false, signedIn: true })
+  assert.deepEqual(auth.launchSessionStatus({ headers: {}, identity: { legacy: true, userId: null } }), { available: true, authenticated: false, signedIn: true })
+})
+
+test('signed-in launch still needs the ticket secret: with no tickets it fails closed (503), signed in or not', () => {
+  const auth = createMeetingAuth({ adminToken: ADMIN, ticketSecret: '', signedInLaunch: true, logger: quiet })
+  assert.equal(auth.launchEnabled, false)
+  const refused = run(auth.requireLaunchAccess(), { identity: PERSON })
+  assert.equal(refused.passed, false)
+  assert.equal(refused.status, 503)
+  assert.deepEqual(auth.launchSessionStatus({ headers: {}, identity: PERSON }), { available: false, authenticated: false, signedIn: true })
+})
+
+test('without signed-in launch (the shared-code mode) nothing changes: an identity does not replace the code', () => {
+  const auth = createMeetingAuth({ adminToken: ADMIN, ticketSecret: SECRET, launchCode: 'a-launch-code-123', logger: quiet })
+  assert.equal(auth.signedInLaunch, false)
+  assert.equal(run(auth.requireLaunchAccess(), { identity: PERSON }).status, 401, 'being signed in is not enough in code mode')
+  const viaCode = run(auth.requireLaunchAccess(), { headers: { 'x-meeting-launch-code': 'a-launch-code-123' } })
+  assert.equal(viaCode.passed, true)
+  assert.equal(viaCode.launchVia, 'code')
+  assert.deepEqual(auth.launchSessionStatus({ headers: {} }), { available: true, authenticated: false })
 })

@@ -26,6 +26,11 @@ import {
  * code again (so "start the meeting" can be said, not typed), the browser's JavaScript never holds the code, and
  * rotating either secret ends every session. It authorises starting a meeting and nothing else.
  *
+ * SIGNED-IN LAUNCH (`signedInLaunch: true`, per-person sign-in mode): the person's own NUMZ AI session is the credential. No launch
+ * code exists in that mode (a set MEETING_LAUNCH_CODE is ignored, not accepted): requireLaunchAccess lets a request through only when
+ * the access middleware in front of it has already put a signed-in person with the launch capability on req.identity, and the
+ * launch-session cookie is never issued. Starting a meeting is then one click (or one spoken command) for anyone signed in.
+ *
  * Fails closed: a route whose credential type is not configured answers 503, never allows.
  *
  * This module is the only place that knows the provider. Routes call requireAdmin,
@@ -67,13 +72,15 @@ export function createMeetingAuth({
   ticketTtlSeconds = 12 * 3600,
   launchSessionTtlSeconds = DEFAULT_LAUNCH_SESSION_TTL_SECONDS,
   launchSessionPath = LAUNCH_SESSION_PATH, // '/ai/api/v1/meetings' when the app is served under /ai/: the browser only sends a cookie to its own path
+  signedInLaunch = false, // per-person sign-in: a signed-in person may start a meeting with no launch code
   clock = () => Date.now(),
   logger = console
 } = {}) {
   const adminEnabled = usable(adminToken)
   const ticketsEnabled = usable(ticketSecret)
   // Launching also needs tickets: the new meeting's ticket is the only thing the browser receives.
-  const launchEnabled = typeof launchCode === 'string' && launchCode.length >= MIN_LAUNCH_CODE_LENGTH && ticketsEnabled
+  const codeConfigured = typeof launchCode === 'string' && launchCode.length >= MIN_LAUNCH_CODE_LENGTH
+  const launchEnabled = ticketsEnabled && (signedInLaunch === true || codeConfigured)
   if (adminToken && !adminEnabled) {
     logger.warn(`[meeting-auth] MEETING_API_TOKEN must be at least ${MIN_SECRET_LENGTH} characters; admin access disabled`)
   }
@@ -81,7 +88,7 @@ export function createMeetingAuth({
     logger.warn(`[meeting-auth] MEETING_TICKET_SECRET must be at least ${MIN_SECRET_LENGTH} characters; tickets disabled`)
   }
 
-  if (launchCode && !launchEnabled) {
+  if (launchCode && !launchEnabled && signedInLaunch !== true) {
     logger.warn(
       `[meeting-auth] MEETING_LAUNCH_CODE must be at least ${MIN_LAUNCH_CODE_LENGTH} characters and tickets must be enabled; ` +
         'starting meetings from the browser is disabled'
@@ -101,7 +108,7 @@ export function createMeetingAuth({
       ? Math.floor(launchSessionTtlSeconds)
       : DEFAULT_LAUNCH_SESSION_TTL_SECONDS
   // Derived from BOTH secrets: rotating the launch code or the ticket secret voids every session.
-  const launchSession = launchEnabled
+  const launchSession = launchEnabled && signedInLaunch !== true
     ? createSignedSession({
         key: createHmac('sha256', ticketSecret).update(`numz-launch-session-key-v1:${launchCode}`).digest(),
         version: LAUNCH_SESSION_VERSION,
@@ -111,7 +118,7 @@ export function createMeetingAuth({
     : null
 
   function launchSessionValid(req) {
-    if (!launchEnabled) return false
+    if (!launchEnabled || !launchSession) return false
     return launchSession.verify(String(readCookie(req, LAUNCH_COOKIE) ?? ''))
   }
 
@@ -130,7 +137,14 @@ export function createMeetingAuth({
     res.append('Set-Cookie', launchCookie(req, '', 0))
   }
 
+  /** A request that the access middleware has already matched to a signed-in person (broker mode only). */
+  function signedInPerson(req) {
+    const who = req.identity
+    return signedInLaunch === true && who && who.legacy !== true && who.system !== true && typeof who.userId === 'string' && who.userId !== ''
+  }
+
   function launchSessionStatus(req) {
+    if (signedInLaunch === true) return { available: launchEnabled, authenticated: launchEnabled && Boolean(signedInPerson(req)), signedIn: true }
     return { available: launchEnabled, authenticated: launchSessionValid(req) }
   }
 
@@ -226,6 +240,8 @@ export function createMeetingAuth({
   function requireLaunchCode() {
     return (req, res, next) => {
       const refuse = (status, code, message) => sendAuthError(res, req, status, code, message)
+      // Per-person sign-in has no launch code: nothing to type, nothing to guess.
+      if (signedInLaunch === true) return refuse(404, 'launch-code-not-used', 'Meetings start with your sign-in; there is no launch code')
       if (!launchEnabled) {
         return refuse(503, 'launch-not-configured', 'Starting meetings from the browser is not configured on this server')
       }
@@ -250,6 +266,14 @@ export function createMeetingAuth({
   function requireLaunchAccess() {
     const codeGate = requireLaunchCode()
     return (req, res, next) => {
+      if (signedInLaunch === true) {
+        const refuse = (status, code, message) => sendAuthError(res, req, status, code, message)
+        if (!launchEnabled) return refuse(503, 'launch-not-configured', 'Starting meetings from the browser is not configured on this server')
+        // Defence in depth: the route already sits behind the sign-in check; if it somehow does not, nobody starts a meeting.
+        if (!signedInPerson(req)) return refuse(401, 'sign-in-required', 'Sign in to start a meeting')
+        req.launchVia = 'signed-in'
+        return next()
+      }
       if (launchSessionValid(req)) {
         req.launchVia = 'session'
         return next()
@@ -274,6 +298,8 @@ export function createMeetingAuth({
     authenticateToken: principalForToken,
     ticketTtlSeconds,
     launchEnabled,
+    /** True when a signed-in person starts a meeting with no code (per-person sign-in mode). */
+    signedInLaunch: signedInLaunch === true,
     enabled: { admin: adminEnabled, tickets: ticketsEnabled }
   }
 }

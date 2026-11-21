@@ -83,21 +83,25 @@ test('launch without an idempotency key sends no such header', async () => {
 
 test('launchSession reports what the server says and never throws', async () => {
   const yes = recorder(json(200, { available: true, authenticated: true }))
-  assert.deepEqual(await yes.api.launchSession(), { available: true, authenticated: true })
+  assert.deepEqual(await yes.api.launchSession(), { available: true, authenticated: true, signedIn: false })
   assert.equal(yes.calls[0].url, '/api/v1/meetings/launch/session')
   assert.equal(yes.calls[0].init.method, 'GET')
 
   const no = recorder(json(200, { available: true, authenticated: false }))
-  assert.deepEqual(await no.api.launchSession(), { available: true, authenticated: false })
+  assert.deepEqual(await no.api.launchSession(), { available: true, authenticated: false, signedIn: false })
+
+  // per-person sign-in: the server says the person's sign-in is what unlocks it
+  const person = recorder(json(200, { available: true, authenticated: true, signedIn: true }))
+  assert.deepEqual(await person.api.launchSession(), { available: true, authenticated: true, signedIn: true })
 
   const unreachable = recorder(new Error('offline'))
-  assert.deepEqual(await unreachable.api.launchSession(), { available: false, authenticated: false })
+  assert.deepEqual(await unreachable.api.launchSession(), { available: false, authenticated: false, signedIn: false })
 
   const broken = recorder(json(500, { error: 'boom', code: 'internal' }))
-  assert.deepEqual(await broken.api.launchSession(), { available: false, authenticated: false })
+  assert.deepEqual(await broken.api.launchSession(), { available: false, authenticated: false, signedIn: false })
 
   const odd = recorder(json(200, { authenticated: 'yes' }))
-  assert.deepEqual(await odd.api.launchSession(), { available: false, authenticated: false }, 'only a real true counts')
+  assert.deepEqual(await odd.api.launchSession(), { available: false, authenticated: false, signedIn: false }, 'only a real true counts')
 })
 
 test('forgetLaunchSession asks the server to drop the cookie and says whether it worked', async () => {

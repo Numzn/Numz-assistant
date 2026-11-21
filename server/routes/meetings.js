@@ -103,10 +103,13 @@ export function createMeetingsRouter({ meetingService, auth, intelligenceService
       }
     }
 
+    // Who started it (a signed-in person's NUMZLAB id): kept with the meeting so it is never anonymous. No name, email or token.
+    const launchedBy = req.launchVia === 'signed-in' ? req.identity?.userId : null
     const meeting = meetingService.createMeeting({
       source: 'browser',
       ...(title ? { title } : {}),
-      ...(launchKey ? { launchKey } : {})
+      ...(launchKey ? { launchKey } : {}),
+      ...(launchedBy ? { launchedBy } : {})
     })
     let started
     try {

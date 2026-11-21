@@ -351,12 +351,30 @@ test('meetings: starting one from the browser needs a person; the admin token an
   const fetched = await anon.request(`${base}/api/v1/meetings/${created.json.meetingId}`, { headers: admin })
   assert.equal(fetched.status, 200)
   assert.equal((await anon.request(`${base}/api/v1/meetings/${created.json.meetingId}`)).status, 401)
-  // a signed-in person with the launch code can start one, and the launch cookie lives on the app's own path
+  // a signed-in person starts one with NO code: being signed in is the credential (the rig still has MEETING_LAUNCH_CODE set; it is ignored)
   const ned = await person('viewer')
-  const launched = await ned.post('/api/v1/meetings/launch', {}, { headers: { 'x-meeting-launch-code': 'launch-code-123456' } })
+  const nedId = (await ned.status()).user.id
+  const available = await ned.api('/api/v1/meetings/launch/session')
+  assert.deepEqual(available.json, { available: true, authenticated: true, signedIn: true }, 'the page is told it never has to ask for a code')
+  const launched = await ned.post('/api/v1/meetings/launch', { title: 'No code needed' })
   assert.equal(launched.status, 201, launched.text)
-  assert.match(ned.b.jar.get(new URL(base).host).get('numz_launch_session').path, /^\/ai\/api\/v1\/meetings$/)
-  assert.equal((await ned.api('/api/v1/meetings/launch/session')).json.authenticated, true)
+  assert.ok(launched.json.ticket?.token, 'the meeting comes with its own ticket')
+  assert.equal(ned.b.jar.get(new URL(base).host)?.get('numz_launch_session'), undefined, 'no launch cookie exists any more')
+  // the meeting says who started it (an id only), and the admin's view of it carries no name or email
+  const stored = await anon.request(`${base}/api/v1/meetings/${launched.json.meetingId}`, { headers: admin })
+  assert.equal(stored.json.metadata.launchedBy, nedId)
+  assert.equal(JSON.stringify(stored.json).includes('example.com'), false)
+  // a launch code in the request changes nothing (not needed, not accepted as a way in)
+  const withCode = await ned.post('/api/v1/meetings/launch', {}, { headers: { 'x-meeting-launch-code': 'wrong-code-wrong-code' } })
+  assert.equal(withCode.status, 201, 'a wrong code is simply ignored when the person is signed in')
+  // typing a code into a "launch session" is not a thing any more
+  const typed = await ned.post('/api/v1/meetings/launch/session', {}, { headers: { 'x-meeting-launch-code': 'launch-code-123456' } })
+  assert.equal(typed.status, 404)
+  assert.equal(typed.json.code, 'launch-code-not-used')
+  // signing out ends the ability at once: the launch needs the live session, not a leftover cookie
+  await ned.post('/api/v1/assistant/auth/logout', {})
+  assert.equal((await ned.api('/api/v1/meetings/launch/session')).status, 401)
+  assert.equal((await ned.post('/api/v1/meetings/launch', {})).status, 401)
 })
 
 test('under /ai the app answers at its base path, redirects the bare path, and the root keeps working for the host\'s own checks', { skip }, async () => {
