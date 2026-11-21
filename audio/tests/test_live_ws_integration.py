@@ -171,8 +171,13 @@ class Stream:
         self.send_json({"type": "start", "sampleRate": 16000, "channels": 1, "format": "f32le", "language": "en", **control})
         return self.read_until(lambda m: m.get("type") in ("ready", "error"))
 
-    def utterance(self):
-        for frame in speech_frames(10) + silence_frames(8):
+    def utterance(self, mic=None, tab=None):
+        """One utterance. With mic/tab given, each frame is preceded by its source levels (speech frames at those
+        levels, the silence after them at zero), as the browser does when it mixes both sources."""
+        for index, frame in enumerate(speech_frames(10) + silence_frames(8)):
+            if mic is not None or tab is not None:
+                speaking = index < 10
+                self.send_json({"type": "levels", "mic": mic if speaking else 0.0, "tab": tab if speaking else 0.0})
             self.ws.send(frame.tobytes())
 
     def wait_finals(self, count, timeout=30):
@@ -222,6 +227,41 @@ class LiveMeetingPathTests(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(self.api.call("POST", f"/meetings/{meeting['meetingId']}/start")[0], 200)
         return meeting["meetingId"], meeting["ticket"]["token"]
+
+    def test_you_and_others_labels_reach_the_stored_transcript(self):
+        meeting_id, ticket = self.new_meeting()
+        stream = self.connect()
+        ready = stream.start(meetingId=meeting_id, meetingTicket=ticket, sources=["microphone", "tab"])
+        self.assertIs(ready["sourceLevels"], True)
+        stream.utterance(mic=0.2, tab=0.0)  # the user speaks
+        stream.utterance(mic=0.0, tab=0.2)  # someone on the call speaks
+        stream.utterance(mic=0.1, tab=0.1)  # both at once: no label
+        finals = stream.wait_finals(3)
+        self.assertEqual([f["persisted"] for f in finals], ["INSERTED", "INSERTED", "INSERTED"])
+        self.assertEqual(
+            [(f["segment"]["speaker"], f["segment"]["uncertain"]) for f in finals],
+            [("you", False), ("others", False), (None, True)],
+        )
+        self.assertEqual(stream.stop()["persistence"]["inserted"], 3)
+
+        status, ended = self.api.call("POST", f"/meetings/{meeting_id}/end")
+        self.assertEqual(status, 200)
+        self.assertTrue(ended["integrity"]["verified"])
+        _, transcript = self.api.call("GET", f"/meetings/{meeting_id}/transcript")
+        self.assertEqual(
+            [(s["text"], s["speaker"], s["uncertain"]) for s in transcript["segments"]],
+            [("session A 1", "you", False), ("session A 2", "others", False), ("session A 3", None, True)],
+        )
+
+    def test_a_client_that_does_not_declare_its_sources_gets_the_old_labelling(self):
+        meeting_id, ticket = self.new_meeting()
+        stream = self.connect()
+        self.assertIs(stream.start(meetingId=meeting_id, meetingTicket=ticket)["sourceLevels"], False)
+        stream.utterance(mic=0.2, tab=0.0)  # levels sent anyway: no error, no effect
+        (final,) = stream.wait_finals(1)
+        self.assertEqual((final["segment"]["speaker"], final["segment"]["uncertain"]), ("speaker_00", False))
+        self.assertEqual([m for m in stream.seen if m.get("type") == "error"], [])
+        stream.stop()
 
     def test_two_sessions_of_one_meeting_persist_through_the_real_api(self):
         meeting_id, ticket = self.new_meeting()

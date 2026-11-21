@@ -14,15 +14,21 @@ Wire protocol:
   Client -> server:
     {"type": "start", "sampleRate": 16000, "channels": 1, "format": "f32le", "language": "en",
      "meetingId": "<uuid>", "meetingTicket": "<token>",      (both optional, together)
-     "saveRecording": false, "reprocessOnStop": false}
+     "saveRecording": false, "reprocessOnStop": false,
+     "sources": ["microphone", "tab"]}                       (optional: which sources are mixed into the audio)
+    {"type": "levels", "mic": 0.12, "tab": 0.0}              (optional, once per frame, just BEFORE the frame it
+                                                              describes: each source's RMS, 0..1, or null)
     <binary frame> (repeated)
     {"type": "pause"} / {"type": "resume"} / {"type": "stop"}
 
   Server -> client:
     {"type": "ready", "sessionId", "meetingId", "persistence": "meeting" | "standalone", "timelineOffsetMs",
-                      "recording": true | false}   (true only when this session's audio is being saved)
+                      "recording": true | false,   (true only when this session's audio is being saved)
+                      "sourceLevels": true | false}   (true: the service will label lines "you" / "others" from
+                                                        the levels. A client sends none until it says true: an
+                                                        older service answers an unknown message with an error.)
     {"type": "transcript", "state": "PARTIAL" | "STABILIZING", "text": "..."}
-    {"type": "transcript", "state": "FINAL", "segment": {id, start, end, speaker, text},
+    {"type": "transcript", "state": "FINAL", "segment": {id, start, end, speaker, text, uncertain},
                            "persisted": "INSERTED" | "ALREADY_EXISTS" | "REJECTED" | "FAILED" | "NOT_PERSISTED"}
     {"type": "error", "code", "message", ["segmentId"]}
     {"type": "stopped", "transcript": {...} | null, "error": null | "transcript-invalid",
@@ -64,6 +70,7 @@ from speech.live.persistence import (
     PersistenceUnavailable,
 )
 from speech.live.session import LiveSpeechSession
+from speech.live.source_labels import SourceLabelConfig, SourceLevelLabeler
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +110,24 @@ def _segment_payload(seg: dict) -> dict:
         "end": seg["end"],
         "speaker": seg.get("speaker"),
         "text": seg["text"],
+        "uncertain": bool(seg.get("uncertain", False)),
     }
+
+
+SOURCE_LABELS_ENV = "LIVE_SOURCE_LABELS"
+LABELLED_SOURCES = frozenset({"microphone", "tab"})
+
+
+def _source_labels_wanted(control: dict) -> bool:
+    """Whether to label this session's lines "you" / "others": the operator has not switched it off
+    (LIVE_SOURCE_LABELS=0) and the client says BOTH the microphone and a shared tab are in the mix. With one
+    source there is nothing to tell apart, so lines keep the default single-speaker label."""
+    if os.environ.get(SOURCE_LABELS_ENV, "1").strip().lower() in ("0", "false", "off", "no"):
+        return False
+    sources = control.get("sources")
+    if not isinstance(sources, list) or not all(isinstance(source, str) for source in sources):
+        return False
+    return set(sources) == LABELLED_SOURCES
 
 
 class LiveConnection:
@@ -116,6 +140,8 @@ class LiveConnection:
         self.speech_session_id = ""
         self.stream_position_s = 0.0
         self.paused = False
+        self.source_levels = False  # this session labels lines from per-source levels (see start())
+        self._pending_levels = None  # (mic, tab) for the NEXT audio frame, from a 'levels' message
         self.save_recording = False
         self.recorder = None  # a WavWriter while this session's audio is being saved
         self.recording_path = None
@@ -151,6 +177,11 @@ class LiveConnection:
         elif msg_type == "resume":
             self.paused = False
             self.send({"type": "resumed"})
+        elif msg_type == "levels":
+            # Applies to the next audio frame. Ignored (not an error) when this session does not label lines, so
+            # a client that offers levels to a service that has them switched off is not treated as broken.
+            if self.source_levels:
+                self._pending_levels = (control.get("mic"), control.get("tab"))
         elif msg_type == "stop":
             self.finish("stopped")
             return "stop"
@@ -213,11 +244,14 @@ class LiveConnection:
         # With a meeting, the server owns the transcript: reprocessing would make a second, different one.
         # (A saved recording is streamed to disk; it does not need the in-memory copy.)
         keep_audio = bool(control.get("reprocessOnStop")) and not meeting_id
+        self.source_levels = _source_labels_wanted(control)
+        extra = {"diarizer": SourceLevelLabeler(SourceLabelConfig.from_env())} if self.source_levels else {}
         self.session = _make_session(
             speech_session_id=self.speech_session_id,
             language=str(control.get("language") or ""),
             keep_audio_for_reprocessing=keep_audio,
             meeting_id=self.meeting_id or None,
+            **extra,
         )
         self.session.on_transcript_event(self._on_event)
         self.stream_position_s = 0.0
@@ -230,6 +264,7 @@ class LiveConnection:
                 "persistence": "meeting" if self.meeting_id else "standalone",
                 "timelineOffsetMs": opened.get("timelineOffsetMs") if opened else None,
                 "recording": self.recorder is not None,
+                "sourceLevels": self.source_levels,
             }
         )
 
@@ -282,6 +317,8 @@ class LiveConnection:
         if self.session is None:
             self.error("no-active-session", "Send a 'start' message before audio frames")
             return
+        # Levels describe the one frame that follows them; whatever happens to that frame, they are spent.
+        levels, self._pending_levels = self._pending_levels, None
         if self.paused:
             return
         if len(message) == 0 or len(message) % BYTES_PER_SAMPLE != 0:
@@ -294,6 +331,14 @@ class LiveConnection:
         frame = np.frombuffer(message, dtype="<f4")
         self.stream_position_s += len(frame) / SUPPORTED_SAMPLE_RATE
         self._record(frame)  # exactly what the recognizer is given, so a replay reproduces the session
+        if levels is not None:
+            note = getattr(self.session, "note_source_levels", None)
+            if callable(note):
+                try:
+                    note(self.stream_position_s, len(frame) / SUPPORTED_SAMPLE_RATE, *levels)
+                except Exception:
+                    # A label is a nicety; the audio path never stops for it.
+                    logger.exception("live-speech: could not record the source levels of a frame")
         try:
             self.session.ingest_audio_frame(frame, timestamp_s=self.stream_position_s)
         except Exception as err:
