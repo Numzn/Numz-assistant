@@ -9,11 +9,17 @@
  * prompt they are given.
  *
  * Configured only when ALL of these are set (the key belongs in .env.secrets, like AI_API_KEY):
- *   CAMERA_VISION_PROVIDER   'anthropic' | 'openai-compatible'
+ *   CAMERA_VISION_PROVIDER   'openai' | 'anthropic' | 'openai-compatible'
  *   CAMERA_VISION_API_KEY    the provider's key
  *   CAMERA_VISION_MODEL      a model that accepts pictures. There is deliberately no default: it decides what each
  *                            picture costs and how well glare or a moire pattern is read.
- *   CAMERA_VISION_BASE_URL   optional for 'anthropic' (a gateway or proxy); required for 'openai-compatible'
+ *   CAMERA_VISION_BASE_URL   optional for 'openai' and 'anthropic' (a gateway or proxy); required for 'openai-compatible'
+ *   CAMERA_VISION_REASONING_EFFORT   optional, 'openai' only: minimal | low | medium | high. A model that thinks before
+ *                            it answers is slower and dearer; reading a question needs little thinking.
+ *
+ * 'openai' is OpenAI itself and sends the parameters its newer models accept (max_completion_tokens, no temperature:
+ * they refuse max_tokens and any temperature but the default). 'openai-compatible' is for any other service that speaks
+ * the same protocol (max_tokens, temperature 0).
  *
  * Errors carry the HTTP status and a fixed message, never the provider's own words (they can echo the request or the
  * key). The request shapes below follow the providers' public documentation and are pinned by tests against a fake
@@ -82,9 +88,16 @@ function anthropicAdapter({ apiKey, model, baseUrl, fetchFn }) {
   return { name: 'anthropic', read: ask, answer: ask }
 }
 
-function openAiCompatibleAdapter({ apiKey, model, baseUrl, fetchFn }) {
+const REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high'])
+const OPENAI_REPLY_TOKENS = 4000 // a ceiling that leaves room for a model that thinks first; only what is generated is paid for
+
+function openAiAdapter({ apiKey, model, baseUrl, fetchFn, official = false, reasoningEffort = '' }) {
   const stripped = baseUrl.replace(/\/+$/, '')
   const root = stripped.endsWith('/v1') ? stripped : `${stripped}/v1`
+  // OpenAI's newer models refuse max_tokens and any temperature but the default; other services expect the older shape.
+  const limits = official
+    ? { max_completion_tokens: OPENAI_REPLY_TOKENS, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }
+    : { temperature: 0, max_tokens: MAX_REPLY_TOKENS }
   async function ask({ messages, image, signal }) {
     const { system, user } = split(messages)
     const body = await post(
@@ -93,8 +106,7 @@ function openAiCompatibleAdapter({ apiKey, model, baseUrl, fetchFn }) {
       { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       {
         model,
-        temperature: 0,
-        max_tokens: MAX_REPLY_TOKENS,
+        ...limits,
         messages: [
           { role: 'system', content: system },
           {
@@ -112,7 +124,7 @@ function openAiCompatibleAdapter({ apiKey, model, baseUrl, fetchFn }) {
     if (!text(reply)) throw Object.assign(new Error('The vision service returned no text'), { name: 'VisionError' })
     return reply
   }
-  return { name: 'openai-compatible', read: ask, answer: ask }
+  return { name: official ? 'openai' : 'openai-compatible', read: ask, answer: ask }
 }
 
 export function createUnconfiguredVision(missing = []) {
@@ -133,18 +145,22 @@ export function createUnconfiguredVision(missing = []) {
 export function createVisionFromEnv(env = process.env, { fetchFn = (...args) => globalThis.fetch(...args) } = {}) {
   const provider = text(env.CAMERA_VISION_PROVIDER).toLowerCase()
   if (!provider) return createUnconfiguredVision(['CAMERA_VISION_PROVIDER'])
-  if (provider !== 'anthropic' && provider !== 'openai-compatible') return createUnconfiguredVision(['CAMERA_VISION_PROVIDER (anthropic or openai-compatible)'])
+  if (!['openai', 'anthropic', 'openai-compatible'].includes(provider)) return createUnconfiguredVision(['CAMERA_VISION_PROVIDER (openai, anthropic or openai-compatible)'])
 
   const apiKey = text(env.CAMERA_VISION_API_KEY)
   const model = text(env.CAMERA_VISION_MODEL)
-  const baseUrl = text(env.CAMERA_VISION_BASE_URL)
+  const baseUrl = text(env.CAMERA_VISION_BASE_URL) || (provider === 'openai' ? 'https://api.openai.com' : '')
+  const effort = text(env.CAMERA_VISION_REASONING_EFFORT).toLowerCase()
   const missing = []
   if (!apiKey) missing.push('CAMERA_VISION_API_KEY')
   if (!model) missing.push('CAMERA_VISION_MODEL')
   if (provider === 'openai-compatible' && !baseUrl) missing.push('CAMERA_VISION_BASE_URL')
   if (missing.length) return createUnconfiguredVision(missing)
 
-  const adapter = (provider === 'anthropic' ? anthropicAdapter : openAiCompatibleAdapter)({ apiKey, model, baseUrl, fetchFn })
+  const adapter =
+    provider === 'anthropic'
+      ? anthropicAdapter({ apiKey, model, baseUrl, fetchFn })
+      : openAiAdapter({ apiKey, model, baseUrl, fetchFn, official: provider === 'openai', reasoningEffort: provider === 'openai' && REASONING_EFFORTS.has(effort) ? effort : '' })
   return { configured: true, missing: [], ...adapter }
 }
 

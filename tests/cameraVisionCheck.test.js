@@ -62,7 +62,7 @@ test('a rejected request is explained by its status, and neither the key nor the
     [401, /key|permission/i],
     [403, /key|permission/i],
     [404, /model|address/i],
-    [400, /picture|model/i],
+    [400, /picture.*model.*setting|setting.*model/i],
     [429, /limit|quota|busy|wait/i],
     [500, /provider/i],
     [529, /provider|busy|overloaded/i]

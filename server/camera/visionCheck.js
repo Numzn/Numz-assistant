@@ -17,7 +17,7 @@ import { validateReading } from './questionIdentity.js'
 const ADVICE_BY_STATUS = [
   [(s) => s === 401 || s === 403, 'The provider rejected the request: check CAMERA_VISION_API_KEY, and that the key may use this model.'],
   [(s) => s === 404, 'The provider does not know this model or address: check CAMERA_VISION_MODEL and CAMERA_VISION_BASE_URL.'],
-  [(s) => s === 400, 'The provider refused the request: this model may not accept pictures, or the picture was too large. Check CAMERA_VISION_MODEL.'],
+  [(s) => s === 400, 'The provider refused the request: this model may not accept pictures, the picture may have been too large, or a setting (such as CAMERA_VISION_REASONING_EFFORT) may not be supported by this model. Check CAMERA_VISION_MODEL and remove any optional setting.'],
   [(s) => s === 429, 'The provider says there are too many requests, or the account is out of quota or credit. Wait a little, then check the account.'],
   [(s) => s >= 500, 'The provider had a problem or is overloaded. Try again in a moment.']
 ]
@@ -38,7 +38,7 @@ export async function runVisionCheck({ vision, picture, now = Date.now, timeoutM
       stage: 'configuration',
       missing,
       advice: everything
-        ? 'Set CAMERA_VISION_PROVIDER (anthropic or openai-compatible), CAMERA_VISION_API_KEY and CAMERA_VISION_MODEL in .env.secrets (and CAMERA_VISION_BASE_URL for openai-compatible), then restart the server.'
+        ? 'Set CAMERA_VISION_PROVIDER (openai, anthropic or openai-compatible), CAMERA_VISION_API_KEY and CAMERA_VISION_MODEL in .env.secrets (and CAMERA_VISION_BASE_URL for openai-compatible), then restart the server.'
         : `Set ${missing.join(', ')} in .env.secrets, then restart the server.`
     }
   }

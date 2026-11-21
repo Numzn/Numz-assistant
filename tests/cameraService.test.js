@@ -151,7 +151,8 @@ test('a picture of a question is read: its text, options, type and subject come 
       type: 'multiple-choice',
       subject: 'astronomy',
       confidence: 0.95,
-      hasDiagram: false
+      hasDiagram: false,
+      note: ''
     }
   })
   const [call] = vision.readCalls
@@ -159,6 +160,18 @@ test('a picture of a question is read: its text, options, type and subject come 
   assert.equal(call.messages[0].role, 'system')
   assert.match(call.messages[0].content, /exactly as it appears/)
   assert.ok(JSON.stringify(result).length < 600, 'nothing like the picture is sent back')
+})
+
+test('when the reader says part of the picture could not be read, the person is told and so is the answering model', async () => {
+  const { service, script, engineCalls } = rig()
+  script.reads = [reading({ text: 'What is its average speed?', options: [{ label: 'D', text: '100 km/h' }], type: 'multiple-choice', confidence: 0.88, reason: 'Options A through C are too faint to transcribe reliably.' })]
+  const { sessionId } = await service.createSession()
+  const result = await service.read(sessionId, image())
+  assert.equal(result.status, 'new', 'a partial read is still offered: the person can see and correct it')
+  assert.equal(result.question.note, 'Options A through C are too faint to transcribe reliably.')
+  await service.answer(sessionId, { questionId: result.questionId })
+  assert.match(engineCalls[0][1].content, /reader noted/i)
+  assert.match(engineCalls[0][1].content, /too faint/)
 })
 
 test('not a question, or too unclear, is said so and nothing is stored or answered', async () => {

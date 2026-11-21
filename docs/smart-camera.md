@@ -20,6 +20,9 @@ own, so it is tested with scripted ones.
 2. **Read** (`POST .../read`): the picture (JPEG, at most 1568 px on the long side) goes to the vision provider, which
    returns the question as JSON (text, options, type, subject, whether it needs a figure, confidence). The question is
    validated: not a question, too little text and low confidence are refused with a reason and nothing is answered.
+   If the reader says part of the picture could not be read (a covered option, a glare patch) while still finding a
+   question, that note is shown with the question and handed to the answering model, so a partly read question is not
+   answered as if it were whole.
 3. **Same question?** (`questionIdentity.js`): the text is normalised (case, numbering, punctuation, maths symbols)
    and compared with the session's earlier questions. Numbers and option letters must match exactly; the rest must be
    96% alike. A match is reported as a duplicate with the answer it already has: no model is asked again.
@@ -55,10 +58,14 @@ The page opens without any of this, but cannot read pictures. In `.env.secrets` 
 
 | Setting | |
 | --- | --- |
-| `CAMERA_VISION_PROVIDER` | `anthropic` or `openai-compatible` |
+| `CAMERA_VISION_PROVIDER` | `openai`, `anthropic`, or `openai-compatible` (any other service with OpenAI's protocol) |
 | `CAMERA_VISION_API_KEY` | the provider's key |
 | `CAMERA_VISION_MODEL` | a model that accepts pictures. No default on purpose: it sets what each picture costs and how well glare is read |
-| `CAMERA_VISION_BASE_URL` | optional for `anthropic` (a gateway); required for `openai-compatible` |
+| `CAMERA_VISION_BASE_URL` | optional for `openai` and `anthropic` (a gateway); required for `openai-compatible` |
+| `CAMERA_VISION_REASONING_EFFORT` | optional, `openai` only: `low`, `medium`, `high` (and `minimal` on models that accept it). Measured with `gpt-6.2-astra`: `minimal` is refused and `low` is not faster, so leave it unset |
+
+`openai` sends the parameters OpenAI's newer models accept (`max_completion_tokens`, no `temperature`; they refuse
+`max_tokens`). `openai-compatible` keeps the older shape for other services.
 
 Answers use the assistant's existing text model (`AI_PROVIDER`). The start-up log says which settings are missing, never
 a value. Optional: `CAMERA_MAX_READS` (1 to 1000, default 100) caps the pictures one camera session may read, which is
@@ -89,7 +96,7 @@ paused.
 
 ## What is and is not verified
 
-Verified: 916 Node tests (the camera adds about 165: frame analysis, state machine, question identity, model-reply
+Verified: 924 Node tests (the camera adds about 170: frame analysis, state machine, question identity, model-reply
 parsing, the service, the routes with the real browser client over a real socket, the vision adapters and the live check
 against a fake `fetch`, the presenter, the limits); the production build within a bundle budget (25 KB gzipped for the
 camera page); and two scripts in `scripts/camera-e2e/` that drive real headless Chromium against the production build and
@@ -99,11 +106,25 @@ the assistant locked with a wrong and the right access code, the vision model fa
 session limit and clearing to continue, the camera taken away mid-session, keyboard use and control names). No console or
 CSP errors on the working path.
 
+**Measured with a real provider** (OpenAI, `gpt-6.2-astra`, 2026-11-21; about 25 calls in all). The first live call
+found that the generic request shape was refused (`max_tokens`), which is why `openai` is its own mode.
+- A clean rendered question: text, all four options, type, subject and confidence read exactly, in about 3 to 4 s.
+- The same question after blur, a 5 degree tilt, dim and noisy light, a moire grid, a screen a third of the frame, and a
+  perspective angle: the stem read exactly every time. Three differently degraded pictures of one screen all count as
+  the same question for the duplicate check.
+- Glare hiding options A to C: the model did not invent them. It returned only the visible option and said the rest were
+  too faint (confidence 0.88), which is why that note is now passed on (see above).
+- End to end (fake camera feed -> the real camera page and server -> OpenAI for both the reading and the answer): both
+  questions read, answered with the working, confidence shown, history built, a repeat caught as a duplicate, no console
+  errors, and the server log held only ids and statuses.
+
+These are synthetic screens photographed by a fake camera, so they show the reading is robust, not that a real phone in
+a real room will match; glare on a real glossy screen and real moire are still untested.
+
 **Not verified, and why it matters:**
 
-- **No live vision call has ever been made.** The Anthropic and OpenAI-compatible request shapes follow the public docs
-  and are pinned by tests, but only a real key and one real call will show they are accepted, and how accurately a phone
-  photo of a screen (glare, moire, tilt) is read.
+- **The Anthropic adapter has not been called live** (only `openai` has). Its request shape follows the public docs and
+  is pinned by tests. Cost per picture has not been measured against a bill.
 - **No real phone has run it.** Switching camera and the torch are written defensively and untested on hardware. The
   frame thresholds (still, text-like, 0.15 "looks different") are unmeasured defaults.
 - **The phone cannot tell two questions in one layout apart.** Measured on 18 rendered quiz screens with simulated hand
@@ -111,7 +132,6 @@ CSP errors on the working path.
   "looks unchanged" is never treated as "already seen": it only slows re-checking (15 s, 30 s, then every 60 s), and the
   server's text comparison decides. A change the phone cannot see is therefore picked up within about a minute at the
   worst, or at once with Capture now. A re-check that finds nothing costs one read and does not keep the camera on.
-- Moire, glare and very small text were only measured with a local OCR spike (before the vision model was chosen).
 
 ## Before it can ship
 

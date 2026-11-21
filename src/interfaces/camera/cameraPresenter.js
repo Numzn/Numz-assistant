@@ -94,6 +94,7 @@ function questionFor(state) {
   const notes = []
   if (q.hasDiagram === true) notes.push('This question refers to a figure or table.')
   if (lowConfidence) notes.push('The text was hard to read: check the wording.')
+  if (text(q.note)) notes.push(`The reader could not read all of it: ${text(q.note)}`)
   return {
     heading: state.phase === S.AWAITING_CONFIRMATION ? 'Check the question' : 'Question',
     text: text(q.text),

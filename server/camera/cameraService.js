@@ -174,6 +174,7 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
       type: reading.type,
       subject: reading.subject,
       hasDiagram: reading.hasDiagram,
+      note: reading.reason, // set only when the reader says part of the picture could not be read
       picture: reading.hasDiagram ? { bytes: buffer, mimeType, expiresAt: now() + cap.pictureKeptMs } : null,
       answer: null,
       markdown: '',
@@ -186,7 +187,7 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
     return {
       status: 'new',
       questionId,
-      question: { text: reading.text, options: reading.options, type: reading.type, subject: reading.subject, confidence: reading.confidence, hasDiagram: reading.hasDiagram }
+      question: { text: reading.text, options: reading.options, type: reading.type, subject: reading.subject, confidence: reading.confidence, hasDiagram: reading.hasDiagram, note: reading.reason }
     }
   }
 
@@ -199,7 +200,8 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
   }
 
   async function ask(entry, text) {
-    const messages = buildAnswerMessages({ text, options: entry.options, type: entry.type, subject: entry.subject })
+    // A note about what could not be read no longer applies once the person has corrected the question.
+    const messages = buildAnswerMessages({ text, options: entry.options, type: entry.type, subject: entry.subject, readerNote: text === entry.text ? entry.note : '' })
     const seesFigure = entry.hasDiagram && entry.picture && typeof vision?.answer === 'function'
     const raw = await withDeadline((signal) =>
       seesFigure

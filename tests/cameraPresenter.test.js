@@ -160,6 +160,13 @@ test('a question is shown with its kind and subject, a note when it needs a figu
   assert.deepEqual(clear.question.tags, ['Calculation', 'Maths'])
 })
 
+test('a reader\'s note about what it could not read is shown with the question', () => {
+  const view = presentCamera(on(S.ANALYSING, { current: { ...QUESTION, confidence: 0.88, note: 'Options A through C are too faint to transcribe reliably.' } }))
+  assert.match(view.question.notes.join(' '), /could not read all of it/i)
+  assert.match(view.question.notes.join(' '), /too faint/)
+  assert.deepEqual(presentCamera(on(S.ANALYSING, { current: { ...QUESTION, note: '' } })).question.notes, [])
+})
+
 test('an unknown question type or no subject adds no empty tag', () => {
   const view = presentCamera(on(S.WAITING_FOR_NEXT, { current: { ...QUESTION, type: 'other', subject: '' } }))
   assert.deepEqual(view.question.tags, [])

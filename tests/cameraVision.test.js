@@ -27,6 +27,7 @@ function fakeFetch(reply) {
 }
 
 const openAiEnv = { CAMERA_VISION_PROVIDER: 'openai-compatible', CAMERA_VISION_API_KEY: KEY, CAMERA_VISION_MODEL: 'some-vision-model', CAMERA_VISION_BASE_URL: 'https://vision.example.com/v1' }
+const openaiEnv = { CAMERA_VISION_PROVIDER: 'openai', CAMERA_VISION_API_KEY: KEY, CAMERA_VISION_MODEL: 'some-openai-model' }
 const anthropicEnv = { CAMERA_VISION_PROVIDER: 'anthropic', CAMERA_VISION_API_KEY: KEY, CAMERA_VISION_MODEL: 'some-claude-model' }
 
 // ---- configuration -------------------------------------------------------------------------------------------------
@@ -40,6 +41,8 @@ test('nothing is configured until a provider, a key and a model are all given', 
   assert.equal(createVisionFromEnv({ ...anthropicEnv, CAMERA_VISION_PROVIDER: 'carrier-pigeon' }).configured, false)
   assert.equal(createVisionFromEnv(anthropicEnv).configured, true)
   assert.equal(createVisionFromEnv(openAiEnv).configured, true)
+  assert.equal(createVisionFromEnv(openaiEnv).configured, true, 'OpenAI itself needs no address')
+  assert.equal(createVisionFromEnv({ ...openaiEnv, CAMERA_VISION_MODEL: '' }).configured, false)
 })
 
 test('an unconfigured vision refuses to read, and says which setting is missing without printing any value', async () => {
@@ -94,6 +97,67 @@ test('OpenAI-compatible: a failure carries the status and never the key or the p
 test('OpenAI-compatible: a reply with nothing in it is an error, not an empty string to parse', async () => {
   const fetchFn = fakeFetch({ status: 200, body: { choices: [] } })
   await assert.rejects(createVisionFromEnv(openAiEnv, { fetchFn }).read({ messages, image }), /no text/i)
+})
+
+// ---- OpenAI itself -----------------------------------------------------------------------------------------------
+
+test('OpenAI: the request uses the parameters its newer models accept (max_completion_tokens, no temperature, no max_tokens)', async () => {
+  const fetchFn = fakeFetch({ status: 200, body: { choices: [{ message: { content: '{"isQuestion":true}' } }] } })
+  const vision = createVisionFromEnv(openaiEnv, { fetchFn })
+  assert.equal(vision.name, 'openai')
+  const text = await vision.read({ messages, image })
+  assert.equal(text, '{"isQuestion":true}')
+
+  const [{ url, init, body }] = fetchFn.calls
+  assert.equal(url, 'https://api.openai.com/v1/chat/completions')
+  assert.equal(init.headers.Authorization, `Bearer ${KEY}`)
+  assert.equal(body.model, 'some-openai-model')
+  assert.ok(body.max_completion_tokens >= 1000, 'room for a model that thinks before it answers')
+  assert.equal('max_tokens' in body, false, 'OpenAI refuses it for newer models')
+  assert.equal('temperature' in body, false, 'and refuses a temperature other than the default')
+  assert.equal('reasoning_effort' in body, false, 'not sent unless asked for: non-reasoning models refuse it')
+  assert.deepEqual(body.messages[0], { role: 'system', content: 'You read photographs.' })
+  const [textPart, imagePart] = body.messages[1].content
+  assert.deepEqual(textPart, { type: 'text', text: 'Read the question shown in this picture.' })
+  assert.equal(imagePart.image_url.url, `data:image/jpeg;base64,${image.bytes.toString('base64')}`)
+})
+
+test('OpenAI: an address can still be given (a gateway or Azure-style proxy)', async () => {
+  const fetchFn = fakeFetch({ status: 200, body: { choices: [{ message: { content: 'x' } }] } })
+  await createVisionFromEnv({ ...openaiEnv, CAMERA_VISION_BASE_URL: 'https://gateway.example.com/openai/' }, { fetchFn }).read({ messages, image })
+  assert.equal(fetchFn.calls[0].url, 'https://gateway.example.com/openai/v1/chat/completions')
+})
+
+test('OpenAI: a reasoning effort can be chosen to trade thinking time for speed, and only a known one is sent', async () => {
+  for (const effort of ['minimal', 'low', 'medium', 'high']) {
+    const fetchFn = fakeFetch({ status: 200, body: { choices: [{ message: { content: 'x' } }] } })
+    await createVisionFromEnv({ ...openaiEnv, CAMERA_VISION_REASONING_EFFORT: effort }, { fetchFn }).read({ messages, image })
+    assert.equal(fetchFn.calls[0].body.reasoning_effort, effort)
+  }
+  for (const bad of ['', 'fast', 'LOW!', '0']) {
+    const fetchFn = fakeFetch({ status: 200, body: { choices: [{ message: { content: 'x' } }] } })
+    await createVisionFromEnv({ ...openaiEnv, CAMERA_VISION_REASONING_EFFORT: bad }, { fetchFn }).read({ messages, image })
+    assert.equal('reasoning_effort' in fetchFn.calls[0].body, false, JSON.stringify(bad))
+  }
+  const compatible = fakeFetch({ status: 200, body: { choices: [{ message: { content: 'x' } }] } })
+  await createVisionFromEnv({ ...openAiEnv, CAMERA_VISION_REASONING_EFFORT: 'low' }, { fetchFn: compatible }).read({ messages, image })
+  assert.equal('reasoning_effort' in compatible.calls[0].body, false, 'other services are not sent what only OpenAI defines')
+})
+
+test('OpenAI: failures never carry the key or the provider\'s words, and an empty reply is an error', async () => {
+  const rejected = fakeFetch({ status: 400, body: { error: { message: `Unsupported parameter, key ${KEY}` } } })
+  await assert.rejects(createVisionFromEnv(openaiEnv, { fetchFn: rejected }).read({ messages, image }), (err) => err.statusCode === 400 && !err.message.includes(KEY) && !/unsupported/i.test(err.message))
+  const empty = fakeFetch({ status: 200, body: { choices: [{ message: { content: '' }, finish_reason: 'length' }] } })
+  await assert.rejects(createVisionFromEnv(openaiEnv, { fetchFn: empty }).read({ messages, image }), /no text/i)
+})
+
+test('the generic OpenAI-compatible mode is unchanged: other services still get max_tokens and a temperature of 0', async () => {
+  const fetchFn = fakeFetch({ status: 200, body: { choices: [{ message: { content: 'x' } }] } })
+  await createVisionFromEnv(openAiEnv, { fetchFn }).read({ messages, image })
+  const { body } = fetchFn.calls[0]
+  assert.equal(body.temperature, 0)
+  assert.ok(body.max_tokens > 0)
+  assert.equal('max_completion_tokens' in body, false)
 })
 
 // ---- Anthropic ---------------------------------------------------------------------------------------------------
