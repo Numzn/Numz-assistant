@@ -9,7 +9,7 @@
 const OLD_CODE_KEY = 'numz.meeting.launch-code'
 const MAX_RENDERED_LINES = 500
 const NOT_CONFIGURED =
-  'Meetings cannot be started from here yet: the server has no launch code set (MEETING_LAUNCH_CODE), or it cannot be reached.'
+  'Meetings cannot be started from here yet: the server is not set up for it (no launch code, or its meeting settings are missing), or it cannot be reached.'
 
 import { findingLabel, isSettledFinal, provenanceText, selectFindings, summaryCaution, timestamp } from '../commands/meetingIntelligenceReply.js'
 
@@ -167,7 +167,7 @@ export function createMeetingPanel({ controller, api, doc = document, onActiveCh
     else if (state.canEnd && state.canReconnect) items.push({ id: 'end', label: 'End meeting', run: () => controller.finish() })
     else if (state.canEnd) items.push({ id: 'retry', label: 'Try again', primary: true, run: () => controller.finish() })
     if (state.canDiscard) items.push({ id: 'discard', label: 'Forget this meeting', run: () => controller.discard() })
-    if (state.phase === 'idle' && state.launchReady) {
+    if (state.phase === 'idle' && state.launchReady && !state.signedInLaunch) {
       items.push({ id: 'lock', label: 'Lock this browser', run: () => controller.lock() })
     }
     if (state.phase === 'done') items.push({ id: 'new', label: 'New meeting', primary: true, run: () => controller.reset() })

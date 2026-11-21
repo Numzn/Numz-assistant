@@ -12,7 +12,8 @@
 //   fakes only for the paid text/vision model and the speech service.
 //
 // Environment: NUMZLAB_AUTH_DIR (numzlab-auth's checkout, default /srv/infrastructure/auth; its tests/rig_ai.py is used),
-// DASHBOARD_FRONTEND (the dashboard's frontend source, to build the NEW service worker), OLD_DASHBOARD_DIST (the dashboard as it is live),
+// DASHBOARD_FRONTEND (the dashboard's frontend source, to build the NEW service worker), OLD_DASHBOARD_DIST (a dashboard build WITHOUT the /ai
+// service-worker rule, for the control check; since the 2026-11-21 roll-out the live one has it, so point this at the pre-roll-out backup),
 // PLAYWRIGHT_FROM, FFMPEG, AI_E2E_DIR (screenshots).
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -233,6 +234,39 @@ try {
   await strangerPage.waitForSelector('#accessGoogleNotice:not([hidden])', { timeout: 10000 })
   check('an account that is not approved is told so, and is not let in', /not approved/i.test(await strangerPage.textContent('#accessGoogleNotice')) && (await strangerCtx.cookies()).length === 0)
   check('the address is tidied so a reload does not repeat the message', !new URL(strangerPage.url()).search.includes('auth='))
+
+  // ============ A2. starting a meeting needs no code: the sign-in is enough ===============================================
+  const mia = 'mia@example.com'
+  await newPerson('viewer', mia)
+  const miaContext = await browser.newContext({ viewport: { width: 1280, height: 800 }, permissions: ['microphone'] })
+  const miaPage = await miaContext.newPage()
+  miaPage.on('pageerror', (e) => problems.push(`meeting pageerror: ${e.message.slice(0, 160)}`))
+  const launchRequests = []
+  const launchReplies = []
+  miaPage.on('request', (r) => {
+    if (r.method() === 'POST' && r.url().endsWith('/ai/api/v1/meetings/launch')) launchRequests.push(r.headers())
+  })
+  miaPage.on('response', (r) => {
+    if (r.request().method() === 'POST' && r.url().endsWith('/ai/api/v1/meetings/launch')) launchReplies.push(r.status())
+  })
+  await signIn(miaPage)
+  await miaPage.click('#meetingButton')
+  await miaPage.waitForSelector('#meetingPanel:not([hidden])', { timeout: 10000 })
+  await miaPage.waitForSelector('#meetingCode', { state: 'hidden', timeout: 10000 })
+  check('signed in: the meeting panel has no launch code box', !(await miaPage.isVisible('#meetingCode')) && !(await miaPage.isVisible('label[for="meetingCode"]')))
+  check('signed in: nothing says "lock this browser" (there is no code to forget)', !/lock this browser/i.test(await miaPage.textContent('#meetingPanel')))
+  check('signed in: Start meeting is ready without typing anything', await miaPage.isEnabled('#meetingStart'))
+  await miaPage.fill('#meetingTitleInput', 'No code needed')
+  await miaPage.click('#meetingStart')
+  const startedAt = Date.now()
+  while (!launchReplies.length && Date.now() - startedAt < 15000) await miaPage.waitForTimeout(100)
+  check('the server started the meeting for a signed-in person (201)', launchReplies[0] === 201, `status ${launchReplies[0]}`)
+  check('the request carried no launch code and did carry the session\'s CSRF token', launchRequests.length === 1 && launchRequests[0]['x-meeting-launch-code'] === undefined && Boolean(launchRequests[0]['x-csrf-token']))
+  check('no launch cookie was ever set', !(await miaContext.cookies()).some((c) => c.name === 'numz_launch_session'))
+  await miaPage.waitForFunction(() => document.getElementById('meetingPanel')?.dataset.phase !== 'idle', null, { timeout: 10000 })
+  check('the page moved on to recording (or reconnecting), not back to asking for a code', (await miaPage.getAttribute('#meetingPanel', 'data-phase')) !== 'idle' && !/launch code/i.test(await miaPage.innerText('#meetingPanel')))
+  await miaPage.screenshot({ path: `${dir}/shot-meeting-no-code.png` })
+  await miaContext.close()
 
   // ============ B. the dashboard's service worker and NUMZ AI =================================================================
   const dashPerson = 'dash@example.com'

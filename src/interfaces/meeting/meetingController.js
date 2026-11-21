@@ -74,6 +74,7 @@ function emptyState() {
     sources: [], // [{ id, label, state, detail }] what each source is doing (see captureSources.js)
     droppedSeconds: 0, // audio the connection could not carry; missing from the transcript
     launchReady: false, // the server accepts a start from this browser without the code being typed again
+    signedInLaunch: false, // ...because the person is signed in (no launch code exists at all), so there is nothing to lock
     intelligence: null, // the server's live intelligence state for this meeting (see meetingIntelligenceStore.js)
     intelligenceError: null, // this page could not get it (separate from what the server says about the analysis)
     result: null // { verified, storedSegments, unverifiedSessions } once done
@@ -121,7 +122,8 @@ function describeLaunchError(err) {
   if (err.code === 'launch-code-required') return 'Enter the launch code.'
   if (err.code === 'launch-code-invalid') return 'That launch code was not accepted.'
   if (err.status === 429) return 'Too many wrong codes. Wait a minute and try again.'
-  if (err.status === 503) return 'Starting meetings is not set up on this server (no launch code is configured).'
+  if (err.status === 403) return 'Your account is not allowed to start meetings.'
+  if (err.status === 503) return 'Starting meetings is not set up on this server (the meeting settings are missing).'
   if (err.code === 'invalid-title') return 'The title is too long (120 characters at most).'
   return `Could not start the meeting (${err.code}).`
 }
@@ -188,6 +190,7 @@ export function createMeetingController({
   let state = emptyState()
   let captureMode = 'microphone' // kept for Reconnect
   let launchReady = false // survives a reset: it describes this browser, not one meeting
+  let signedInLaunch = false // survives a reset too: the server starts meetings for a signed-in person, no code
   let pendingLaunchKey = null // the key of a launch attempt whose outcome is not known yet
   const listeners = new Set()
   let client = null
@@ -199,11 +202,12 @@ export function createMeetingController({
   /** A clean form that still knows whether this browser is unlocked. */
   function blank() {
     const known = intelligence.get() // the last meeting's findings stay readable until another meeting starts
-    return { ...emptyState(), launchReady, intelligence: known.data, intelligenceError: known.error }
+    return { ...emptyState(), launchReady, signedInLaunch, intelligence: known.data, intelligenceError: known.error }
   }
 
   function set(patch) {
     if ('launchReady' in patch) launchReady = patch.launchReady === true
+    if ('signedInLaunch' in patch) signedInLaunch = patch.signedInLaunch === true
     state = { ...state, ...patch }
     for (const listener of listeners) listener(state)
   }
@@ -278,7 +282,7 @@ export function createMeetingController({
    */
   async function refreshLaunchSession() {
     const status = typeof api.launchSession === 'function' ? await api.launchSession() : null
-    set({ launchReady: status?.authenticated === true })
+    set({ launchReady: status?.authenticated === true, signedInLaunch: status?.signedIn === true && status?.authenticated === true })
     return launchReady
   }
 
@@ -496,7 +500,7 @@ export function createMeetingController({
 
     /** Forget the launch session on this browser, so the code has to be typed again. Not while a meeting is open. */
     async lock() {
-      if (!launchReady || state.open || BUSY.has(state.phase)) return
+      if (!launchReady || signedInLaunch || state.open || BUSY.has(state.phase)) return // signed in: nothing to lock
       const done = typeof api.forgetLaunchSession === 'function' ? await api.forgetLaunchSession() : false
       if (done) set({ launchReady: false, message: 'Locked. The launch code is needed again to start a meeting.', tone: 'info' })
       else set({ message: 'Could not reach the server to lock this browser. It is still unlocked.', tone: 'warn' })
@@ -514,6 +518,7 @@ export function createMeetingController({
         set({ ...blank(), message: 'Enter the launch code.', tone: 'warn' })
         return
       }
+      const typedCode = signedInLaunch ? '' : trimmedCode // signed in: the sign-in is the credential, never send a code
       // Check the browser before creating anything on the server: no meeting is launched for a page
       // that could never record (no secure connection, no audio worklet).
       const wanted = normalizeCaptureMode(capture)
@@ -531,11 +536,22 @@ export function createMeetingController({
       pendingLaunchKey ??= newLaunchKey()
       let launched
       try {
-        launched = await api.launch({ code: trimmedCode, title: cleanTitle, idempotencyKey: pendingLaunchKey })
+        launched = await api.launch({ code: typedCode, title: cleanTitle, idempotencyKey: pendingLaunchKey })
       } catch (err) {
         const outcomeUnknown = err instanceof MeetingApiError && (err.status === 0 || err.status >= 500)
         if (!outcomeUnknown) pendingLaunchKey = null
         const lapsed = !trimmedCode && err instanceof MeetingApiError && err.status === 401
+        if (lapsed && signedInLaunch) {
+          set({
+            ...emptyState(),
+            launchReady: false,
+            signedInLaunch: false,
+            title: cleanTitle,
+            message: 'Your sign-in has ended. Reload the page and sign in again to start the meeting.',
+            tone: 'warn'
+          })
+          return
+        }
         if (lapsed) {
           set({
             ...emptyState(),
@@ -562,7 +578,7 @@ export function createMeetingController({
       intelligence.track({ meetingId: session.meetingId, ticketToken: session.ticketToken })
       // A correct code makes the server set a launch session; learn that from the server, not by assuming it.
       // Alongside connecting, so it costs the recording nothing, and settled by the time start() returns.
-      const unlockStatus = trimmedCode ? refreshLaunchSession().catch(() => {}) : null
+      const unlockStatus = trimmedCode && !signedInLaunch ? refreshLaunchSession().catch(() => {}) : null
       await connect()
       await unlockStatus
     },

@@ -26,7 +26,7 @@ const completed = (stored, { verified = true, unverified = 0 } = {}) => ({
 const conflict = (code, details = null) => new MeetingApiError(code, { status: 409, code, details })
 const seg = (n, text = `line ${n}`) => ({ id: `seg_${n}`, start: n, end: n + 1, text })
 
-function fakeApi({ launch = launched(), end = [completed(0)], session = false } = {}) {
+function fakeApi({ launch = launched(), end = [completed(0)], session = false, signedIn = false } = {}) {
   const calls = { launch: [], end: [], session: 0, forget: 0, intel: [], refresh: [] }
   const queue = [...end]
   const launches = Array.isArray(launch) ? [...launch] : null
@@ -52,7 +52,7 @@ function fakeApi({ launch = launched(), end = [completed(0)], session = false } 
     },
     async launchSession() {
       calls.session += 1
-      return { available: true, authenticated: server.authenticated }
+      return { available: true, authenticated: server.authenticated, signedIn }
     },
     async forgetLaunchSession() {
       calls.forget += 1
@@ -750,6 +750,64 @@ test('a failed lock is reported, not assumed', async () => {
   await controller.lock()
   assert.equal(controller.getState().launchReady, true)
   assert.equal(controller.getState().tone, 'warn')
+})
+
+// ---- per-person sign-in: being signed in is the unlock; there is no code to type and nothing to lock ----------------------------------
+
+test('signed in: the page learns it is unlocked, starts with no code, and never sends one even if one is passed', async () => {
+  const api = fakeApi({ session: true, signedIn: true })
+  const { controller, clients } = build({ api })
+  await controller.refreshLaunchSession()
+  assert.equal(controller.getState().launchReady, true)
+  assert.equal(controller.getState().signedInLaunch, true)
+  await controller.start({ code: 'left-over-code', title: 'Standup' })
+  assert.deepEqual(api.calls.launch, [{ code: '', title: 'Standup', idempotencyKey: 'attempt-0000000000000001' }])
+  assert.equal(controller.getState().phase, 'connecting')
+  assert.equal(clients.made.length, 1)
+})
+
+test('signed in: starting works on a page that has not asked yet (it asks first), and the setting survives a finished meeting', async () => {
+  const api = fakeApi({ session: true, signedIn: true, end: [completed(1)] })
+  const { controller } = build({ api })
+  await controller.start({})
+  assert.equal(api.calls.launch.length, 1)
+  assert.equal(api.calls.launch[0].code, '')
+  await controller.stop()
+  controller.reset()
+  assert.equal(controller.getState().launchReady, true)
+  assert.equal(controller.getState().signedInLaunch, true)
+})
+
+test('signed in: there is nothing to lock, so locking does nothing and says nothing', async () => {
+  const api = fakeApi({ session: true, signedIn: true })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.lock()
+  assert.equal(api.calls.forget, 0)
+  assert.equal(controller.getState().launchReady, true)
+  assert.equal(controller.getState().message, '')
+})
+
+test('signed in: a refused start because the sign-in ended says so, and never asks for a launch code', async () => {
+  const api = fakeApi({ session: true, signedIn: true, launch: new MeetingApiError('no', { status: 401, code: 'session-required' }) })
+  const { controller, clients } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  const state = controller.getState()
+  assert.equal(state.phase, 'idle')
+  assert.equal(state.launchReady, false)
+  assert.equal(state.signedInLaunch, false)
+  assert.match(state.message, /sign-in has ended/i)
+  assert.doesNotMatch(state.message, /launch code/i)
+  assert.equal(clients.made.length, 0)
+})
+
+test('signed in but not allowed to start meetings: the message is about the account, not a code', async () => {
+  const api = fakeApi({ session: true, signedIn: true, launch: new MeetingApiError('no', { status: 403, code: 'forbidden' }) })
+  const { controller } = build({ api })
+  await controller.refreshLaunchSession()
+  await controller.start({})
+  assert.match(controller.getState().message, /account is not allowed to start meetings/i)
 })
 
 // ---- the same attempt is the same meeting --------------------------------------------------------------------
