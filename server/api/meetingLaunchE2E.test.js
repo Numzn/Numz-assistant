@@ -125,7 +125,7 @@ test('launch from the browser: code, ticket, live relay, end with the ticket, an
     server = await startServer({ dbFile: path.join(dir, 'speech.sqlite'), speechPort: speech.address().port })
     assert.match(server.logs.join(''), /\[meetings\] browser launch: enabled/)
 
-    const health = await api(server.base, 'GET', '/health')
+    const health = await api(server.base, 'GET', '/health/detail')
     assert.deepEqual(health.body.meetings.launch, { enabled: true })
 
     // Launch needs the code; the response carries the meeting's own ticket.
@@ -170,7 +170,7 @@ test('without a launch code the server says so, refuses to launch, and persisten
   try {
     server = await startServer({ dbFile: path.join(dir, 'speech.sqlite'), speechPort: 9, launchCode: '' })
     assert.match(server.logs.join(''), /\[meetings\] browser launch: DISABLED/)
-    const health = await api(server.base, 'GET', '/health')
+    const health = await api(server.base, 'GET', '/health/detail')
     assert.deepEqual(health.body.meetings.launch, { enabled: false })
     assert.equal(health.body.meetings.ready, true, 'the admin and ticket path is unaffected')
     const refused = await api(server.base, 'POST', '/meetings/launch', { code: LAUNCH, body: {} })

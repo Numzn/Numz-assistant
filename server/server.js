@@ -268,11 +268,10 @@ function createApp() {
       assistant: { auth: access.status() }
     }
   }
-  // The public health answer (the container's own check, the page's "is the server up") says only that it is up. With per-person
-  // sign-in the details (which model, which provider address, meeting settings) are for signed-in people.
+  // The public health answer (the container's own check, the host's service monitor) says only that it is up. Which model, which provider
+  // address and the meeting settings are for signed-in people (/health/detail).
   app.get('/api/v1/health', (_req, res) => {
-    if (authMode === 'broker') return res.json({ ok: true, service: 'ai-assistant-api', assistant: { auth: access.status() } })
-    res.json(healthDetail())
+    res.json({ ok: true, service: 'ai-assistant-api', assistant: { auth: access.status() } })
   })
   app.get('/api/v1/health/detail', access.requireSession('chat'), (_req, res) => res.json(healthDetail()))
 

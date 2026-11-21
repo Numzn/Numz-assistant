@@ -103,7 +103,7 @@ test('end to end: one meeting survives a disconnect, a reconnect, and a process 
     const { base } = server
 
     // 0. Configuration is visible: the health endpoint says persistence is ready, and the log says why.
-    const health = await api(base, 'GET', '/health')
+    const health = await api(base, 'GET', '/health/detail')
     assert.equal(health.body.meetings.ready, true)
     assert.deepEqual(health.body.meetings.auth, { admin: true, tickets: true })
     assert.doesNotMatch(JSON.stringify(health.body), new RegExp(`${ADMIN}|${TICKET_SECRET}`), 'health never contains a secret')
