@@ -22,7 +22,7 @@ import { createChatView } from './interfaces/chat/chatView.js'
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 import { createHistoryApi } from './interfaces/history/historyApi.js'
 import { createRecentConversations, createSidebar, enableWebFonts, loadModelLabel, watchOnline } from './interfaces/layout/workspace.js'
-import { createAccessApi, createAccessController, watchForUnauthorized } from './interfaces/auth/access.js'
+import { createAccessApi, createAccessController, installCsrfHeader, watchForUnauthorized } from './interfaces/auth/access.js'
 import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 
 // The script has arrived, so the web fonts may start downloading now (before, they shared a slow connection with it).
@@ -98,13 +98,16 @@ if (stateBadgeEl) {
 
 // The assistant may need an access code (the server says so). Asked before anything else is requested; a refusal
 // later (the login expired) shows the same card. Unlocking reloads the page, so everything starts fresh.
+const accessApi = createAccessApi()
 const accessController = createAccessController({
-  api: createAccessApi(),
+  api: accessApi,
   onUnlocked: () => globalThis.location?.reload()
 })
 createAccessGateView({ controller: accessController })
 watchForUnauthorized(globalThis, () => accessController.require())
-accessController.start()
+let accessStarted = null
+installCsrfHeader(globalThis, () => accessApi.csrfToken(), () => accessStarted)
+accessStarted = accessController.start()
 
 assistantController.init().catch((err) => {
   console.error('[assistant] init failed', err)

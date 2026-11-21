@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 import { MeetingApiError } from './meetingApi.js'
 import { normalizeCaptureMode } from '../voice/captureSources.js'
 import { createIntelligenceStore } from './meetingIntelligenceStore.js'
@@ -20,7 +22,7 @@ import { createIntelligenceStore } from './meetingIntelligenceStore.js'
 
 /** Must match server/websocket/liveSpeechRelay.js: the relay accepts a ticket only as [TICKET_PROTOCOL, token]. */
 export const TICKET_PROTOCOL = 'numz.meeting-ticket.v1'
-export const LIVE_SPEECH_PATH = '/api/v1/live-speech'
+export const LIVE_SPEECH_PATH = withBase('/api/v1/live-speech')
 
 const MAX_LINES = 500
 const DEFAULT_RETRY_DELAYS_MS = [1500, 2000, 3000, 4000, 5000, 5000]

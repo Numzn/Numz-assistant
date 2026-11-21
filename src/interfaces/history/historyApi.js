@@ -1,9 +1,11 @@
+import { withBase } from '../../core/apiPaths.js'
+
 /**
  * The browser's view of saved conversations: list, open, delete one, delete all. These are the routes in
  * server/routes/assistant.js; nothing here is invented.
  */
 
-const BASE = '/api/v1/assistant/conversations'
+const BASE = withBase('/api/v1/assistant/conversations')
 
 export class HistoryApiError extends Error {
   constructor(message, { status = 0, code = 'network' } = {}) {

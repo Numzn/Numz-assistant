@@ -46,3 +46,17 @@ test('the files that should be portable do not hard-code a tailnet name or addre
     assert.doesNotMatch(text, /\b100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/, `${file} contains a Tailscale address`)
   }
 })
+
+test('the build can be made for a base path: assets and the API prefix follow it; by default it is the root', async () => {
+  const saved = process.env.VITE_PUBLIC_BASE
+  try {
+    delete process.env.VITE_PUBLIC_BASE
+    assert.equal((await viteConfig({ mode: 'production', command: 'build' })).base, '/')
+    process.env.VITE_PUBLIC_BASE = '/ai/'
+    assert.equal((await viteConfig({ mode: 'production', command: 'build' })).base, '/ai/')
+  } finally {
+    if (saved === undefined) delete process.env.VITE_PUBLIC_BASE
+    else process.env.VITE_PUBLIC_BASE = saved
+  }
+  assert.match(readFileSync(new URL('../Dockerfile.production', import.meta.url), 'utf8'), /ARG VITE_PUBLIC_BASE=\/ai\//, 'the production image is built for /ai/')
+})

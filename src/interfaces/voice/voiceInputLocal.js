@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 import { createPorcupineWake } from './porcupineWake.js'
 import { createVoiceInputWebSpeech } from './voiceInputWebSpeech.js'
 import { getMediaDevices, pickMimeType, speechAudioConstraints, stopTracks } from './micUtils.js'
@@ -16,7 +18,7 @@ function createUnsupportedError() {
 const MIN_ECHO_SAMPLES = 4
 
 export function createVoiceInputLocal({
-  endpoint = '/api/v1/assistant/stt',
+  endpoint = withBase('/api/v1/assistant/stt'),
   lang = 'en-US',
   prompt = '',
   sttBackend = 'local',
@@ -25,7 +27,7 @@ export function createVoiceInputLocal({
   wakeDebounceMs = 1500,
   accessKey = '',
   keywordPublicPath = '',
-  modelPublicPath = '/porcupine/porcupine_params_en.pv',
+  modelPublicPath = withBase('/porcupine/porcupine_params_en.pv'),
   keywordLabel = 'numz',
   wakePhrases = ['numz', 'hello numz', 'hi numz'],
   vadSilenceMs = 1800,

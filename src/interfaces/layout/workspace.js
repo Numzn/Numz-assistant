@@ -1,3 +1,5 @@
+import { withBase } from '../../core/apiPaths.js'
+
 /**
  * The chrome around the conversation: the sidebar (recent conversations, and the drawer it becomes on small
  * screens), the online dot in the header, and the model label by the composer. Everything shown comes from the
@@ -167,7 +169,7 @@ export function watchOnline({ dot, win = globalThis }) {
 /** The model the server says it is using, or null (not configured, unreachable, or an answer we do not know). */
 export async function loadModelLabel({ fetchFn = (...args) => globalThis.fetch(...args) } = {}) {
   try {
-    const res = await fetchFn('/api/v1/health', { method: 'GET' })
+    const res = await fetchFn(withBase('/api/v1/health/detail'), { method: 'GET' })
     if (!res.ok) return null
     const health = await res.json()
     const model = typeof health?.aiModel === 'string' ? health.aiModel.trim() : ''

@@ -12,6 +12,10 @@ export default defineConfig(({ mode }) => {
   return {
     root: '.',
     publicDir: 'public',
+    // Served under /ai/ on the shared site: the production build is made with VITE_PUBLIC_BASE=/ai/ (Dockerfile.production), which puts the
+    // prefix on every script, style and asset address and on import.meta.env.BASE_URL (src/core/apiPaths.js uses it for the API). The
+    // server takes the prefix off again, so the same build also answers at the root. Without it (dev server, tests) the base is '/'.
+    base: process.env.VITE_PUBLIC_BASE || env.VITE_PUBLIC_BASE || '/',
     // Three pages: the Home screen, the conversation history screen and the Smart Camera.
     build: {
       rollupOptions: {

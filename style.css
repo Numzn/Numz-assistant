@@ -1329,7 +1329,8 @@ a.ghost {
   background: color-mix(in srgb, var(--bg) 97%, transparent);
 }
 
-#accessForm {
+#accessForm,
+#accessGoogle {
   display: grid;
   gap: 12px;
   width: min(380px, 100%);
@@ -1339,13 +1340,15 @@ a.ghost {
   background: var(--surface);
 }
 
-#accessForm h2 {
+#accessForm h2,
+#accessGoogle h2 {
   margin: 0;
   font-size: 20px;
   font-weight: 500;
 }
 
-#accessHint {
+#accessHint,
+#accessGoogleHint {
   margin: 0;
   color: var(--text-muted);
   font-size: 14px;
@@ -1360,7 +1363,8 @@ a.ghost {
   font-size: 16px;
 }
 
-#accessError {
+#accessError,
+#accessGoogleNotice {
   margin: 0;
   color: var(--danger);
   font-size: 14px;
@@ -2632,4 +2636,16 @@ body[data-page="camera"] [hidden] {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* The Google sign-in button is a link styled as the card's primary action. */
+#accessGoogleButton {
+  display: inline-flex;
+  justify-content: center;
+  text-decoration: none;
+}
+
+#accessForm[hidden],
+#accessGoogle[hidden] {
+  display: none;
 }
