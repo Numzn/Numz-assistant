@@ -82,7 +82,7 @@ export function createNativeCapture({ invoke = defaultInvoke() } = {}) {
       return {
         platform: String(s?.platform ?? ''),
         session: String(s?.session ?? ''),
-        modes: { screen: s?.modes?.screen === true, window: s?.modes?.window === true, region: s?.modes?.region === true },
+        modes: { screen: s?.modes?.screen === true, window: s?.modes?.window === true, region: s?.modes?.region === true, watch: s?.modes?.watch === true },
         permission: ['granted', 'denied', 'prompt', 'unknown'].includes(s?.permission) ? s.permission : 'unknown',
         note: typeof s?.note === 'string' ? s.note : ''
       }
@@ -110,6 +110,34 @@ export function createNativeCapture({ invoke = defaultInvoke() } = {}) {
       const out = await call('screenshot_export', { captureId, rect, maxSide, quality })
       if (!out || typeof out.data !== 'string') throw new CaptureError('capture-failed', MESSAGES['capture-failed'])
       return { bytes: fromBase64(out.data), mimeType: out.mimeType === 'image/png' ? 'image/png' : 'image/jpeg', width: Number(out.width) || 0, height: Number(out.height) || 0 }
+    },
+
+    // ---- automatic capture for a study session (the watcher in the desktop app): the screen is looked at on a timer, never recorded, and
+    // never while an excluded window (a password manager, a sign-in screen, anything the person listed) is open. If the page stops asking
+    // for results the watcher stops itself.
+    async watchStart({ intervalMs = 2500, excludeApps = [], excludeTitles = [] } = {}) {
+      return call('screenshot_watch_start', { intervalMs, excludeApps, excludeTitles })
+    },
+    /** -> { status: 'watching'|'paused'|'stopped', pending: { captureId, width, height, preview }|null, stats, stoppedBecause, excludedNow } */
+    async watchPoll() {
+      const p = await call('screenshot_watch_poll', {})
+      return {
+        status: ['watching', 'paused', 'stopped'].includes(p?.status) ? p.status : 'stopped',
+        pending: p?.pending && typeof p.pending.captureId === 'string' ? { captureId: p.pending.captureId, width: Number(p.pending.width) || 0, height: Number(p.pending.height) || 0, preview: String(p.pending.preview ?? '') } : null,
+        stats: { looks: Number(p?.stats?.looks) || 0, reported: Number(p?.stats?.reported) || 0, skippedExcluded: Number(p?.stats?.skippedExcluded) || 0 },
+        stoppedBecause: typeof p?.stoppedBecause === 'string' ? p.stoppedBecause : null,
+        excludedNow: p?.excludedNow === true
+      }
+    },
+    watchPause: () => call('screenshot_watch_pause', {}),
+    watchResume: () => call('screenshot_watch_resume', {}),
+    async watchStop() {
+      if (!available) return
+      try {
+        await invoke('screenshot_watch_stop', {})
+      } catch {
+        /* the watcher also stops by itself when nothing asks for results */
+      }
     },
 
     async discard(captureId) {

@@ -1,0 +1,375 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { CaptureError } from '../src/interfaces/screenshot/nativeCapture.js'
+import { AcademicApiError } from '../src/interfaces/academic/academicApi.js'
+import { createStudyController } from '../src/interfaces/academic/studyController.js'
+
+const tick = () => new Promise((resolve) => setImmediate(resolve))
+async function until(fn, tries = 200) {
+  for (let i = 0; i < tries; i++) {
+    if (await fn()) return true
+    await tick()
+  }
+  throw new Error('condition never became true')
+}
+const err = (status, code, message = code, extra = {}) => new AcademicApiError(message, { status, code, ...extra })
+
+function fakeNative({ available = true, watch = true } = {}) {
+  const calls = { start: [], poll: 0, pause: 0, resume: 0, stop: 0, export: [], discard: [] }
+  const script = { polls: [], startError: null }
+  return {
+    available,
+    calls,
+    script,
+    async status() {
+      return { platform: 'linux', session: 'x11', modes: { screen: true, window: true, region: true, watch }, permission: 'granted', note: '' }
+    },
+    async watchStart(args) {
+      calls.start.push(args)
+      if (script.startError) throw script.startError
+      return { status: 'watching' }
+    },
+    async watchPoll() {
+      calls.poll++
+      const next = script.polls.length > 1 ? script.polls.shift() : script.polls[0]
+      if (next instanceof Error) throw next
+      return next ?? { status: 'watching', pending: null, stats: { looks: 0, reported: 0, skippedExcluded: 0 }, stoppedBecause: null, excludedNow: false }
+    },
+    async watchPause() {
+      calls.pause++
+    },
+    async watchResume() {
+      calls.resume++
+    },
+    async watchStop() {
+      calls.stop++
+    },
+    async exportCapture(args) {
+      calls.export.push(args)
+      return { bytes: new Uint8Array([1, 2, 3]), mimeType: 'image/jpeg', width: 10, height: 10 }
+    },
+    async discard(id) {
+      calls.discard.push(id)
+    }
+  }
+}
+
+const session = (over = {}) => ({ id: 's1', sessionType: 'study', status: 'active', courseId: 'c1', activeTopic: 'normal forms', captureEnabled: true, autoAnswer: false, useResearch: false, ...over })
+const polled = (over = {}) => ({ status: 'watching', pending: null, stats: { looks: 3, reported: 1, skippedExcluded: 0 }, stoppedBecause: null, excludedNow: false, ...over })
+const pending = (id = 'cap-1') => ({ captureId: id, width: 100, height: 50, preview: 'data:image/jpeg;base64,AAAA' })
+const recognised = (over = {}) => ({ captureId: 'k1', status: 'recognised', questions: [{ id: 'q1', text: 'Explain third normal form.', options: [], task: 'explain', duplicate: false }], context: { courseId: 'c1' }, signals: [], ...over })
+const answered = (over = {}) => ({ status: 'answered', answerId: 'a1', questionId: 'q1', courseId: 'c1', topic: 'third normal form', approach: 'step_by_step', markdown: 'It means… [S1]', sources: [], grounding: 'course', evidence: {}, flags: {}, task: 'explain', savedToConversation: true, ...over })
+
+function fakeApi() {
+  const calls = { start: [], update: [], stop: 0, pause: 0, resume: 0, send: [], answer: [], ask: [], concept: [], feedback: [] }
+  const script = { start: async (o) => session({ sessionType: o.type, captureEnabled: o.captureEnabled, autoAnswer: o.autoAnswer }), send: async () => recognised(), answer: async () => answered(), ask: async () => answered(), concept: async () => answered(), feedback: async () => ({ recorded: true }), current: { session: null }, courses: { courses: [{ id: 'c1', title: 'Databases' }] } }
+  return {
+    calls,
+    script,
+    courses: { list: async () => script.courses },
+    sessions: {
+      start: async (o) => (calls.start.push(o), script.start(o)),
+      current: async () => script.current,
+      update: async (id, patch) => (calls.update.push([id, patch]), session({ ...patch })),
+      pause: async () => (calls.pause++, session({ status: 'paused' })),
+      resume: async () => (calls.resume++, session()),
+      stop: async () => (calls.stop++, session({ status: 'ended' }))
+    },
+    sendCapture: async (id, image) => (calls.send.push([id, image]), script.send()),
+    answer: async (id, q, o) => (calls.answer.push([q, o]), script.answer()),
+    ask: async (id, text, o) => (calls.ask.push([text, o]), script.ask()),
+    concept: async (id, c, o) => (calls.concept.push([c, o]), script.concept()),
+    feedback: async (b) => (calls.feedback.push(b), script.feedback())
+  }
+}
+
+function build({ native = fakeNative(), api = fakeApi(), conversation = 'conv-1' } = {}) {
+  const exchanges = []
+  // The watcher's loop waits between looks. In a test that fails before it stops the controller, an endless loop would hold the process
+  // open: after a generous number of waits the wait simply never returns (a pending promise does not keep Node alive).
+  let waits = 0
+  const wait = () => (++waits > 20_000 ? new Promise(() => {}) : tick())
+  const controller = createStudyController({ api, native, getConversationId: () => conversation, onExchange: (e) => exchanges.push(e), getExclusions: () => ({ apps: ['slack'], titles: ['payroll'] }), wait })
+  return { controller, api, native, exchanges }
+}
+
+test('a plain browser has no screen reading, and says so; an existing session is picked up but never starts reading the screen by itself', async () => {
+  const t = build({ native: fakeNative({ available: false }) })
+  await t.controller.init()
+  assert.equal(t.controller.getState().watch.available, false)
+  assert.match(t.controller.getState().watch.note, /needs the NUMZ AI desktop app/)
+  assert.deepEqual(t.controller.getState().courses.map((c) => c.title), ['Databases'])
+  await t.controller.start({ type: 'study', captureEnabled: true })
+  assert.equal(t.api.calls.start.length, 0, 'asked for screen reading where it cannot be had: nothing was started')
+  assert.equal(t.controller.getState().phase, 'idle')
+
+  const back = build()
+  back.api.script.current = { session: session() }
+  await back.controller.init()
+  assert.equal(back.controller.getState().phase, 'active')
+  assert.equal(back.controller.getState().watch.status, 'off')
+  assert.match(back.controller.getState().message, /Screen reading is off after reloading/)
+  assert.equal(back.native.calls.start.length, 0)
+  await back.controller.resumeWatching()
+  assert.equal(back.controller.getState().watch.status, 'watching')
+  assert.equal(back.native.calls.start.length, 1)
+  await back.controller.destroy()
+})
+
+test('starting a study session with screen reading starts the watcher with the person\'s exclusions; a restricted session never touches it', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', topic: 'normal forms', captureEnabled: true, autoAnswer: false })
+  assert.deepEqual(t.api.calls.start[0], { type: 'study', courseId: 'c1', topic: 'normal forms', captureEnabled: true, autoAnswer: false })
+  assert.deepEqual(t.native.calls.start, [{ excludeApps: ['slack'], excludeTitles: ['payroll'] }])
+  assert.equal(t.controller.getState().phase, 'active')
+  assert.equal(t.controller.getState().watch.status, 'watching')
+  await t.controller.stop()
+
+  const r = build()
+  await r.controller.init()
+  await r.controller.start({ type: 'restricted', courseId: 'c1', captureEnabled: true, autoAnswer: true })
+  assert.deepEqual([r.api.calls.start[0].captureEnabled, r.api.calls.start[0].autoAnswer], [false, false], 'the page never even asks')
+  assert.equal(r.native.calls.start.length, 0)
+  assert.equal(r.controller.getState().watch.status, 'off')
+  assert.equal(r.controller.getState().phase, 'active')
+})
+
+test('if the server refuses to start the session nothing is left running; if the watcher cannot start, the session keeps going with screen reading OFF and says why', async () => {
+  const refused = build()
+  await refused.controller.init()
+  refused.api.script.start = async () => {
+    throw err(404, 'course-not-found', 'That course does not exist.')
+  }
+  await refused.controller.start({ type: 'study', courseId: 'gone', captureEnabled: true })
+  assert.equal(refused.controller.getState().phase, 'idle')
+  assert.equal(refused.native.calls.start.length, 0)
+  assert.equal(refused.controller.getState().message, 'That course does not exist.')
+
+  const t = build()
+  await t.controller.init()
+  t.native.script.startError = new CaptureError('permission-denied', 'NUMZ AI is not allowed to capture the screen.')
+  await t.controller.start({ type: 'study', captureEnabled: true })
+  assert.equal(t.controller.getState().phase, 'active')
+  assert.equal(t.controller.getState().watch.status, 'off')
+  assert.deepEqual(t.api.calls.update, [['s1', { captureEnabled: false }]], 'the server is told screen reading is off')
+  assert.match(t.controller.getState().message, /Screen reading could not start: NUMZ AI is not allowed to capture the screen\./)
+})
+
+test('a changed screen reported by the watcher is sent for reading and its question appears once; the native copy is always let go', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  t.native.script.polls = [polled({ pending: pending('cap-1') }), polled()]
+  await until(() => t.controller.getState().questions.length === 1)
+  assert.deepEqual(t.native.calls.export[0], { captureId: 'cap-1', maxSide: 1600, quality: 80 })
+  assert.deepEqual(t.native.calls.discard, ['cap-1'])
+  assert.equal(t.api.calls.send[0][0], 's1')
+  assert.deepEqual([...t.api.calls.send[0][1].bytes], [1, 2, 3])
+  const q = t.controller.getState().questions[0]
+  assert.deepEqual([q.id, q.state, q.task], ['q1', 'new', 'explain'])
+  assert.match(t.controller.getState().message, /Found a question on your screen/)
+  assert.equal(t.controller.getState().watch.reported, 1)
+
+  t.api.script.send = async () => recognised({ questions: [{ id: 'q1', text: 'Explain third normal form.', duplicate: true }] })
+  t.native.script.polls = [polled({ pending: pending('cap-2') }), polled()]
+  await until(() => t.native.calls.discard.length === 2)
+  await tick()
+  assert.equal(t.controller.getState().questions.length, 1, 'the same question is not listed twice')
+  await t.controller.stop()
+})
+
+test('things that are not questions, a failing read or a busy server are quiet; the end of the session ends everything; the daily limit pauses reading', async () => {
+  const quietCase = async (result) => {
+    const t = build()
+    await t.controller.init()
+    await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+    if (result instanceof Error) t.api.script.send = async () => { throw result }
+    else t.api.script.send = async () => result
+    t.native.script.polls = [polled({ pending: pending() }), polled()]
+    await until(() => t.api.calls.send.length === 1)
+    await tick()
+    await tick()
+    return t
+  }
+  for (const result of [{ status: 'no-question', questions: [] }, { status: 'not-academic', questions: [] }, { status: 'unclear', questions: [] }, { status: 'duplicate', questions: [] }, err(429, 'capture-rate-limited'), err(409, 'capture-busy'), err(502, 'read-failed'), err(0, 'network')]) {
+    const t = await quietCase(result)
+    assert.equal(t.controller.getState().questions.length, 0)
+    assert.equal(t.controller.getState().phase, 'active', 'and the session carries on')
+    assert.equal(t.controller.getState().watch.status, 'watching')
+    await t.controller.stop()
+  }
+  const ended = await quietCase(err(409, 'session-ended', 'That study session has ended.'))
+  await until(() => ended.controller.getState().phase === 'idle')
+  assert.equal(ended.native.calls.stop, 1)
+  assert.match(ended.controller.getState().message, /study session has ended/)
+
+  const limited = await quietCase(err(429, 'daily-limit', 'You have reached the day\'s limit for study screens read.'))
+  await until(() => limited.controller.getState().watch.status === 'paused')
+  assert.equal(limited.native.calls.pause, 1)
+  assert.match(limited.controller.getState().message, /Screen reading is paused/)
+  await limited.controller.stop()
+})
+
+test('a question can be answered by itself when the person asked for that, but never when the screen looks like an assessment', async () => {
+  const auto = build()
+  await auto.controller.init()
+  auto.api.script.start = async (o) => session({ captureEnabled: true, autoAnswer: true })
+  await auto.controller.start({ type: 'practice', courseId: 'c1', captureEnabled: true, autoAnswer: true })
+  auto.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => auto.api.calls.answer.length === 1)
+  await until(() => auto.controller.getState().questions[0]?.state === 'answered')
+  assert.equal(auto.exchanges.length, 1)
+  assert.deepEqual(auto.exchanges[0], { question: 'Explain third normal form.', answer: 'It means… [S1]' })
+  await auto.controller.stop()
+
+  const flagged = build()
+  await flagged.controller.init()
+  flagged.api.script.start = async () => session({ captureEnabled: true, autoAnswer: true })
+  flagged.api.script.send = async () => recognised({ signals: ['closed-book'] })
+  await flagged.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: true })
+  flagged.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => flagged.controller.getState().questions.length === 1)
+  await tick()
+  await tick()
+  assert.equal(flagged.api.calls.answer.length, 0, 'nothing is answered on its own when the screen says it may be an examination')
+  await flagged.controller.stop()
+})
+
+test('an answer joins the conversation and the answer card; a screen that may be an exam asks the person first; an unclear course asks which', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.controller.getState().questions.length === 1)
+
+  t.api.script.answer = async () => ({ status: 'confirm-required', signals: ['closed-book'], message: 'This screen looks like a formal assessment…' })
+  await t.controller.answerQuestion('q1')
+  let q = t.controller.getState().questions[0]
+  assert.deepEqual([q.state, q.signals], ['confirm', ['closed-book']])
+  assert.match(q.message, /formal assessment/)
+  assert.equal(t.exchanges.length, 0)
+
+  t.api.script.answer = async () => answered()
+  await t.controller.answerQuestion('q1', { confirmPractice: true })
+  assert.equal(t.api.calls.answer[1][1].confirmPractice, true)
+  assert.equal(t.api.calls.answer[1][1].conversationId, 'conv-1')
+  q = t.controller.getState().questions[0]
+  assert.equal(q.state, 'answered')
+  assert.equal(t.controller.getState().lastAnswer.answerId, 'a1')
+  assert.equal(t.exchanges.length, 1)
+
+  t.api.script.answer = async () => ({ status: 'needs-course', candidates: [{ courseId: 'c1', title: 'Databases' }], message: 'Which course is this question from?' })
+  await t.controller.answerQuestion('q1')
+  assert.equal(t.controller.getState().questions[0].state, 'needs-course')
+  assert.equal(t.controller.getState().questions[0].candidates[0].title, 'Databases')
+
+  t.api.script.answer = async () => {
+    throw err(502, 'answer-failed', 'An answer could not be worked out just now. Try again.')
+  }
+  await t.controller.answerQuestion('q1')
+  assert.deepEqual([t.controller.getState().questions[0].state, t.controller.getState().questions[0].message], ['failed', 'An answer could not be worked out just now. Try again.'])
+  await t.controller.stop()
+})
+
+test('a paused session reads nothing and answers nothing; resume starts again; stop ends the watcher and the session and forgets the questions', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.controller.getState().questions.length === 1)
+  await t.controller.pause()
+  assert.equal(t.controller.getState().phase, 'paused')
+  assert.equal(t.controller.getState().watch.status, 'paused')
+  assert.equal(t.native.calls.pause, 1)
+  assert.equal(await t.controller.answerQuestion('q1'), null, 'not while paused')
+  assert.equal(await t.controller.ask('What is a key?'), null)
+  await t.controller.resume()
+  assert.equal(t.controller.getState().phase, 'active')
+  assert.equal(t.controller.getState().watch.status, 'watching')
+  assert.equal(t.native.calls.resume, 1)
+  await t.controller.stop()
+  const s = t.controller.getState()
+  assert.deepEqual([s.phase, s.session, s.questions.length, s.lastAnswer, s.watch.status], ['idle', null, 0, null, 'off'])
+  assert.equal(t.native.calls.stop, 1)
+  assert.equal(t.api.calls.stop, 1)
+  const polls = t.native.calls.poll
+  await tick()
+  await tick()
+  assert.equal(t.native.calls.poll, polls, 'the page stopped asking the app for results')
+})
+
+test('if the app stops answering, or stops the watcher itself, the person is told and reading is off', async () => {
+  const dead = build()
+  await dead.controller.init()
+  await dead.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  dead.native.script.polls = [new Error('bridge gone')]
+  await until(() => dead.controller.getState().watch.status === 'off')
+  assert.match(dead.controller.getState().message, /desktop app did not answer/)
+
+  const gone = build()
+  await gone.controller.init()
+  await gone.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  gone.native.script.polls = [polled({ status: 'stopped', stoppedBecause: 'page-gone' })]
+  await until(() => gone.controller.getState().watch.status === 'off')
+  assert.match(gone.controller.getState().message, /this page stopped checking in/)
+})
+
+test('typed questions and concepts: answered, shown, and refused with the server\'s own words in a restricted session', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1' })
+  const outcome = await t.controller.ask('What is a primary key?', { topic: 'keys' })
+  assert.equal(outcome.status, 'answered')
+  assert.deepEqual(t.api.calls.ask[0], ['What is a primary key?', { conversationId: 'conv-1', topic: 'keys', courseId: null, style: null, instruction: null, confirmPractice: false }])
+  assert.equal(t.controller.getState().questions.at(-1).state, 'answered')
+  assert.equal(t.exchanges.length, 1)
+  assert.equal(await t.controller.ask('   '), null)
+
+  const r = build()
+  await r.controller.init()
+  await r.controller.start({ type: 'restricted', courseId: 'c1' })
+  r.api.script.ask = async () => {
+    throw err(403, 'restricted-assessment', 'This session is marked as a restricted assessment, so NUMZ AI will not read the screen or answer the question.', { details: { offer: 'explain_concept' } })
+  }
+  assert.equal(await r.controller.ask('What is third normal form?'), null)
+  assert.match(r.controller.getState().message, /restricted assessment/)
+  assert.equal(r.controller.getState().questions.length, 0)
+  const concept = await r.controller.explainConcept('third normal form')
+  assert.equal(concept.status, 'answered')
+  assert.equal(r.api.calls.concept[0][0], 'third normal form')
+  r.api.script.concept = async () => {
+    throw err(400, 'concept-looks-like-question', 'In a restricted session, name the concept you want explained.')
+  }
+  assert.equal(await r.controller.explainConcept('Explain why a table in 2NF may fail 3NF and give a long worked example'), null)
+  assert.match(r.controller.getState().message, /name the concept/)
+})
+
+test('feedback: what helped is remembered with the approach used, "simpler" asks the same question again, an explanation can be kept as a note', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', topic: 'normal forms' })
+  assert.equal(await t.controller.feedback('helpful'), null, 'nothing to give feedback on yet')
+  await t.controller.ask('Explain third normal form.')
+  await t.controller.feedback('helpful')
+  assert.deepEqual(t.api.calls.feedback[0], { kind: 'helpful', courseId: 'c1', topic: 'third normal form', note: null, approach: 'step_by_step' })
+  assert.match(t.controller.getState().message, /NUMZ AI will remember that/)
+  await t.controller.feedback('correction', { note: 'it is not transitive on the key' })
+  assert.equal(t.api.calls.feedback[1].note, 'it is not transitive on the key')
+  await t.controller.feedback('save_concept')
+  assert.deepEqual(t.api.calls.feedback[2], { kind: 'save_concept', courseId: 'c1', topic: 'third normal form', text: 'It means… [S1]' })
+  assert.match(t.controller.getState().message, /Saved to your course materials/)
+
+  t.api.script.feedback = async () => ({ recorded: false, reason: 'adaptive-learning-off' })
+  await t.controller.feedback('not_helpful')
+  assert.match(t.controller.getState().message, /Adaptive learning is off, so nothing was remembered/)
+  t.api.script.feedback = async () => ({ recorded: false, reason: 'no-course' })
+  await t.controller.feedback('helpful')
+  assert.match(t.controller.getState().message, /Choose a course for this session/)
+
+  const before = t.api.calls.answer.length
+  t.controller.getState().questions.at(-1)
+  await t.controller.feedback('simpler')
+  assert.equal(t.api.calls.answer.length, before + 1)
+  assert.equal(t.api.calls.answer.at(-1)[1].style, 'simpler')
+})
