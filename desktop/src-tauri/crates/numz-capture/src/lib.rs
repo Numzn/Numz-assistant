@@ -24,6 +24,8 @@ pub mod watch;
 mod backend;
 
 pub use backend::native_backend;
+#[cfg(windows)]
+pub use backend::request_borderless_access;
 pub use image::RgbaImage;
 use serde::Serialize;
 

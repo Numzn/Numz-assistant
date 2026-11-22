@@ -14,9 +14,10 @@ serde = { version = "1", features = ["derive"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 xcap = { version = "0.9", default-features = false }
 
-# Windows: Windows Graphics Capture, with the operating system's own border and cursor defaults left alone.
+# Windows: Windows Graphics Capture. The cursor is left at the system default; the outline is asked to be off (with the system's consent).
 [target.'cfg(windows)'.dependencies]
 windows-capture = "2"
+windows = { version = "0.62", features = ["Graphics_Capture", "Security_Authorization_AppCapabilityAccess", "Foundation"] }
 
 # macOS: ScreenCaptureKit (macOS 14 or later for stills). The system asks for the Screen Recording permission itself.
 [target.'cfg(target_os = "macos")'.dependencies]

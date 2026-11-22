@@ -28,6 +28,9 @@ fn main() {
         Some("with") => DrawBorderSettings::WithBorder,
         _ => DrawBorderSettings::Default,
     };
+    if args.first().map(String::as_str) == Some("none") {
+        println!("asking Windows for borderless access: {}", numz_capture::request_borderless_access());
+    }
     let seconds: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
     let monitor = Monitor::primary().expect("a primary monitor");
     let settings = Settings::new(monitor, CursorCaptureSettings::Default, border, SecondaryWindowSettings::Default, MinimumUpdateIntervalSettings::Default, DirtyRegionSettings::Default, ColorFormat::Rgba8, ());

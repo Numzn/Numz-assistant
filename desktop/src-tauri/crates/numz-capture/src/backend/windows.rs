@@ -1,14 +1,15 @@
 //! Windows: Windows Graphics Capture, one frame.
 //!
 //! Windows draws a yellow outline around the screen or window being captured. For a screenshot that flashes at the edge of the screen on every
-//! capture, and a study session that reads the screen every few seconds would flash it all the time. So each capture first asks Windows for
-//! NO outline (`IsBorderRequired = false`); if this Windows will not allow it (older than Windows 10 2104, or the person's privacy settings say
-//! no), that is remembered and the capture is made with the outline, because a screenshot that works with an outline beats none. The
-//! application's own indicator (the window title and the panel's "screen reading ON") says when the screen is being read.
-//! The cursor setting is left at the system default.
+//! capture, and a study session that reads the screen every few seconds would flash it all the time. Windows lets an app capture without the
+//! outline only after the app has ASKED for that (`GraphicsCaptureAccess`, Borderless) and the system, or the person in Settings > Privacy &
+//! security > Screenshot borders, has allowed it. Setting `IsBorderRequired = false` WITHOUT that is accepted and silently ignored (measured on
+//! a Windows machine: the outline stayed). So this asks once, and only if the answer is "allowed" does it request no outline; otherwise it
+//! captures with the outline, because a screenshot that works with an outline beats none. The application's own indicator (the window title
+//! and the panel's "screen reading ON") says when the screen is being read. The cursor setting is left at the system default.
 
 use crate::{Backend, CaptureError, Modes, RgbaImage, Support, WindowInfo};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::OnceLock;
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::time::Duration;
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
@@ -53,20 +54,23 @@ impl GraphicsCaptureApiHandler for OneFrame {
     }
 }
 
-/// What Windows said when asked for a capture without the outline: 0 not asked yet, 1 allowed, 2 refused (the outline is shown).
-static BORDERLESS: AtomicU8 = AtomicU8::new(0);
+static ACCESS: OnceLock<String> = OnceLock::new();
 
-/// True when a capture can be made with no outline on this Windows (as far as it has been found out).
-pub fn borderless_allowed() -> Option<bool> {
-    match BORDERLESS.load(Ordering::Relaxed) {
-        1 => Some(true),
-        2 => Some(false),
-        _ => None,
-    }
+/// Asks Windows (once) whether this app may capture without the outline, and returns its answer: "Allowed", "DeniedByUser", "DeniedBySystem",
+/// "NotDeclaredByApp", ... or "unavailable: ..." on a Windows that has no such question. May show Windows' own consent prompt the first time.
+pub fn request_borderless_access() -> &'static str {
+    ACCESS.get_or_init(|| {
+        use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+        match GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless).and_then(|op| op.join()) {
+            Ok(status) => format!("{status:?}"),
+            Err(e) => format!("unavailable: {e}"),
+        }
+    })
 }
 
-/// How many times a capture without the outline failed where one with the outline then worked (two in a row means Windows is refusing).
-static BORDERLESS_MISSES: AtomicU8 = AtomicU8::new(0);
+fn borderless_allowed() -> Option<bool> {
+    ACCESS.get().map(|status| status.eq_ignore_ascii_case("Allowed"))
+}
 
 fn try_frame<T>(item: T, border: DrawBorderSettings) -> Result<RgbaImage, CaptureError>
 where
@@ -96,25 +100,14 @@ fn one_frame<T>(item: T) -> Result<RgbaImage, CaptureError>
 where
     T: TryInto<windows_capture::settings::GraphicsCaptureItemType> + Clone,
 {
-    let state = BORDERLESS.load(Ordering::Relaxed);
-    if state != 2 {
-        match try_frame(item.clone(), DrawBorderSettings::WithoutBorder) {
-            Ok(image) => {
-                BORDERLESS.store(1, Ordering::Relaxed);
-                BORDERLESS_MISSES.store(0, Ordering::Relaxed);
-                return Ok(image);
-            }
-            // Known to work here, so this failure is a real one (a closed window, no permission): report it as it is.
-            Err(failure) if state == 1 => return Err(failure),
-            // Not known to work yet: it may be the setting. Try once more with the outline; only if that works is the setting to blame.
-            Err(_) => {}
+    if request_borderless_access().eq_ignore_ascii_case("Allowed") {
+        if let Ok(image) = try_frame(item.clone(), DrawBorderSettings::WithoutBorder) {
+            return Ok(image);
         }
+        // Allowed, yet it failed: try once more the plain way, so a capture is never lost to this setting. A real failure (a closed window,
+        // no permission) fails the same way here and is reported as it is.
     }
-    let image = try_frame(item, DrawBorderSettings::Default)?;
-    if state != 2 && BORDERLESS_MISSES.fetch_add(1, Ordering::Relaxed) + 1 >= 2 {
-        BORDERLESS.store(2, Ordering::Relaxed);
-    }
-    Ok(image)
+    try_frame(item, DrawBorderSettings::Default)
 }
 
 impl Backend for Native {
@@ -125,7 +118,7 @@ impl Backend for Native {
             modes: Modes { screen: true, window: true, region: true, watch: true },
             permission: "granted".into(),
             note: match borderless_allowed() {
-                Some(false) => "Windows shows an outline around what is captured. To remove it: Settings > Privacy & security > Screenshot borders.".into(),
+                Some(false) => "Windows shows an outline around what is captured. To remove it, allow NUMZ AI under Settings > Privacy & security > Screenshot borders.".into(),
                 _ => String::new(),
             },
         }
