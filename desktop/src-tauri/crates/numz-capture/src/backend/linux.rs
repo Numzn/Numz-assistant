@@ -57,7 +57,7 @@ impl Backend for Native {
                 if width < 80 || height < 60 || title.trim().is_empty() {
                     return None;
                 }
-                Some(WindowInfo { id: w.id().ok()?.to_string(), title, app, width, height })
+                Some(WindowInfo { id: w.id().ok()?.to_string(), title, app, width, height, x: w.x().ok(), y: w.y().ok() })
             })
             .collect())
     }

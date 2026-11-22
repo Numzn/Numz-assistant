@@ -38,7 +38,23 @@ pub fn grid_for(width: u32, height: u32) -> (u32, u32) {
     ((width.div_ceil(CELL_PX)).clamp(MIN_GRID.0, MAX_GRID.0), (height.div_ceil(CELL_PX)).clamp(MIN_GRID.1, MAX_GRID.1))
 }
 
+/// A rectangle of the screen, in screen pixels (the top-left corner can be off the screen: a window half dragged out of view).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Area {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub fn signature(image: &RgbaImage) -> Signature {
+    signature_without(image, &[])
+}
+
+/// The signature with some areas left out: every cell that touches one is set to a fixed value, so whatever happens inside it, in this look
+/// or any other, is never a difference. Used for this app's own window: what NUMZ AI itself shows (an answer arriving, a counter) is not
+/// what is being studied and must not make the screen look new.
+pub fn signature_without(image: &RgbaImage, ignore: &[Area]) -> Signature {
     let (width, height) = grid_for(image.width(), image.height());
     let small = imageops::resize(image, width, height, FilterType::Triangle);
     let cells = small
@@ -47,8 +63,23 @@ pub fn signature(image: &RgbaImage) -> Signature {
             let [r, g, b, _] = px.0;
             ((299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000) as u8
         })
-        .collect();
-    Signature { width, height, cells }
+        .collect::<Vec<u8>>();
+    let mut signature = Signature { width, height, cells };
+    let (sx, sy) = (image.width() as f64 / width as f64, image.height() as f64 / height as f64);
+    for area in ignore {
+        let (left, top) = (area.x as f64, area.y as f64);
+        let (right, bottom) = (left + area.width as f64, top + area.height as f64);
+        let first_col = (left / sx).floor().max(0.0) as u32;
+        let first_row = (top / sy).floor().max(0.0) as u32;
+        let last_col = ((right / sx).ceil().max(0.0) as u32).min(width);
+        let last_row = ((bottom / sy).ceil().max(0.0) as u32).min(height);
+        for row in first_row..last_row {
+            for col in first_col..last_col {
+                signature.cells[(row * width + col) as usize] = 0;
+            }
+        }
+    }
+    signature
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -372,6 +403,33 @@ mod tests {
             }
         }
         assert!(feed(&mut d, &edited, 3).contains(&Verdict::Changed), "text where the caret used to blink counts again");
+    }
+
+    #[test]
+    fn what_changes_inside_an_ignored_area_is_never_a_difference_and_what_changes_outside_it_still_is() {
+        let own_window = Area { x: 1000, y: 100, width: 500, height: 600 };
+        let screen = |inside: &str, outside: &str| {
+            let mut all = lines(30);
+            all[14] = outside.to_string(); // at the left of the page: outside the area
+            let mut page = page(1600, 900, &all);
+            crate::testscreen::draw_text(&mut page, 1020, 300, inside, 2); // inside the area
+            signature_without(&page, &[own_window])
+        };
+        let mut d = Detector::new(Config::default());
+        for _ in 0..3 {
+            d.observe(screen("last read 12:01", "x = 12 + 7;"));
+        }
+        let inside: Vec<_> = (0..40).map(|i| d.observe(screen(&format!("last read 12:{:02}", i + 2), "x = 12 + 7;"))).collect();
+        assert_eq!(count(&inside, Verdict::Changed), 0, "a counter or a message changing in the ignored area is not a new screen");
+        assert_eq!(inside[..], [Verdict::Unchanged; 40], "and it does not keep the screen from settling");
+        let outside: Vec<_> = (0..3).map(|_| d.observe(screen("last read 12:59", "x = 13 + 7;"))).collect();
+        assert!(outside.contains(&Verdict::Changed), "an edit outside it is: {outside:?}");
+    }
+
+    #[test]
+    fn an_area_partly_off_the_screen_is_clipped_not_a_crash() {
+        let s = signature_without(&page(1600, 900, &lines(30)), &[Area { x: -200, y: -100, width: 500, height: 400 }, Area { x: 1500, y: 800, width: 900, height: 900 }, Area { x: 5000, y: 5000, width: 10, height: 10 }]);
+        assert_eq!(s.cells.len(), 267 * 150);
     }
 
     #[test]

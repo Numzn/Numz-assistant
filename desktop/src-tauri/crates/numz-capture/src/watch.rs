@@ -11,7 +11,7 @@
 //!    is never watched on behalf of a page that is not there;
 //!  - pause and stop take effect before the next look.
 
-use crate::detect::{signature, Config as DetectConfig, Detector, Verdict};
+use crate::detect::{signature_without, Area, Config as DetectConfig, Detector, Verdict};
 use crate::encode;
 use crate::exclusion::{Exclusions, Reason};
 use crate::held::Held;
@@ -26,12 +26,15 @@ pub struct WatchConfig {
     pub poll_timeout: Duration,
     pub exclude_apps: Vec<String>,
     pub exclude_titles: Vec<String>,
+    /// Applications whose windows are left out of change detection (not out of the picture): this app's own, so that what it shows about the
+    /// study session (counters, answers arriving) cannot make the screen look new. Matched against the window's application name.
+    pub ignore_apps: Vec<String>,
     pub detect: DetectConfig,
 }
 
 impl Default for WatchConfig {
     fn default() -> Self {
-        Self { interval: Duration::from_millis(2500), min_gap: Duration::from_secs(10), poll_timeout: Duration::from_secs(20), exclude_apps: vec![], exclude_titles: vec![], detect: DetectConfig::default() }
+        Self { interval: Duration::from_millis(2500), min_gap: Duration::from_secs(10), poll_timeout: Duration::from_secs(20), exclude_apps: vec![], exclude_titles: vec![], ignore_apps: vec![], detect: DetectConfig::default() }
     }
 }
 
@@ -131,6 +134,19 @@ impl Watcher {
         })
     }
 
+    /// Where the ignored applications' windows are on the screen (those whose position the desktop reports).
+    fn ignored_areas(&self, windows: &[crate::WindowInfo]) -> Vec<Area> {
+        let wanted: Vec<String> = self.config.ignore_apps.iter().map(|a| a.trim().to_lowercase()).filter(|a| a.len() >= 3).collect();
+        windows
+            .iter()
+            .filter(|w| {
+                let app = w.app.to_lowercase();
+                wanted.iter().any(|a| app.contains(a.as_str()))
+            })
+            .filter_map(|w| Some(Area { x: w.x?, y: w.y?, width: w.width, height: w.height }))
+            .collect()
+    }
+
     pub fn interval(&self) -> Duration {
         self.config.interval
     }
@@ -196,7 +212,8 @@ impl Watcher {
             Err(e) => return Tick::Failed(e.detail()),
         };
         self.stats.looks += 1;
-        match self.detector.observe(signature(&image)) {
+        let ignored = self.ignored_areas(&windows);
+        match self.detector.observe(signature_without(&image, &ignored)) {
             Verdict::Settling => Tick::Settling,
             Verdict::Unchanged => Tick::Unchanged,
             Verdict::Changed => {
@@ -263,7 +280,7 @@ mod tests {
         }
     }
     fn win(app: &str, title: &str) -> WindowInfo {
-        WindowInfo { id: "1".into(), title: title.into(), app: app.into(), width: 800, height: 600 }
+        WindowInfo { id: "1".into(), title: title.into(), app: app.into(), width: 800, height: 600, x: None, y: None }
     }
     fn page(lines: u32) -> RgbaImage {
         RgbaImage::from_fn(800, 450, |x, y| if (y / 20) % 2 == 0 && y / 20 < lines * 2 && x > 50 && x < 750 { Rgba([20, 20, 20, 255]) } else { Rgba([240, 240, 240, 255]) })
@@ -536,6 +553,44 @@ mod tests {
         assert_eq!(w.tick(&fake, secs(t0, 50.0)), Tick::Stopped);
         assert_eq!(fake.captures.load(Ordering::SeqCst), looks, "and none after the session ends");
         assert!(w.poll(secs(t0, 51.0)).pending.is_none());
+    }
+
+    #[test]
+    fn what_this_app_shows_about_the_study_session_does_not_make_the_screen_look_new() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let config = WatchConfig { ignore_apps: vec!["numz-ai-desktop".into()], ..WatchConfig::default() };
+        let mut w = Watcher::start(&fake, config, Arc::new(Mutex::new(Held::default())), t0).unwrap();
+        // this app's window sits at the right of the screen, and shows a counter that changes every look
+        *fake.windows.lock().unwrap() = vec![win("firefox", "Lecture 3"), WindowInfo { id: "9".into(), title: "NUMZ AI".into(), app: "numz-ai-desktop".into(), width: 440, height: 700, x: Some(800), y: Some(10) }];
+        let screen = |counter: u32, answer: &str| {
+            let mut s = question_page(answer);
+            crate::testscreen::draw_text(&mut s, 840, 120, &format!("sent {counter} read {counter}"), 2);
+            s
+        };
+        fake.show(screen(0, "x = 12 + 7;"));
+        w.tick(&fake, secs(t0, 0.0));
+        assert_eq!(w.tick(&fake, secs(t0, 2.5)), Tick::Reported);
+        w.poll(secs(t0, 3.0));
+        let mut reported_again = 0;
+        for i in 1..=40 {
+            fake.show(screen(i, "x = 12 + 7;"));
+            let now = secs(t0, 3.0 + i as f32 * 2.5);
+            if w.tick(&fake, now) == Tick::Reported {
+                reported_again += 1;
+            }
+            w.poll(now);
+        }
+        assert_eq!(reported_again, 0, "the app's own counters and messages are never a reason to read the screen again");
+        // but a change on the person's own page, beside it, is
+        fake.show(screen(41, "x = 13 + 7;"));
+        let mut seen = vec![];
+        for i in 0..4 {
+            let now = secs(t0, 110.0 + i as f32 * 2.5);
+            seen.push(w.tick(&fake, now));
+            w.poll(now);
+        }
+        assert!(seen.contains(&Tick::Reported), "{seen:?}");
     }
 
     #[test]

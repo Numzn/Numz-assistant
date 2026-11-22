@@ -7,12 +7,13 @@
 //               -> the app's native watcher looks at the real screen, the page sends changed pictures, the server reads them
 //                    -> a stand-in vision/text model that decodes the picture it is sent.
 //
-// What it proves: pictures are taken only while a session is reading; nothing is read while a password manager or a window the person
+// What it proves: a changed screen is captured, read and answered with nobody pressing anything, down to one changed digit, word or token of
+// code, and an unchanged screen (or this app's own window changing) is not captured again; pictures are taken only while a session is reading; nothing is read while a password manager or a window the person
 // listed is open; Pause really stops it; Stop really stops it; a page that goes away stops it by itself; a restricted session never starts it;
 // and focus, pointer and window stacking are untouched by automatic capture.
 //
 //   node desktop/e2e/study.mjs      (needs what desktop/README.md lists, plus numzlab-auth's test rig; the app built with the test capability)
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
@@ -95,11 +96,10 @@ const modelServer = http.createServer((req, res) => {
       } catch (e) {
         seen = { error: String(e.message).slice(0, 80) }
       }
-      model.pictures.push({ at: Date.now(), seen })
-      const n = model.pictures.length
+      model.pictures.push({ at: Date.now(), seen, bytes: Buffer.from(m[1], 'base64') })
       const reading = {
         contentKind: 'revision_question',
-        questions: [{ text: `Question ${n}. Which colour is the window in the middle of the screen (${seen.center})?`, options: [], marks: '2', type: 'short_answer', hasDiagram: false }],
+        questions: [{ text: `Which colour is the window in the middle of the screen (${seen.center})?`, options: [], marks: '2', type: 'short_answer', hasDiagram: false }],
         instructions: '',
         subject: 'colours',
         topic: 'colour',
@@ -223,14 +223,76 @@ try {
   const first = await nextPicture('the first automatic picture')
   check('a picture of the real desktop reached the server: 1600x900, the blue window in the middle', first.seen.width === 1600 && first.seen.height === 900 && first.seen.center === '#0033FF', JSON.stringify(first.seen))
   await waitFor(() => run('return document.querySelectorAll(".study-q").length >= 1'), 30000, 'a question card')
-  check('the question found on it is shown in the panel', /Question 1\./.test(await text('.study-q-text')), (await text('.study-q-text')) ?? '')
+  check('the question found on it is shown in the panel', /Which colour is the window/.test(await text('.study-q-text')), (await text('.study-q-text')) ?? '')
   check('the active application, keyboard focus, pointer position and window stacking are exactly as they were', before === snapshot(), before === snapshot() ? '' : `${before}\n${snapshot()}`)
 
-  // ---- an answer from the screen ------------------------------------------------------------------------------------------
-  const messagesBefore = await run('return document.querySelectorAll("#thread .msg").length')
-  await clickButton('Explain')
-  await waitFor(async () => (await run('return document.querySelectorAll("#thread .msg").length')) >= messagesBefore + 2, 30000, 'the answer in the conversation')
-  check('Explain puts the question and its answer into the conversation', /stand-in model/.test(await run('return [...document.querySelectorAll("#thread .msg")].at(-1).textContent')))
+  // ---- the answer comes by itself: nobody presses Explain ---------------------------------------------------------------------
+  await waitFor(async () => (await run('return document.querySelectorAll("#thread .msg").length')) >= 2, 40000, 'the answer in the conversation')
+  check('the question is answered by itself and the exchange is in the conversation (nobody pressed anything)', /stand-in model/.test(await run('return [...document.querySelectorAll("#thread .msg")].at(-1).textContent')))
+  await waitFor(async () => /Answered in the conversation/.test((await text('#studyBody')) ?? ''), 15000, 'the Study panel to say it was answered')
+  check('and the Study panel shows the question as answered, with what the last screen held', /Answered in the conversation/.test(await text('#studyBody')) && /Last read/.test((await text('#studyWatchNote')) ?? ''), ((await text('#studyWatchNote')) ?? '').slice(0, 120))
+
+  // ---- a small change is captured by itself; an unchanged screen is not -------------------------------------------------------
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'numz-study-e2e-'))
+  const textFile = path.join(workDir, 'text.txt')
+  const setText = (lines) => fs.writeFileSync(textFile, lines.join('\n'))
+  const TEXT_AREA = '520x200+100+560'
+  const quiet = async (seconds, label) => {
+    // waits until nothing new has been sent for that long
+    let last = model.pictures.length
+    let since = Date.now()
+    const end = Date.now() + 180000
+    while (Date.now() < end) {
+      await sleep(1000)
+      if (model.pictures.length !== last) {
+        last = model.pictures.length
+        since = Date.now()
+      }
+      if (Date.now() - since >= seconds * 1000) return
+    }
+    throw new Error(`the screen never went quiet (${label}): the app's own window or something else keeps looking new`)
+  }
+  /** How many pixels differ between two pictures (JPEG noise ignored), over the whole screen or one area. */
+  const differing = (a, b, crop) => {
+    const files = ['a', 'b'].map((n) => path.join(workDir, `${n}.jpg`))
+    fs.writeFileSync(files[0], a)
+    fs.writeFileSync(files[1], b)
+    const out = files.map((f, i) => {
+      const png = path.join(workDir, `${i}.png`)
+      execFileSync('convert', [f, ...(crop ? ['-crop', crop, '+repage'] : []), png])
+      return png
+    })
+    return Number.parseInt(spawnSync('compare', ['-metric', 'AE', '-fuzz', '15%', out[0], out[1], 'null:'], { encoding: 'utf8' }).stderr.trim(), 10)
+  }
+  setText(['total = 12 + 7', 'name = abc', 'if (a == b) {'])
+  const textWindow = track('python3', [path.join(here, 'textwindow.py'), 'NUMZ-TEXT', textFile, TEXT_AREA])
+  await waitFor(() => x('xdotool', 'search', '--name', 'NUMZ-TEXT'), 40000, 'the text window')
+  await quiet(30, 'after the text window opened')
+  const countBefore = model.pictures.length
+  await sleep(25000)
+  check('an unchanged screen is not captured again, and neither is the app\'s own window changing (counters, answers)', model.pictures.length === countBefore, `${model.pictures.length - countBefore} pictures in 25 s`)
+  let last = model.pictures.at(-1)
+  const edits = [
+    ['a number', ['total = 13 + 7', 'name = abc', 'if (a == b) {']],
+    ['a word', ['total = 13 + 7', 'name = abd', 'if (a == b) {']],
+    ['a token of code', ['total = 13 + 7', 'name = abd', 'if (a != b) {']]
+  ]
+  for (const [what, lines] of edits) {
+    const n = model.pictures.length
+    setText(lines)
+    await waitFor(() => model.pictures.length > n, 60000, `a picture after ${what} changed`)
+    const picture = model.pictures.at(-1)
+    const inText = differing(last.bytes, picture.bytes, TEXT_AREA)
+    const leftOfApp = differing(last.bytes, picture.bytes, '1100x900+0+0')
+    check(`changing ${what} on the page is captured by itself, and the new picture shows the change`, inText > 0 && leftOfApp - inText <= 60, `${inText} pixels differ in the text window, ${leftOfApp - inText} elsewhere on that side`)
+    last = picture
+    await quiet(14, `after ${what}`)
+  }
+  const afterEdits = model.pictures.length
+  await sleep(25000)
+  check('and once it has stopped changing it is not captured again', model.pictures.length === afterEdits, `${model.pictures.length - afterEdits} pictures in 25 s`)
+  textWindow.kill('SIGTERM')
+  await quiet(30, 'after the text window closed')
 
   // ---- a password manager is open: nothing is read ---------------------------------------------------------------------
   const keepass = colourWindow('KeePassXC - Passwords', '#00aa00', '300x200+1000+600')

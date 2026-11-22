@@ -40,6 +40,12 @@ pub struct WindowInfo {
     pub app: String,
     pub width: u32,
     pub height: u32,
+    /// Where the window's top-left corner is on the screen, when the desktop says (the study watcher uses it to leave this app's own
+    /// window out of change detection: what NUMZ AI itself shows is not something the person is studying).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

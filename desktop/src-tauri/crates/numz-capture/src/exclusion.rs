@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     fn win(app: &str, title: &str) -> WindowInfo {
-        WindowInfo { id: "1".into(), title: title.into(), app: app.into(), width: 800, height: 600 }
+        WindowInfo { id: "1".into(), title: title.into(), app: app.into(), width: 800, height: 600, x: None, y: None }
     }
 
     #[test]

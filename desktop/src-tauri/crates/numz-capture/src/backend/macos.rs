@@ -138,7 +138,7 @@ fn describe(window: &SCWindow) -> Option<WindowInfo> {
         if frame.size.width < 80.0 || frame.size.height < 60.0 || title.trim().is_empty() {
             return None;
         }
-        Some(WindowInfo { id: window.windowID().to_string(), title, app, width: frame.size.width as u32, height: frame.size.height as u32 })
+        Some(WindowInfo { id: window.windowID().to_string(), title, app, width: frame.size.width as u32, height: frame.size.height as u32, x: Some(frame.origin.x as i32), y: Some(frame.origin.y as i32) })
     }
 }
 

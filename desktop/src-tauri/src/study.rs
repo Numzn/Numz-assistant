@@ -30,6 +30,11 @@ pub struct WatchState {
     watch_available: bool,
 }
 
+/// This app's own program name: its window is left out of change detection (what NUMZ AI shows about the session is not what is studied).
+fn own_app_names() -> Vec<String> {
+    std::env::current_exe().ok().and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().to_string())).into_iter().collect()
+}
+
 fn set_title(app: &AppHandle, title: &str) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title(title);
@@ -54,7 +59,7 @@ pub async fn screenshot_watch_start(
     check(&window, &trusted)?;
     let backend = screens.backend();
     let held = screens.held();
-    let config = WatchConfig { exclude_apps: exclude_apps.unwrap_or_default(), exclude_titles: exclude_titles.unwrap_or_default(), ..WatchConfig::default() }.with_interval_ms(interval_ms.unwrap_or(2500));
+    let config = WatchConfig { exclude_apps: exclude_apps.unwrap_or_default(), exclude_titles: exclude_titles.unwrap_or_default(), ignore_apps: own_app_names(), ..WatchConfig::default() }.with_interval_ms(interval_ms.unwrap_or(2500));
     let started = {
         let backend = backend.clone();
         tauri::async_runtime::spawn_blocking(move || Watcher::start(&*backend, config, held, Instant::now())).await.map_err(|e| CaptureError::Failed(format!("the watcher could not start: {e}")))??

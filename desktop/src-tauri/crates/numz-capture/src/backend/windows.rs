@@ -180,7 +180,8 @@ impl Backend for Native {
                 if title.trim().is_empty() || width < 80 || height < 60 {
                     return None;
                 }
-                Some(WindowInfo { id: (w.as_raw_hwnd() as usize).to_string(), title, app, width: width as u32, height: height as u32 })
+                let origin = w.rect().ok();
+                Some(WindowInfo { id: (w.as_raw_hwnd() as usize).to_string(), title, app, width: width as u32, height: height as u32, x: origin.map(|r| r.left), y: origin.map(|r| r.top) })
             })
             .collect())
     }
