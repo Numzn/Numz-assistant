@@ -16,14 +16,17 @@ test('migrations 8 and 9 upgrade a version 7 database without touching what was 
   meeting('m-old', { title: 'before people' })
   database.prepare(`INSERT INTO assistant_conversations (conversation_id, title, created_at, updated_at) VALUES ('c1', 'kept', 't', 't')`).run()
 
-  applyMigrations(database)
+  applyMigrations(database, { target: 9 })
   assert.deepEqual(versions(), [1, 2, 3, 4, 5, 6, 7, 8, 9])
   const owner = (id) => database.prepare('SELECT owner_user_id AS o FROM meetings WHERE meeting_id = ?').get(id).o
   assert.equal(owner('m-launched'), 'u1', 'a meeting a signed-in person launched is theirs')
   assert.equal(owner('m-ghost'), null, 'a launcher that is not a known person owns nothing')
   assert.equal(owner('m-old'), null, 'an older meeting stays unowned until the administrator releases it')
   assert.equal(database.prepare('SELECT title FROM assistant_conversations').get().title, 'kept')
-  assert.doesNotThrow(() => applyMigrations(database), 'running again is a no-op')
+  assert.doesNotThrow(() => applyMigrations(database, { target: 9 }), 'running again is a no-op')
+  assert.equal(owner('m-launched'), 'u1', 'and later migrations leave the attribution alone')
+  applyMigrations(database)
+  assert.equal(owner('m-launched'), 'u1')
   for (const table of ['academic_courses', 'academic_sessions', 'learning_experiences']) assert.equal(database.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0)
 })
 
