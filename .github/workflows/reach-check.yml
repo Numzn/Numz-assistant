@@ -1,0 +1,33 @@
+# A one-minute diagnostic: can GitHub's machines reach the NUMZ AI site at all? (The desktop build's launch check could not.)
+name: Can GitHub reach the site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/desktop-windows-build]
+    paths:
+      - .github/workflows/reach-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  reach:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Where this machine is
+        run: curl -s -m 15 https://ipinfo.io/json | head -c 400 || echo "ipinfo unreachable"
+      - name: Reach the site (three tries each, 20 s limit)
+        run: |
+          for url in https://lab.numz.site/ai/ https://lab.numz.site/ https://numz.site/; do
+            for i in 1 2 3; do
+              curl -s -o /dev/null -m 20 -w "$url try $i -> %{http_code} connect=%{time_connect}s total=%{time_total}s ip=%{remote_ip}\n" "$url" || echo "$url try $i -> curl exit $?"
+            done
+          done
