@@ -233,6 +233,9 @@ export function createMeetingSessionService({
 
     getMeeting: getRequired,
 
+    /** A person's own meetings, newest first. */
+    listMeetingsOwnedBy: (userId, options) => meetingRepository.listOwnedBy?.(userId, options) ?? [],
+
     /** Who owns a meeting, or null. */
     getMeetingOwner: (meetingId) => meetingRepository.getOwner?.(meetingId) ?? null,
 

@@ -233,6 +233,15 @@ test('searching another of your courses needs a stated reason; a lecture that is
   })
 })
 
+test('the lectures to choose from: a person gets a list (here empty: this server has no meetings), a visitor and the shared code get nothing', async () => {
+  await using(async (r) => {
+    const mine = await r.alice('/meetings')
+    assert.equal(mine.status, 200)
+    assert.deepEqual(mine.json, { lectures: [] })
+    assert.equal((await r.nobody('/meetings')).status, 401)
+  })
+})
+
 test('study sessions over HTTP: start with a declared type, pause, resume, stop; the type cannot be changed and a restricted session refuses capture', async () => {
   await using(async (r) => {
     assert.equal((await r.alice('/sessions/current')).json.session, null)

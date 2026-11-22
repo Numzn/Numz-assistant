@@ -50,6 +50,15 @@ export function createKnowledgeService({ knowledge, meetingService = null }) {
         return { passages, crossCourse, reason: crossCourse ? why : null }
       },
 
+      /** The person's own finished lectures, newest first, for them to choose from. Never anyone else's, never an unowned one. */
+      listLectures() {
+        if (!meetingService?.listMeetingsOwnedBy) return []
+        return meetingService
+          .listMeetingsOwnedBy(userId, { limit: 100 })
+          .filter((m) => m.status === 'COMPLETED')
+          .map((m) => ({ meetingId: m.meetingId, title: m.metadata?.title ?? null, createdAt: m.createdAt, endedAt: m.endedAt }))
+      },
+
       /** A finished lecture of the person's own becomes material for one of their courses (re-doing it replaces the earlier version). */
       ingestMeeting({ meetingId, courseId, title = null }) {
         if (!meetingService) throw new AcademicError(503, 'meetings-unavailable', 'Lectures cannot be added on this server.')

@@ -8,6 +8,7 @@ import { AcademicError, textField } from '../academic/academicError.js'
  *   POST   /courses/:id/documents?title=&type=&format=   body = the text or markdown itself (text/markdown or text/plain), at most 2 MB
  *                                                 -> 201 { document, unchanged?, replaced? }
  *   POST   /courses/:id/documents/from-meeting    { meetingId, title? }  a finished lecture of the person's own becomes course material
+ *   GET    /meetings                              the person's own finished lectures, to choose one to add to a course
  *   DELETE /documents/:id                         204
  *   GET    /search?course=<id>&q=&also=<id,id>&reason=&limit=   passages that match (the same retrieval an answer uses)
  *
@@ -58,6 +59,8 @@ export function addKnowledgeRoutes(router, { wrap, body, audit }, { knowledge, k
       res.status(result.unchanged ? 200 : 201).json(result)
     })
   )
+
+  router.get('/meetings', wrap((req, res) => res.json({ lectures: service(req).listLectures() })))
 
   router.delete(
     '/documents/:id',
