@@ -83,8 +83,16 @@ const changeScreen = () => {
 // ---- the stand-in's reading of content: coloured bands in the test windows stand for segments of content ----------------------
 // (the vision model itself is not run here: this checks the capture, timing, ledger and panel on the picture the watcher really took)
 const BAND = 140 // a whole band is this tall, in pixels
-const VOCAB = 'table row column key value index query join record field entry schema relation tuple domain constraint transaction commit rollback storage memory cache buffer thread process kernel signal pipe socket packet header payload frame protocol layer route switch cable fibre wireless channel noise filter sample pixel colour shade tone pitch volume tempo rhythm melody chord scale'.split(' ')
-const paragraph = (seed, n = 36) => Array.from({ length: n }, (_, i) => VOCAB[(seed * 31 + i * 17 + ((i * i) % 7)) % VOCAB.length] + (i % 11 === 10 ? '.' : '')).join(' ')
+// Paragraphs of distinct pseudo-words (a seeded generator over syllables), so that different bands never share a run of words by accident.
+const SYLLABLES = 'ba be bi bo bu ka ke ki ko ku da de di do du la le li lo lu ma me mi mo mu na ne ni no nu ra re ri ro ru sa se si so su ta te ti to tu'.split(' ')
+const paragraph = (seed, n = 36) => {
+  let state = seed * 2654435761 + 12345
+  const next = () => ((state = (state * 1103515245 + 12345) % 2147483648), state / 2147483648)
+  return Array.from({ length: n }, (_, i) => {
+    const word = Array.from({ length: 2 + Math.floor(next() * 3) }, () => SYLLABLES[Math.floor(next() * SYLLABLES.length)]).join('')
+    return word + (i % 11 === 10 ? '.' : '')
+  }).join(' ')
+}
 const BANDS = {
   e6194b: { name: 'A', kind: 'question', text: 'Explain why the primary key of a relational table must be unique and can never be empty, with a short example from a table of students.' },
   '3cb44b': { name: 'B', kind: 'paragraph', text: paragraph(1) },
@@ -98,7 +106,8 @@ const BANDS = {
   '9a6324': { name: 'J', kind: 'paragraph', text: paragraph(9, 44) },
   '808000': { name: 'K', kind: 'paragraph', text: paragraph(10, 44) }
 }
-const REGIONS = [{ name: 'L', x: 220, y: 580, h: 300 }, { name: 'R', x: 600, y: 580, h: 300 }, { name: 'V', x: 965, y: 580, h: 330 }]
+/** Where the band windows' client areas are on the screen (filled in once they exist: until then no picture holds any band). */
+const REGIONS = []
 const nearest = (hex) => {
   const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16))
   let best = null
@@ -114,7 +123,7 @@ function readBands(jpeg) {
   const segments = []
   for (const region of REGIONS) {
     const out = execFileSync('convert', ['jpg:-', '-crop', `1x${region.h}+${region.x}+${region.y}`, '+repage', '-depth', '8', 'txt:-'], { input: jpeg, encoding: 'utf8', maxBuffer: 8_000_000 })
-    const rows = out.split('\n').filter((l) => l.includes('#')).map((l) => nearest(l.match(/#[0-9A-Fa-f]{6}/)[0].toLowerCase()))
+    const rows = out.split('\n').filter((l) => /^\d+,\d+:/.test(l)).map((l) => nearest(l.match(/#[0-9A-Fa-f]{6}/)[0].toLowerCase()))
     for (let top = 0; top < rows.length; ) {
       let bottom = top
       while (bottom + 1 < rows.length && rows[bottom + 1] === rows[top]) bottom++
@@ -337,6 +346,7 @@ try {
     return Number.parseInt(spawnSync('compare', ['-metric', 'AE', '-fuzz', '15%', out[0], out[1], 'null:'], { encoding: 'utf8' }).stderr.trim(), 10)
   }
   setText(['total = 12 + 7', 'name = abc', 'if (a == b) {'])
+  if (!process.env.E2E_SKIP_EDITS) {
   const textWindow = track('python3', [path.join(here, 'textwindow.py'), 'NUMZ-TEXT', textFile, TEXT_AREA])
   await waitFor(() => x('xdotool', 'search', '--name', 'NUMZ-TEXT'), 40000, 'the text window')
   await quiet(30, 'after the text window opened')
@@ -365,6 +375,7 @@ try {
   check('and once it has stopped changing it is not captured again', model.pictures.length === afterEdits, `${model.pictures.length - afterEdits} pictures in 25 s`)
   textWindow.kill('SIGTERM')
   await quiet(30, 'after the text window closed')
+  }
 
   // ---- layouts and navigation, on what the watcher really captures ------------------------------------------------------------------
   // Three test windows draw coloured bands for segments of content: L and R side by side (several segments at once, next and previous),
@@ -376,11 +387,17 @@ try {
   const showBands = (name, list) => fs.writeFileSync(bandFile[name], list.map(([colour, top, bottom]) => `${colour} ${top} ${bottom}`).join('\n'))
   for (const name of Object.keys(bandFile)) showBands(name, [])
   const bandWindows = [
-    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-L', bandFile.L, '360x300+40+580']),
-    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-R', bandFile.R, '360x300+420+580']),
-    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-V', bandFile.V, '330x330+800+580'])
+    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-L', bandFile.L, '360x280+40+590']),
+    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-R', bandFile.R, '360x280+420+590']),
+    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-V', bandFile.V, '330x280+800+590'])
   ]
   await waitFor(() => ['NUMZ-L', 'NUMZ-R', 'NUMZ-V'].every((t) => x('xdotool', 'search', '--name', t)), 40000, 'the band windows')
+  await sleep(1500)
+  for (const [name, windowTitle] of [['L', 'NUMZ-L'], ['R', 'NUMZ-R'], ['V', 'NUMZ-V']]) {
+    const info = x('xwininfo', '-id', x('xdotool', 'search', '--name', windowTitle).split('\n')[0])
+    const get = (label) => Number.parseInt(info.match(new RegExp(`${label}:\\s+(-?\\d+)`))[1], 10)
+    REGIONS.push({ name, x: get('Absolute upper-left X') + Math.floor(get('Width') / 2), y: get('Absolute upper-left Y'), h: get('Height') })
+  }
   await quiet(30, 'after the band windows opened')
   const bandText = (c) => BANDS[c].text
   const words = (c, from, to) => bandText(c).split(' ').slice(from, to).join(' ')
@@ -429,22 +446,28 @@ try {
   showBands('L', [])
   await quiet(14, 'before scrolling')
   base = (await contentNow()).length
-  r = await step('scroll position 0', () => showBands('V', [['f032e6', 0, 140], ['bfef45', 140, 280], ['808000', 280, 420]]))
-  check('scrolling, first view: three segments, the last cut off by the bottom edge and held as cut off', r.pictures === 1 && names(r.picture) === 'G H K(cut bottom)' && r.segments.length === base + 3 && find(r.segments, '808000')?.partial?.bottom === true, `${names(r.picture)}; K partial ${JSON.stringify(find(r.segments, '808000')?.partial)}`)
+  // the document: G 0-140, H 140-280, K 280-420, I 420-560, J 560-700; the window shows 280 px of it, from "scroll"
+  const view = (scroll) => ['f032e6', 'bfef45', '808000', '008080', '9a6324'].map((c, i) => [c, i * 140 - scroll, i * 140 + 140 - scroll])
+  r = await step('scroll 0', () => showBands('V', view(0)))
+  check('scrolling, first view: two whole segments', r.pictures === 1 && names(r.picture) === 'G H' && r.segments.length === base + 2, `${names(r.picture)}; ${r.segments.length - base} new`)
   base = r.segments.length
-  r = await step('scrolled 100', () => showBands('V', [['f032e6', -100, 40], ['bfef45', 40, 180], ['808000', 180, 320], ['008080', 320, 460]]))
+  r = await step('scroll 90', () => showBands('V', view(90)))
+  check('scrolling down: what is in both views is seen, the segment cut by the bottom edge is new and held as cut off', r.pictures === 1 && names(r.picture) === 'G(cut top) H K(cut bottom)' && r.segments.length === base + 1 && find(r.segments, '808000')?.partial?.bottom === true && /1 new segment/.test(r.note) && /2 already seen/.test(r.note), `${names(r.picture)}; ${r.segments.length - base} new; K ${JSON.stringify(find(r.segments, '808000')?.partial)}; "${r.note.slice(-80)}"`)
+  base = r.segments.length
+  r = await step('scroll 150', () => showBands('V', view(150)))
   const k = find(r.segments, '808000')
-  check('scrolling, overlapping view: what overlaps is not new, a part of a known segment is not new, the cut-off one is whole now and still one segment', r.pictures === 1 && /G\(cut top\) H K/.test(names(r.picture)) && r.segments.length === base && k?.partial === null && k.text.split(' ').length === bandText('808000').split(' ').length && k.seenCount === 2, `${names(r.picture)}; ${r.segments.length - base} new; K whole: ${k?.partial === null}, ${k?.text.split(' ').length} words`)
-  r = await step('scrolled 260', () => showBands('V', [['bfef45', -120, 20], ['808000', 20, 160], ['008080', 160, 300], ['9a6324', 300, 440]]))
-  check('scrolling on: the segment that comes into view is new (and answered, it is a question), the one cut at the bottom is held as cut off, the rest is seen', r.pictures === 1 && /K I J\(cut bottom\)/.test(names(r.picture)) && r.segments.length === base + 2 && r.answers === 1 && find(r.segments, '9a6324')?.partial?.bottom === true, `${names(r.picture)}; ${r.segments.length - base} new, ${r.answers} answer(s)`)
+  check('scrolling on: the cut-off segment is whole now and still one segment, nothing is new, the overlap is not processed again', r.pictures === 1 && /H\(cut top\) K/.test(names(r.picture)) && r.segments.length === base && k?.partial === null && k.text.split(' ').length === bandText('808000').split(' ').length && k.seenCount === 2 && r.answers === 0, `${names(r.picture)}; ${r.segments.length - base} new; K whole ${k?.partial === null} (${k?.text.split(' ').length} words), seen ${k?.seenCount}`)
+  r = await step('scroll 330', () => showBands('V', view(330)))
+  check('scrolling further: the new question is new (and answered), the segment cut at the bottom is held as cut off, the part of K that is still visible is seen', r.pictures === 1 && /K\(cut top\) I J\(cut bottom\)/.test(names(r.picture)) && r.segments.length === base + 2 && r.answers === 1 && find(r.segments, '9a6324')?.partial?.bottom === true, `${names(r.picture)}; ${r.segments.length - base} new, ${r.answers} answer(s)`)
   base = r.segments.length
-  r = await step('scrolled to the end of J', () => showBands('V', [['9a6324', 0, 140]]))
+  r = await step('scroll 560', () => showBands('V', view(560)))
   const j = find(r.segments, '9a6324')
-  check('content continuing: the segment that was cut at the bottom is whole on a later screen, completed, not duplicated', r.pictures === 1 && r.segments.length === base && j?.partial === null && j.text.split(' ').length === bandText('9a6324').split(' ').length, `${r.segments.length - base} new; J whole: ${j?.partial === null}`)
-  r = await step('back to the top', () => showBands('V', [['f032e6', 0, 140], ['bfef45', 140, 280], ['808000', 280, 420]]))
-  check('repeated content: scrolling back to the top is captured and nothing in it is new or processed again', r.pictures === 1 && r.segments.length === base && r.answers === 0 && /seen before/.test(r.note), `${r.segments.length - base} new, ${r.answers} answers; "${r.note.slice(-90)}"`)
+  check('content continuing: the segment that was cut at the bottom is whole on a later screen, completed in place, not duplicated', r.pictures === 1 && names(r.picture) === 'J' && r.segments.length === base && j?.partial === null && j.text.split(' ').length === bandText('9a6324').split(' ').length, `${names(r.picture)}; ${r.segments.length - base} new; J whole ${j?.partial === null} (${j?.text.split(' ').length} words)`)
+  r = await step('back to the top', () => showBands('V', view(0)))
+  check('repeated content: scrolling back to the top is captured, and nothing in it is new or processed again', r.pictures === 1 && r.segments.length === base && r.answers === 0 && /seen before/.test(r.note), `${r.segments.length - base} new, ${r.answers} answers; "${r.note.slice(-90)}"`)
   for (const w of bandWindows) w.kill('SIGTERM')
   await quiet(30, 'after the band windows closed')
+  if (process.env.E2E_STOP_AFTER_LAYOUTS) throw Object.assign(new Error('stopped after the layouts phase (E2E_STOP_AFTER_LAYOUTS)'), { early: true })
 
   // ---- a password manager is open: nothing is read ---------------------------------------------------------------------
   const keepass = colourWindow('KeePassXC - Passwords', '#00aa00', '300x200+1000+600')
@@ -520,6 +543,9 @@ try {
   check('a restricted session never reads the screen', whileRestricted === 0 && title() === 'NUMZ AI', `${whileRestricted} pictures, title "${title()}"`)
   await clickButton('End session')
 } catch (err) {
+  if (err?.early) {
+    console.log(err.message)
+  } else {
   console.error(err)
   check('the end-to-end run completed', false, String(err?.message ?? err).slice(0, 300))
   console.log('--- app server log (tail) ---\n' + stack.app.log().slice(-800))
@@ -528,6 +554,7 @@ try {
   try {
     if (sid) console.log('--- page ---', JSON.stringify(await run('return {path: location.pathname, indicator: (document.getElementById("studyIndicator")||{}).textContent, message: (document.querySelector(".study-message")||{}).textContent}')))
   } catch {}
+  }
 } finally {
   try { if (sid) await wd('DELETE', `/session/${sid}`) } catch {}
   await new Promise((r) => front.close(r))

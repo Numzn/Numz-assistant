@@ -214,3 +214,21 @@ test('nothing readable is an empty screen, and the ledger never grows without bo
   for (let i = 0; i < 12; i++) l.integrate(`c${i}`, [seg(`Paragraph number ${i} talks about completely different subject matter number ${i * 7 + 3} in its own words alpha${i} beta${i} gamma${i}`)])
   assert.equal(l.size(), 5)
 })
+
+test('a few words in common at the edge are not a continuation unless both screens say the segment was cut there; with one mark it takes a longer run, with none a long one', () => {
+  const tail = 'and so on until the end of the list'
+  const first = 'The committee reviewed the budget for the coming year in great detail and noted several changes that would affect the departments, '
+  const second = 'the end of the list'
+  // the end of the first screen's segment and the start of the next one share five words by coincidence: an unrelated paragraph
+  const unrelated = `${second} of requirements was then discussed at length by the board, who asked for a revised timetable before approving anything further`
+  const a = ledger()
+  a.integrate('c1', [seg(`${first}${tail}`, { cutOff: 'bottom' })])
+  assert.equal(a.integrate('c2', [seg(unrelated, { cutOff: 'none' })]).segments[0].status, 'new', 'one mark and five coincident words: not enough')
+  const b = ledger()
+  b.integrate('c1', [seg(`${first}${tail}`, { cutOff: 'bottom' })])
+  assert.equal(b.integrate('c2', [seg(unrelated, { cutOff: 'top' })]).segments[0].status, 'continued', 'both edges marked, the same five words: a continuation')
+  const c = ledger()
+  c.integrate('c1', [seg(`${first}${tail}`)])
+  assert.equal(c.integrate('c2', [seg(unrelated)]).segments[0].status, 'new', 'no marks and five words: a different paragraph')
+  assert.equal(c.size(), 2)
+})

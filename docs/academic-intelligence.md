@@ -69,22 +69,46 @@ When a study session has **Read my screen** on (desktop app only), reading is au
 
 1. The person starts the session. The page asks the app's watcher to start (with the person's exclusions); the panel and the window title say
    "screen reading ON".
-2. **Every 2.5 s** the watcher takes one look: it lists the open windows, and, only if none is excluded, captures one still of the screen and
-   reduces it to a fingerprint.
-3. The fingerprint is compared with the screen it **last reported** (see below). Nothing is sent for a screen that is the same.
-4. A difference means a **possible** new screen. It is not captured yet: the watcher waits until **two looks in a row agree** (the screen has settled), so a
-   scroll, a page load or someone still typing is waited out.
-5. A settled new screen is **captured** (kept in the app's memory) and counted, never closer than **10 s** to the last one.
+2. **Monitor.** Every **2.5 s** the watcher takes one look: it lists the open windows, and, only if none is excluded, captures one still of the
+   screen and reduces it to a fingerprint.
+3. **Detect changes.** The fingerprint is compared with the screen it **last reported** (see below). Nothing is sent for a screen that is the same.
+4. **Wait for stability.** A difference means a **possible** new screen. It is not captured yet: the watcher waits until **two looks in a row
+   agree** (the screen has settled), so a scroll, a page load or someone still typing is waited out.
+5. **Capture.** A settled new screen is captured (kept in the app's memory) and counted, never closer than **10 s** to the last one.
 6. The page collects it at its next check (about every 1.5 s, which is also the watcher's heartbeat), shrinks it (JPEG, at most 1600 px) and sends it
-   to the server in the background, one at a time; the native copy is discarded at once.
-7. The server runs the existing pipeline: integrity gate, capture switch, image checks, **8 s** between reads, **80** reads per session, duplicate
-   hash, vision model (`academic_read`), question recognition. A screen it cannot take yet (too soon, busy, a failed read, the network) is sent
-   again after 4 s and 8 s, then let go; a newer screen replaces one that is waiting.
-8. **Results appear by themselves**: new questions are listed as cards in the Study panel, the panel's line says what the last screen held, and
-   each new question (up to three per screen, one at a time) is **answered** from the person's course notes into the Study panel **and the
-   conversation**. A screen that may be an assessment is listed but not answered until the person confirms; "Explain the questions it finds, without
-   me pressing anything" is on by default and can be turned off before the session starts.
-9. The watcher keeps looking; the next change starts again at 2.
+   to the server in the background, one at a time; the native copy is discarded at once. A screen the server cannot take yet (too soon, busy, a failed
+   read, the network) is sent again after 4 s and 8 s, then let go; a newer screen replaces one that is waiting.
+7. **Recognise content, identify boundaries.** The server runs the existing gates (integrity, capture switch, image checks, **8 s** between reads,
+   **80** reads per session, identical-picture hash, the person's allowance) and asks the vision model **one question**: break the screen into
+   **segments**, in reading order. A segment is any independent piece of meaningful content (a question, instructions, a paragraph, a heading,
+   a list, a table, code, a formula, a figure), copied as shown, with its place on the screen, whether the edge of the screen cuts it off, and which
+   group it belongs to. It is not tied to one kind of document: a page of notes, a slide, code or a web article yields segments just as a quiz does.
+8. **Organise, suppress duplicates.** Each segment is matched against everything the session has already seen (the content ledger, below):
+   **new**, **seen** (nothing to do), **grown** (more of it is visible now), or **continued** (it finishes one that an earlier screen cut off).
+   Related segments stay related.
+9. **Process, display.** Everything seen is listed in the Study panel ("Content seen in this session": each segment once, with how often it was
+   seen). **Questions** among the new or completed segments become cards and are **answered** from the person's course notes (and the related content on
+   screen) into the Study panel **and the conversation**, up to three per screen, one at a time. Other material is organised and shown; explaining it is
+   one press ("Explain this"), because answering everything on every screen would spend a call per paragraph. A screen that may be an assessment is
+   listed but not answered until the person confirms; "Explain the questions it finds, without me pressing anything" is on by default and can be turned off
+   before the session starts.
+10. The watcher keeps looking; the next change starts again at 2.
+
+The content ledger (`contentLedger.js`) works from the **content**, never from a layout or a mode the person chooses, so the same rules cover:
+
+| Situation | What happens |
+|---|---|
+| One segment on the screen, or several | each segment is recognised separately and matched on its own; the screen is "single" or "multiple" |
+| Next / previous / tabs / slides | a different set each time: new content is new; a set that comes back is **seen**, so nothing in it is processed again (the screen is a "revisit") |
+| Vertical scrolling | screens overlap: the overlap is seen, what appears is new; scrolling back is a revisit |
+| Overlapping screens | overlap is decided per segment, never per screen: a segment is **never dropped because it overlaps** an earlier screen, and one that only resembles an earlier segment (other numbers, other words) is new |
+| A segment cut off by the screen edge | it is held and marked as cut off (a cut-off question is listed but not answered by itself); when more of it is visible it **grows** in place; when its end is the start of the next screen's segment (shared words) the two become **one segment** without repeated words; if they share no words but are in the same group they are linked |
+| Continuity | a segment that continues another keeps a link to it; related segments (one group, or one that names another by title) are passed to the answer as fenced data |
+| Repeated content | text seen again (a misread letter tolerated, a different number not) is the same segment; an identical picture is stopped before any model is asked; a part of a known segment is seen |
+
+Matching is by words and numbers (a segment is "the same" at about 94-96% likeness with identical numbers; a part must be found whole and in one
+piece; a continuation needs 4 shared words at a marked cut, 12 otherwise). When in doubt it chooses **new**: reading something twice costs a little,
+missing it costs the person the content.
 
 How a screen is judged to have **changed** (`detect.rs`):
 
@@ -141,7 +165,7 @@ gives no identity, so it is refused). State-changing calls carry the session's C
 | `POST /courses/:id/documents/from-meeting`, `GET /meetings` | a finished lecture of your own as course material; the list to choose from |
 | `DELETE /documents/:id`, `GET /search?course=&q=` | |
 | `POST /sessions`, `GET /sessions/current`, `PATCH/…/pause/resume/stop` | study sessions |
-| `POST /sessions/:id/captures` (the picture is the body), `GET /sessions/:id/questions` | the screen |
+| `POST /sessions/:id/captures` (the picture is the body), `GET /sessions/:id/questions`, `GET /sessions/:id/content` | the screen: the reply lists the screen's **segments** (kind, title, text, `status` new/seen/grew/continued, `partial`, `continuesFrom`, `related`, how often seen), the `layout`, how the screen relates to the last one (`arrival`: new-screen, overlapping, revisit, same, empty), a `summary`, and the questions to offer (`partial`, `completed`, `duplicate`); the content route lists every segment the session has seen, once each |
 | `POST /sessions/:id/questions/:qid/answer`, `/ask`, `/concept` | answers |
 | `POST /feedback`, `GET /progress` | learning |
 | `GET /memory`, `GET /memory/export`, `DELETE /memory/lane/:lane`, `PATCH/DELETE /memory/experiences/:id`, `DELETE /memory?confirm=all` | the Memory Centre |

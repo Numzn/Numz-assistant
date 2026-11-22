@@ -25,8 +25,9 @@ import { identityText, sameQuestion } from '../camera/questionIdentity.js'
 export const LEDGER_LIMITS = Object.freeze({
   maxSegments: 400,
   maxWords: 600, // compared per segment (a longer one is compared by its first 600 words)
-  minOverlapWords: 4, // words two screens must share at the cut for a segment to be called a continuation (when it was marked as cut off)
-  strongOverlapWords: 12 // words that make a continuation certain even if neither screen marked the cut
+  minOverlapWords: 4, // words two screens must share at the cut for a continuation when BOTH edges are marked as cut
+  oneMarkOverlapWords: 8, // ... when only one of the two edges is marked
+  strongOverlapWords: 12 // ... when neither is: a long shared run of words on its own
 })
 
 const SAME_RATIO = 0.94 // long text: the share of words in common (short text uses the question rule: 96% of the characters)
@@ -110,14 +111,19 @@ const cleanGroup = (value) => String(value ?? '').toLowerCase().replace(/\s+/g, 
 /** What identifies a segment's content: a question by its wording and options (the Smart Camera's rule), anything else by its text. */
 const matchText = (segment) => (segment.kind === 'question' ? identityText({ text: segment.text, options: segment.options }) : segment.text)
 
+/** How many words two segments must share at the join to be called one, from how many of the two edges are marked as cut. */
+const joinNeed = (a, b) => (a && b ? LEDGER_LIMITS.minOverlapWords : a || b ? LEDGER_LIMITS.oneMarkOverlapWords : LEDGER_LIMITS.strongOverlapWords)
+
 function relate(known, incoming) {
   const a = known.norm
   const b = incoming.norm
   if (!a.length || !b.length) return null
   const { contained, jaccard } = overlapOf(known.set, incoming.set)
   if (jaccard >= 0.6 && numbersOf(a) === numbersOf(b) && (a.length <= 140 && b.length <= 140 ? sameQuestion(known.match, incoming.match) : match(a, b).length / Math.max(a.length, b.length) >= SAME_RATIO)) return { type: 'same' }
-  const cutAfter = known.cut.bottom || incoming.cut.top
-  const cutBefore = known.cut.top || incoming.cut.bottom
+  // The evidence a screen's edge gives for "these two are one segment": both marked as cut at the joining edge is strong, one mark is some,
+  // none needs a long shared run of words. A coincidence of a few common words is never enough on its own.
+  const needAfter = joinNeed(known.cut.bottom, incoming.cut.top)
+  const needBefore = joinNeed(known.cut.top, incoming.cut.bottom)
   if (contained >= 0.5) {
     const m = match(a, b)
     const ofKnown = m.length / a.length
@@ -129,9 +135,9 @@ function relate(known, incoming) {
     }
   }
   // Two screens that cut one segment: the end of the earlier one is the start of the later one (scrolling down), or the other way round (up).
-  const after = overlapAtCut(a, b, cutAfter ? LEDGER_LIMITS.minOverlapWords : LEDGER_LIMITS.strongOverlapWords)
+  const after = overlapAtCut(a, b, needAfter)
   if (after) return { type: 'continued', side: 'after', overlap: after }
-  const before = overlapAtCut(b, a, cutBefore ? LEDGER_LIMITS.minOverlapWords : LEDGER_LIMITS.strongOverlapWords)
+  const before = overlapAtCut(b, a, needBefore)
   if (before) return { type: 'continued', side: 'before', overlap: before }
   return null
 }
