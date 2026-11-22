@@ -16,7 +16,7 @@
     "meeting": "node scripts/meeting-admin.js",
     "outbox:status": "node scripts/run-outbox.js status",
     "outbox:replay": "node scripts/run-outbox.js replay",
-    "test": "node --test server/meetings/*.test.js server/persistence/*.test.js server/screenshots/*.test.js server/academic/*.test.js server/auth/*.test.js server/usage/*.test.js server/cli/*.test.js server/websocket/*.test.js server/api/*.test.js tests/*.test.js",
+    "test": "node --test server/meetings/*.test.js server/persistence/*.test.js server/screenshots/*.test.js server/academic/*.test.js server/auth/*.test.js server/usage/*.test.js server/cli/*.test.js server/websocket/*.test.js server/ai/providers/*.test.js server/api/*.test.js tests/*.test.js",
     "build": "vite build && node scripts/precompress.js dist",
     "bundle:report": "node scripts/bundle-report.js dist",
     "start": "cross-env NODE_ENV=production node server/server.js",
