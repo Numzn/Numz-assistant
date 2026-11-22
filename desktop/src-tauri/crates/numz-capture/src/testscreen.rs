@@ -100,3 +100,17 @@ pub fn clock(image: &mut RgbaImage, text: &str) {
     let x = image.width().saturating_sub(10 + text.chars().count() as u32 * 12);
     draw_text(image, x, 8, text, 2);
 }
+
+/// Two panels side by side (a split view, two documents, a question beside its working), each with its own lines of text.
+pub fn columns(width: u32, height: u32, left: &[String], right: &[String]) -> RgbaImage {
+    let mut image = RgbaImage::from_pixel(width, height, PAPER);
+    for (x, panel) in [(60, left), (width / 2 + 30, right)] {
+        for (i, line) in panel.iter().enumerate() {
+            let y = 40 + i as u32 * 22;
+            if y + 14 < height {
+                draw_text(&mut image, x, y, line, 2);
+            }
+        }
+    }
+    image
+}

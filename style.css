@@ -3177,3 +3177,51 @@ body[data-page="camera"] [hidden] {
     width: 100%;
   }
 }
+
+/* Study panel: the content seen in a session (segments of any kind), and chips that warn or confirm. */
+.study-content {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+.study-content > summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.study-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0 12px 12px;
+  list-style: none;
+}
+.study-segment {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.study-segment[data-status="seen"] {
+  opacity: 0.72;
+}
+.study-segment-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.study-segment button {
+  align-self: flex-start;
+}
+.study-chip[data-tone="ok"] {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.study-chip[data-tone="warn"] {
+  border-color: var(--warn);
+  color: var(--warn);
+}

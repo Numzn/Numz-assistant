@@ -562,3 +562,118 @@ test('the panel is told what was read: questions found, the same screen again, n
   await t.controller.stop()
   assert.equal(t.controller.getState().lastRead, null, 'and it is forgotten when the session ends')
 })
+
+// ---- content intelligence in the page: segments, scrolling, revisits, cut-off questions, continuation --------------------------------
+
+const segment = (id, kind, status, text, over = {}) => ({ id, kind, title: '', text, status, partial: null, related: [], seenCount: 1, questionId: null, ...over })
+const screen = (segments, questions, over = {}) => ({
+  captureId: `k-${Math.random()}`,
+  status: segments.some((s) => s.status !== 'seen') ? 'recognised' : 'duplicate',
+  questions,
+  segments,
+  layout: segments.length > 1 ? 'multiple' : 'single',
+  arrival: 'new-screen',
+  summary: { total: segments.length, new: segments.filter((s) => s.status === 'new').length, seen: segments.filter((s) => s.status === 'seen').length, grew: segments.filter((s) => s.status === 'grew').length, continued: segments.filter((s) => s.status === 'continued').length, partial: segments.filter((s) => s.partial).length },
+  context: { courseId: 'c1' },
+  signals: [],
+  ...over
+})
+const qn = (id, text, over = {}) => ({ id, text, options: [], task: 'explain', duplicate: false, ...over })
+
+async function study(over = {}) {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, ...over })
+  return t
+}
+const feedScreen = async (t, reply, cap) => {
+  t.api.script.send = async () => reply
+  t.native.script.polls = [polled({ pending: pending(cap) }), polled()]
+  await until(() => t.native.calls.discard.includes(cap))
+  await until(() => t.controller.getState().lastRead !== null && !t.controller.getState().reading)
+  for (let i = 0; i < 6; i++) await tick()
+}
+
+test('several segments of different kinds on one screen: all are listed, the questions among them are answered by themselves, the rest wait', async () => {
+  const t = await study()
+  t.api.script.answer = async () => answered({ questionId: `q${t.api.calls.answer.length}`, markdown: `Answer ${t.api.calls.answer.length}` })
+  await feedScreen(t, screen([segment('g1', 'paragraph', 'new', 'Relational databases store data in tables.', { title: 'Tables' }), segment('g2', 'question', 'new', 'Explain a primary key.', { questionId: 'q1' }), segment('g3', 'code', 'new', 'SELECT * FROM t;'), segment('g4', 'question', 'new', 'Define a foreign key.', { questionId: 'q2' })], [qn('q1', 'Explain a primary key.'), qn('q2', 'Define a foreign key.')]), 'cap-1')
+  const s = t.controller.getState()
+  assert.deepEqual(s.content.map((c) => [c.kind, c.status]), [['paragraph', 'new'], ['question', 'new'], ['code', 'new'], ['question', 'new']])
+  assert.deepEqual([s.lastRead.status, s.lastRead.arrival, s.lastRead.summary.new], ['questions', 'new-screen', 4])
+  await until(() => t.exchanges.length === 2)
+  assert.equal(t.api.calls.answer.length, 2, 'only the two questions were answered; the paragraph and the code were not')
+  await t.controller.stop()
+})
+
+test('scrolling: what was seen is not listed or answered again, what appears is added and answered', async () => {
+  const t = await study()
+  await feedScreen(t, screen([segment('g1', 'paragraph', 'new', 'First paragraph about tables.'), segment('g2', 'question', 'new', 'Explain a primary key.')], [qn('q1', 'Explain a primary key.')]), 'cap-1')
+  await until(() => t.api.calls.answer.length === 1)
+  await feedScreen(t, screen([segment('g2', 'question', 'seen', 'Explain a primary key.', { seenCount: 2, questionId: 'q1' }), segment('g3', 'paragraph', 'new', 'A new paragraph about joins.'), segment('g4', 'question', 'new', 'Say what a join does.', { questionId: 'q2' })], [qn('q1', 'Explain a primary key.', { duplicate: true }), qn('q2', 'Say what a join does.')], { arrival: 'overlapping' }), 'cap-2')
+  const s = t.controller.getState()
+  assert.equal(s.content.length, 4, 'four segments in all, not six')
+  assert.equal(s.content.find((c) => c.id === 'g2').seenCount, 2)
+  assert.deepEqual(s.questions.map((q) => q.id), ['q1', 'q2'], 'q1 is not a second card')
+  await until(() => t.api.calls.answer.length === 2)
+  assert.deepEqual(t.api.calls.answer.map((a) => a[0]), ['q1', 'q2'], 'q1 once, q2 once')
+  assert.equal(s.lastRead.arrival, 'overlapping')
+  await t.controller.stop()
+})
+
+test('going back to content already seen (previous, a tab, scrolling up) processes nothing and says so', async () => {
+  const t = await study()
+  await feedScreen(t, screen([segment('g1', 'paragraph', 'new', 'Tables.'), segment('g2', 'question', 'new', 'Explain a primary key.', { questionId: 'q1' })], [qn('q1', 'Explain a primary key.')]), 'cap-1')
+  await until(() => t.api.calls.answer.length === 1)
+  const before = [t.controller.getState().questions.length, t.api.calls.answer.length, t.exchanges.length]
+  await feedScreen(t, screen([segment('g1', 'paragraph', 'seen', 'Tables.', { seenCount: 2 }), segment('g2', 'question', 'seen', 'Explain a primary key.', { seenCount: 2, questionId: 'q1' })], [qn('q1', 'Explain a primary key.', { duplicate: true })], { arrival: 'revisit' }), 'cap-2')
+  assert.deepEqual([t.controller.getState().questions.length, t.api.calls.answer.length, t.exchanges.length], before, 'no new card, no new answer, nothing new in the conversation')
+  assert.deepEqual([t.controller.getState().lastRead.status, t.controller.getState().lastRead.arrival], ['same', 'revisit'])
+  await t.controller.stop()
+})
+
+test('a screen with only material on it (no question) is organised and shown, and explaining it is the person\'s choice', async () => {
+  const t = await study()
+  await feedScreen(t, screen([segment('g1', 'paragraph', 'new', 'Normalisation organises tables so that each fact is stored once.', { title: 'Normal forms' })], []), 'cap-1')
+  const s = t.controller.getState()
+  assert.deepEqual([s.lastRead.status, s.content.length, s.questions.length, t.api.calls.answer.length, t.api.calls.ask.length], ['content', 1, 0, 0, 0], 'listed, nothing asked of the model')
+  await t.controller.explainSegment('g1')
+  assert.equal(t.api.calls.ask.length, 1)
+  assert.match(t.api.calls.ask[0][0], /Explain this paragraph "Normal forms" from my screen:\nNormalisation organises tables/)
+  await t.controller.stop()
+})
+
+test('a question cut off by the screen is held and not answered by itself; when the rest appears it is whole, updated, and answered once', async () => {
+  const t = await study()
+  await feedScreen(t, screen([segment('g1', 'question', 'new', 'Explain why a primary key must be', { questionId: 'q1', partial: { top: false, bottom: true } })], [qn('q1', 'Explain why a primary key must be', { partial: true })]), 'cap-1')
+  let q = t.controller.getState().questions[0]
+  assert.deepEqual([q.partial, q.state, t.api.calls.answer.length], [true, 'new', 0])
+  assert.match(t.controller.getState().message, /cut off by the edge of the screen/)
+  await feedScreen(t, screen([segment('g1', 'question', 'grew', 'Explain why a primary key must be unique and never empty.', { questionId: 'q1', completed: true })], [qn('q1', 'Explain why a primary key must be unique and never empty.', { duplicate: false, completed: true, partial: false })], { arrival: 'overlapping' }), 'cap-2')
+  await until(() => t.api.calls.answer.length === 1)
+  q = t.controller.getState().questions[0]
+  assert.deepEqual([t.controller.getState().questions.length, q.partial, q.text], [1, false, 'Explain why a primary key must be unique and never empty.'])
+  assert.equal(t.api.calls.answer[0][0], 'q1')
+  assert.equal(t.exchanges.length, 1)
+  await t.controller.stop()
+})
+
+test('content that continues across screens updates the one segment it belongs to', async () => {
+  const t = await study()
+  await feedScreen(t, screen([segment('g1', 'paragraph', 'new', 'The rate of change of velocity with time is called', { partial: { top: false, bottom: true } })], []), 'cap-1')
+  await feedScreen(t, screen([segment('g1', 'paragraph', 'continued', 'The rate of change of velocity with time is called acceleration and is measured in metres per second squared.', { seenCount: 2 })], []), 'cap-2')
+  const s = t.controller.getState()
+  assert.deepEqual([s.content.length, s.content[0].status, s.content[0].partial], [1, 'continued', null])
+  assert.match(s.content[0].text, /measured in metres per second squared/)
+  assert.equal(s.lastRead.status, 'content')
+  await t.controller.stop()
+})
+
+test('after a reload the session\'s content comes back, and a restricted session never offers to explain it', async () => {
+  const t = build()
+  t.api.script.current = { session: session({ captureEnabled: true }) }
+  t.api.content = async () => ({ segments: [segment('g1', 'paragraph', 'seen', 'Tables hold rows and columns.', { seenCount: 3 })] })
+  await t.controller.init()
+  await until(() => t.controller.getState().content.length === 1)
+  assert.equal(t.controller.getState().content[0].seenCount, 3)
+})

@@ -556,6 +556,41 @@ mod tests {
     }
 
     #[test]
+    fn someone_paging_and_scrolling_through_material_is_captured_at_every_view_that_rests_and_never_closer_than_the_gap() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let mut w = watcher(&fake, t0);
+        let doc = crate::testscreen::lines(80);
+        let view = |first: usize| crate::testscreen::page(1280, 720, &doc[first..first + 24]);
+        // seconds -> the view on screen: rests, scrolls (changing at every look), rests, jumps back, rests
+        let script: Vec<(f32, usize)> = (0..60)
+            .map(|i| {
+                let t = i as f32 * 2.5;
+                let first = match t {
+                    t if t < 20.0 => 0,                                  // rests on the first view
+                    t if t < 30.0 => ((t - 20.0) / 2.5) as usize * 5 + 5, // scrolls: a different view at every look
+                    t if t < 60.0 => 22,                                  // rests further down
+                    t if t < 90.0 => 47,                                  // rests further down still (the sample text repeats every 18 lines)
+                    _ => 0,                                               // goes back to the top
+                };
+                (t, first)
+            })
+            .collect();
+        let mut reported = vec![];
+        for (t, first) in &script {
+            fake.show(view(*first));
+            let tick = w.tick(&fake, secs(t0, *t));
+            if tick == Tick::Reported {
+                reported.push((*t, *first));
+            }
+            w.poll(secs(t0, *t));
+        }
+        let views: Vec<usize> = reported.iter().map(|(_, first)| *first).collect();
+        assert_eq!(views, vec![0, 22, 47, 0], "each view that rested was captured once, in order, and the scroll in between was not: {reported:?}");
+        assert!(reported.windows(2).all(|pair| pair[1].0 - pair[0].0 >= 10.0), "never closer than the minimum gap: {reported:?}");
+    }
+
+    #[test]
     fn what_this_app_shows_about_the_study_session_does_not_make_the_screen_look_new() {
         let fake = Fake::new(true);
         let t0 = Instant::now();

@@ -366,6 +366,66 @@ mod tests {
         assert_eq!(feed(&mut d, &real("code"), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "== -> != is a change");
     }
 
+    // ---- layouts and navigation: what the detector does when a screen is one segment, several, paged through or scrolled ----------------
+
+    fn view(all: &[String], first: usize, count: usize) -> RgbaImage {
+        page(1600, 900, &all[first..first + count])
+    }
+
+    #[test]
+    fn scrolling_down_each_view_that_comes_to_rest_is_a_new_screen_and_a_scroll_in_progress_is_waited_out() {
+        let mut d = Detector::new(Config::default());
+        let doc = lines(70);
+        assert!(feed(&mut d, &view(&doc, 0, 30), 3).contains(&Verdict::Changed));
+        // the person scrolls 4 lines at a time, then 3 more times, then rests: only the resting view counts
+        let moving: Vec<_> = [4, 8, 12].iter().map(|at| d.observe(signature(&view(&doc, *at, 30)))).collect();
+        assert_eq!(moving, vec![Verdict::Settling; 3], "while it moves nothing is captured");
+        let rest = feed(&mut d, &view(&doc, 16, 30), 3);
+        assert_eq!(rest, vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "the view that stays is captured once");
+        // half a screen further: this view overlaps the last one by more than half and is a new screen all the same
+        assert!(feed(&mut d, &view(&doc, 31, 30), 3).contains(&Verdict::Changed), "overlapping screens are not the same screen");
+    }
+
+    #[test]
+    fn scrolling_back_up_is_a_new_screen_to_the_detector_and_it_is_the_server_that_knows_it_has_seen_it() {
+        let mut d = Detector::new(Config::default());
+        let doc = lines(70);
+        feed(&mut d, &view(&doc, 0, 30), 3);
+        feed(&mut d, &view(&doc, 20, 30), 3);
+        assert!(feed(&mut d, &view(&doc, 0, 30), 3).contains(&Verdict::Changed), "a view that differs from the one last reported is reported: its content is judged by the server");
+    }
+
+    #[test]
+    fn paging_through_slides_and_tabs_every_page_that_settles_is_a_new_screen() {
+        let mut d = Detector::new(Config::default());
+        let pages: Vec<Vec<String>> = (0..4).map(|p| (0..12).map(|i| format!("slide {p} line {i} x = {} + {};", p + i, 7 - p)).collect()).collect();
+        for (i, p) in [0usize, 1, 2, 3, 2, 1, 0].iter().enumerate() {
+            let verdicts = feed(&mut d, &page(1600, 900, &pages[*p]), 3);
+            assert_eq!(verdicts, vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "step {i}: page {p}");
+        }
+    }
+
+    #[test]
+    fn a_screen_with_two_panels_is_one_screen_and_a_change_in_either_panel_is_a_change() {
+        let mut d = Detector::new(Config::default());
+        let left = lines(14);
+        let right: Vec<String> = lines(14).into_iter().rev().collect();
+        let screen = |l: &[String], r: &[String]| crate::testscreen::columns(1600, 900, l, r);
+        assert_eq!(feed(&mut d, &screen(&left, &right), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged]);
+        let mut right_edit = right.clone();
+        right_edit[5] = "x = 19 + 7;".to_string();
+        assert_eq!(feed(&mut d, &screen(&left, &right_edit), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "only the right panel changed");
+        let mut left_edit = left.clone();
+        left_edit[9] = "a = b + d;".to_string();
+        assert_eq!(feed(&mut d, &screen(&left_edit, &right_edit), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "only the left panel changed");
+        let mut both_left = left_edit.clone();
+        let mut both_right = right_edit.clone();
+        both_left[2] = "6 + 2 = 8".to_string();
+        both_right[11] = "e = 3 + 9;".to_string();
+        let verdicts = feed(&mut d, &screen(&both_left, &both_right), 3);
+        assert_eq!(count(&verdicts, Verdict::Changed), 1, "both panels at once are one capture: {verdicts:?}");
+    }
+
     #[test]
     fn an_edit_in_progress_is_waited_out_and_read_once_when_it_stops() {
         let mut d = Detector::new(Config::default());

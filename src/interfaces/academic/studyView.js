@@ -123,7 +123,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
       { class: 'study-q', 'data-state': q.state },
       h(doc, 'div', { class: 'study-q-text', text: q.text }),
       q.options?.length ? h(doc, 'ul', { class: 'study-q-options' }, q.options.map((o) => h(doc, 'li', { text: `${o.label}) ${o.text}` }))) : null,
-      h(doc, 'div', { class: 'study-q-meta' }, h(doc, 'span', { class: 'study-chip', text: (q.task ?? 'explain').replace('_', ' ') }), q.marks ? h(doc, 'span', { class: 'study-chip', text: `${q.marks} marks` }) : null),
+      h(doc, 'div', { class: 'study-q-meta' }, h(doc, 'span', { class: 'study-chip', text: (q.task ?? 'explain').replace('_', ' ') }), q.partial ? h(doc, 'span', { class: 'study-chip', 'data-tone': 'warn', text: 'cut off by the screen' }) : null, q.marks ? h(doc, 'span', { class: 'study-chip', text: `${q.marks} marks` }) : null),
       q.state === 'confirm'
         ? h(doc, 'div', { class: 'study-warn' }, h(doc, 'p', { text: q.message }), h(doc, 'button', { type: 'button', text: 'This is practice: carry on', onclick: () => controller.answerQuestion(q.id, { confirmPractice: true }) }), h(doc, 'button', { type: 'button', text: 'End this session', onclick: () => controller.stop() }))
         : null,
@@ -131,11 +131,37 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
         ? h(doc, 'div', { class: 'study-warn' }, h(doc, 'p', { text: q.message }), (q.candidates ?? []).map((c) => h(doc, 'button', { type: 'button', text: c.title, onclick: () => controller.answerQuestion(q.id, { courseId: c.courseId }) })))
         : null,
       q.state === 'failed' ? h(doc, 'p', { class: 'study-error', text: q.message }) : null,
-      q.state === 'new' || q.state === 'failed' ? h(doc, 'button', { type: 'button', class: 'study-primary', disabled: state.phase === 'paused', text: 'Explain', onclick: () => controller.answerQuestion(q.id) }) : null,
+      q.state === 'new' || q.state === 'failed' ? h(doc, 'button', { type: 'button', class: 'study-primary', disabled: state.phase === 'paused', text: q.partial ? 'Explain what is visible' : 'Explain', onclick: () => controller.answerQuestion(q.id) }) : null,
       q.state === 'answering' ? h(doc, 'p', { class: 'study-working', text: 'Working on it…' }) : null,
       answer
         ? h(doc, 'p', { class: 'study-answered', text: `Answered in the conversation (${answer.grounding === 'course' ? 'from your course materials' : answer.grounding === 'research' ? 'from research' : answer.grounding === 'both' ? 'from your materials and research' : 'from general knowledge'}).` })
         : null
+    )
+  }
+
+  const STATUS_TEXT = { new: 'new', seen: 'seen before', grew: 'more of it now', continued: 'continued' }
+  /** Everything the session has seen, once each, whatever it is: the organised record of the screens read so far. */
+  function renderContent(state) {
+    if (!state.content.length) return null
+    const items = [...state.content].reverse()
+    return h(
+      doc,
+      'details',
+      { class: 'study-content' },
+      h(doc, 'summary', { text: `Content seen in this session (${state.content.length})` }),
+      h(doc, 'ul', { class: 'study-segments' }, items.map((c) => {
+        const related = c.continuesFrom ? state.content.find((x) => x.id === c.continuesFrom) : null
+        return h(doc, 'li', { class: 'study-segment', 'data-status': c.status },
+          h(doc, 'div', { class: 'study-q-meta' },
+            h(doc, 'span', { class: 'study-chip', text: c.kind }),
+            c.title ? h(doc, 'span', { class: 'study-chip', text: c.title }) : null,
+            h(doc, 'span', { class: 'study-chip', 'data-tone': c.status === 'seen' ? '' : 'ok', text: STATUS_TEXT[c.status] ?? c.status }),
+            c.partial ? h(doc, 'span', { class: 'study-chip', 'data-tone': 'warn', text: 'cut off' }) : null,
+            c.seenCount > 1 ? h(doc, 'span', { class: 'study-chip', text: `seen ${c.seenCount} times` }) : null),
+          h(doc, 'p', { class: 'study-segment-text', text: c.text.length > 180 ? `${c.text.slice(0, 180)}…` : c.text }),
+          related ? h(doc, 'small', { class: 'study-note', text: `Continues: ${related.title || related.text.slice(0, 40)}…` }) : null,
+          c.kind !== 'question' && state.session?.sessionType !== 'restricted' ? h(doc, 'button', { type: 'button', disabled: state.phase === 'paused' || state.busy, text: 'Explain this', onclick: () => controller.explainSegment(c.id) }) : null)
+      }))
     )
   }
 
@@ -154,6 +180,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
       state.watch.status !== 'off' ? h(doc, 'p', { id: 'studyWatchNote', class: 'study-note', 'aria-live': 'off', text: watchNote(state) }) : null,
       restricted ? h(doc, 'p', { class: 'study-warn', text: 'Restricted assessment: NUMZ AI is not reading your screen and will not answer questions. Name a concept below to have it explained in general terms.' }) : null,
       state.questions.length ? h(doc, 'ul', { class: 'study-questions' }, state.questions.map((q) => renderQuestion(state, q))) : !restricted ? h(doc, 'p', { class: 'study-empty', text: state.watch.status === 'watching' ? 'Waiting for something on your screen to read…' : 'Questions NUMZ AI finds on your screen appear here. You can also type one below.' }) : null,
+      renderContent(state),
       h(
         doc,
         'form',
@@ -314,7 +341,20 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
   // ---- drawing ------------------------------------------------------------------------------------------------------------------
 
   const clockText = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  const readText = (read) => ({ questions: `${read.count} new question${read.count === 1 ? '' : 's'}`, same: 'nothing new: the same question as before', none: 'no question on the screen', unclear: 'the screen could not be understood', 'held-back': 'it could not be read this time' })[read.status] ?? ''
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  /** What the last screen turned out to hold, in words: new things, things already seen, how it relates to the screen before. */
+  const readText = (read) => {
+    const sum = read.summary
+    const parts = []
+    if (sum) {
+      if (sum.new) parts.push(`${plural(sum.new, 'new segment', 'new segments')}`)
+      if (sum.grew + sum.continued) parts.push(`${sum.grew + sum.continued} continued or completed`)
+      if (sum.seen) parts.push(`${sum.seen} already seen`)
+    }
+    const how = { overlapping: 'overlaps the last screen', revisit: 'content seen before, nothing to process again', same: 'the same content as before', 'new-screen': 'a new screen' }[read.arrival]
+    if (read.status === 'questions' || read.status === 'content') return [parts.join(', '), how].filter(Boolean).join(' · ') || (read.status === 'questions' ? plural(read.count, 'new question', 'new questions') : 'new content')
+    return { same: how && parts.length ? [parts.join(', '), how].join(' · ') : 'nothing new: the same content as before', none: 'nothing worth reading on the screen', unclear: 'the screen could not be understood', 'held-back': 'it could not be read this time' }[read.status] ?? ''
+  }
   /** The live line under the session bar: what the watcher has done, and what the last screen it sent turned out to hold. */
   const watchNote = (state) => {
     const counts = `Looked ${state.watch.looks} times, sent ${state.watch.reported}${state.watch.skipped ? `, held back ${state.watch.skipped} times for something excluded` : ''}.`
@@ -322,7 +362,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     return state.lastRead ? `${counts} Last read ${clockText(state.lastRead.at)}: ${readText(state.lastRead)}.` : counts
   }
   /** What the session tab shows, apart from the counters: the panel is redrawn only when this changes, so typing is never interrupted. */
-  const signature = (state) => JSON.stringify([tab, state.phase, state.session && [state.session.id, state.session.status, state.session.sessionType], state.message, state.tone, state.busy, state.watch.available, state.watch.status, state.watch.excludedNow, state.watch.note, state.courses.map((c) => c.id), state.questions.map((q) => [q.id, q.state, q.message]), state.lastAnswer?.answerId ?? null])
+  const signature = (state) => JSON.stringify([tab, state.phase, state.session && [state.session.id, state.session.status, state.session.sessionType], state.message, state.tone, state.busy, state.watch.available, state.watch.status, state.watch.excludedNow, state.watch.note, state.courses.map((c) => c.id), state.questions.map((q) => [q.id, q.state, q.message, q.partial ? 1 : 0, q.text.length]), state.content.map((c) => [c.id, c.status, c.partial ? 1 : 0, c.text.length]), state.lastAnswer?.answerId ?? null])
   let drawn = ''
 
   function render(force = false) {

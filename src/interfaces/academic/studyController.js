@@ -29,7 +29,8 @@ const initial = () => ({
   questions: [], // { id, text, options, task, marks, signals, state: 'new'|'answering'|'answered'|'confirm'|'needs-course'|'failed', message?, candidates?, answer? }
   lastAnswer: null, // { answerId, questionId, courseId, topic, approach, markdown, sources, grounding, evidence, flags }
   reading: false, // a screen is on its way to be read
-  lastRead: null, // { at, status: 'questions'|'same'|'none'|'unclear'|'held-back', count } the last screen the server read
+  content: [], // the segments of content seen in this session, once each: { id, kind, title, text, status, partial, continuesFrom, seenCount, questionId }
+  lastRead: null, // { at, status: 'questions'|'content'|'same'|'none'|'unclear'|'held-back', count, arrival, summary } the last screen the server read
   message: '',
   tone: 'info',
   busy: false
@@ -85,6 +86,8 @@ export function createStudyController({ api, native, getConversationId = () => n
       if (session) {
         // A session that survived a page reload is still the person's, but screen reading starts again only when they ask.
         set({ session, phase: session.status === 'paused' ? 'paused' : 'active', message: session.captureEnabled ? 'Screen reading is off after reloading. Turn it on when you want it.' : '' })
+        // What the session has already seen comes back too, so the list is whole after a reload.
+        api.content?.(session.id).then((r) => (r?.segments?.length ? mergeContent(r.segments) : null)).catch(() => {})
       }
     } catch {
       /* not signed in, or the server is away: the panel shows its own message when used */
@@ -191,7 +194,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     } catch {
       /* it may already have ended */
     }
-    set({ session: null, phase: 'idle', questions: [], lastAnswer: null, reading: false, lastRead: null, watch: { ...state.watch, status: 'off', excludedNow: false } })
+    set({ session: null, phase: 'idle', questions: [], lastAnswer: null, reading: false, lastRead: null, content: [], watch: { ...state.watch, status: 'off', excludedNow: false } })
     say(reason || 'The study session has ended. Nothing it held is kept.', 'info')
     return state
   }
@@ -243,7 +246,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     await deliver({ bytes: out.bytes, mimeType: out.mimeType }, 0)
   }
 
-  const summary = (status, count) => set({ lastRead: { at: now(), status, count } })
+  const summary = (status, count, more = {}) => set({ lastRead: { at: now(), status, count, ...more } })
 
   async function deliver(picture, tries) {
     const session = state.session
@@ -270,20 +273,36 @@ export function createStudyController({ api, native, getConversationId = () => n
     }
     set({ reading: false })
     if (state.session?.id !== session.id) return // the session ended while the screen was being read
-    if (result.status !== 'recognised') {
-      summary(result.status === 'duplicate' ? 'same' : result.status === 'unclear' ? 'unclear' : 'none', 0)
+    const segments = Array.isArray(result.segments) ? result.segments : []
+    const more = { arrival: result.arrival ?? null, summary: result.summary ?? null }
+    if (segments.length) mergeContent(segments)
+    if (result.status !== 'recognised' && result.status !== 'duplicate') {
+      summary(result.status === 'unclear' ? 'unclear' : 'none', 0, more)
       return
     }
-    const fresh = result.questions.filter((q) => !q.duplicate && !state.questions.some((known) => known.id === q.id))
-    const added = fresh.map((q) => ({ id: q.id, text: q.text, options: q.options ?? [], task: q.task, marks: q.marks ?? null, signals: result.signals ?? [], state: 'new', context: result.context }))
+    const known = (id) => state.questions.some((q) => q.id === id)
+    // A question the session already has that was cut off before and is whole now: its text is updated and it is answered like a new one.
+    const completed = result.questions.filter((q) => q.completed && known(q.id))
+    for (const q of completed) patchQuestion(q.id, { text: q.text, options: q.options ?? [], task: q.task, partial: false, state: ['answering', 'answered'].includes(state.questions.find((x) => x.id === q.id)?.state) ? state.questions.find((x) => x.id === q.id).state : 'new' })
+    const fresh = result.questions.filter((q) => !q.duplicate && !q.completed && !known(q.id))
+    const added = fresh.map((q) => ({ id: q.id, text: q.text, options: q.options ?? [], task: q.task, marks: q.marks ?? null, partial: q.partial === true, signals: result.signals ?? [], state: 'new', context: result.context }))
     set({ questions: [...state.questions, ...added] })
-    summary(added.length ? 'questions' : 'same', added.length)
-    if (!added.length) return
-    say(`Found ${added.length === 1 ? 'a question' : `${added.length} questions`} on your screen.`, 'ok')
-    if (!session.autoAnswer) return
+    const freshSegments = segments.filter((x) => x.status !== 'seen').length
+    summary(added.length || completed.length ? 'questions' : freshSegments ? 'content' : 'same', added.length + completed.length, more)
+    const ready = [...completed.map((q) => q.id), ...added.filter((q) => !q.partial).map((q) => q.id)]
+    if (added.length) say(`Found ${added.length === 1 ? 'a question' : `${added.length} questions`} on your screen.${added.some((q) => q.partial) ? ' One is cut off by the edge of the screen: it will be answered when the rest is visible.' : ''}`, 'ok')
+    else if (completed.length) say('A question that was cut off is whole now.', 'ok')
+    if (!session.autoAnswer || !ready.length) return
     if ((result.signals ?? []).length) return say('This screen may be an assessment, so nothing was answered automatically. Press Explain if it is practice.', 'warn')
-    for (const q of added.slice(0, AUTO_ANSWER_LIMIT)) answering = answering.then(() => answerQuestion(q.id)).catch(() => {})
-    if (added.length > AUTO_ANSWER_LIMIT) say(`Answering the first ${AUTO_ANSWER_LIMIT} of ${added.length} questions. Press Explain on the rest.`, 'info')
+    for (const id of ready.slice(0, AUTO_ANSWER_LIMIT)) answering = answering.then(() => answerQuestion(id)).catch(() => {})
+    if (ready.length > AUTO_ANSWER_LIMIT) say(`Answering the first ${AUTO_ANSWER_LIMIT} of ${ready.length} questions. Press Explain on the rest.`, 'info')
+  }
+
+  /** The segments of the screen just read, into the list of everything seen in the session (each once; new ones at the end). */
+  function mergeContent(segments) {
+    const byId = new Map(state.content.map((c) => [c.id, c]))
+    for (const segment of segments) byId.set(segment.id, { ...byId.get(segment.id), ...segment })
+    set({ content: [...byId.values()].slice(-200) })
   }
 
   async function poll(token) {
@@ -390,6 +409,14 @@ export function createStudyController({ api, native, getConversationId = () => n
     }
   }
 
+  /** Content that is not a question, explained on request (it costs a call, so it is never done by itself). */
+  async function explainSegment(id) {
+    const segment = state.content.find((c) => c.id === id)
+    if (!segment || !state.session) return null
+    const label = segment.title ? `${segment.kind} "${segment.title}"` : segment.kind
+    return ask(`Explain this ${label} from my screen:\n${segment.text}`.slice(0, 2000))
+  }
+
   // ---- feedback ----------------------------------------------------------------------------------------------------------------
 
   /** kind: helpful | not_helpful | misunderstanding | correction (with note) | save_concept | simpler | deeper */
@@ -430,6 +457,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     answerQuestion,
     ask,
     explainConcept,
+    explainSegment,
     feedback,
     /** The page is closing: stop reading the screen. */
     async destroy() {
