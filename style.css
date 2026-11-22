@@ -2848,3 +2848,332 @@ body[data-page="camera"] [hidden] {
 .chip[data-kind="screenshot"] .remove {
   margin-left: 4px;
 }
+
+/* ---- Academic Intelligence: the Study panel (a panel over the right edge, like Meeting, so it needs no extra column) ---- */
+#studyPanel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 13;
+  display: flex;
+  flex-direction: column;
+  width: min(430px, 100%);
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: -10px 0 32px rgba(0, 0, 0, 0.32);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+  user-select: text;
+}
+#studyPanel[hidden],
+#studyPanel [hidden] {
+  display: none !important;
+}
+#studyHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+#studyHeading {
+  font-weight: 600;
+}
+#studyIndicator {
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+#studyIndicator[data-state="on"],
+#studyIndicator[data-state="paused"] {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+#studyIndicator[data-state="reading"] {
+  color: var(--danger);
+  border-color: var(--danger);
+  font-weight: 600;
+}
+#studyClose {
+  margin-left: auto;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 22px;
+  cursor: pointer;
+}
+#studyButton[data-session="reading"]::before,
+#studyButton[data-session="on"]::before,
+#studyButton[data-session="paused"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+#studyButton[data-session="reading"]::before {
+  background: var(--danger);
+  animation: live-pulse 1.5s infinite;
+}
+#studyTabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+#studyTabs button {
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+#studyTabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+#studyBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 14px 16px 24px;
+  overflow-y: auto;
+}
+#studyBody > * {
+  flex-shrink: 0;
+}
+#studyBody form,
+.study-active,
+.study-materials,
+.study-memory {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.study-lead {
+  margin: 0;
+  color: var(--text-muted);
+}
+.study-note,
+.study-empty {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.study-message {
+  margin: 0;
+  min-height: 0;
+  color: var(--text-muted);
+}
+.study-message:empty {
+  display: none;
+}
+.study-message[data-tone="ok"] {
+  color: var(--ok);
+}
+.study-message[data-tone="warn"] {
+  color: var(--warn);
+}
+.study-message[data-tone="error"],
+.study-error {
+  color: var(--danger);
+}
+.study-warn {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-md);
+  color: var(--text);
+}
+.study-warn p {
+  margin: 0 0 8px;
+}
+.study-types {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.study-types legend {
+  margin-bottom: 6px;
+  color: var(--text-muted);
+}
+.study-type {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.study-type:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+.study-type small {
+  grid-column: 2;
+  color: var(--text-faint);
+}
+.study-type-title {
+  font-weight: 600;
+}
+.study-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.study-field > span {
+  color: var(--text-muted);
+}
+.study-field small {
+  color: var(--text-faint);
+}
+.study-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+#studyPanel input[type="text"],
+#studyPanel select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text);
+  font: inherit;
+}
+#studyPanel button {
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+#studyPanel button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+#studyPanel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+#studyPanel button.study-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+#studyPanel button[data-danger="true"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+#studyPanel a {
+  color: var(--accent);
+}
+.study-bar,
+.study-feedback,
+.study-upload {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.study-ask {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+.study-ask input {
+  flex: 1;
+  min-width: 0;
+}
+.study-questions,
+.study-docs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.study-q {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+.study-q-text {
+  white-space: pre-wrap;
+}
+.study-q-options {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+}
+.study-q-meta {
+  display: flex;
+  gap: 6px;
+}
+.study-chip {
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.study-answered,
+.study-working {
+  margin: 0;
+  color: var(--ok);
+  font-size: 13px;
+}
+.study-working {
+  color: var(--text-muted);
+}
+.study-docs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.study-lane {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.study-lane h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+.study-lane ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.study-lane > * + * {
+  margin-top: 8px;
+}
+@media (max-width: 900px) {
+  #studyPanel {
+    width: 100%;
+  }
+}

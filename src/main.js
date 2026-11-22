@@ -23,6 +23,9 @@ import { createNativeCapture } from './interfaces/screenshot/nativeCapture.js'
 import { createScreenshotApi } from './interfaces/screenshot/screenshotApi.js'
 import { createScreenshotController } from './interfaces/screenshot/screenshotController.js'
 import { createScreenshotView } from './interfaces/screenshot/screenshotView.js'
+import { createAcademicApi } from './interfaces/academic/academicApi.js'
+import { createStudyController } from './interfaces/academic/studyController.js'
+import { createStudyView, storedExclusions } from './interfaces/academic/studyView.js'
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 import { createHistoryApi } from './interfaces/history/historyApi.js'
 import { createRecentConversations, createSidebar, enableWebFonts, loadModelLabel, watchOnline } from './interfaces/layout/workspace.js'
@@ -386,6 +389,23 @@ try {
 } catch (err) {
   // The screenshot panel must never take the main screen down with it.
   console.error('[screenshot] panel failed to start', err)
+}
+
+// ---- Academic Intelligence: the Study panel (session, materials, memory). Screen reading is the desktop app's watcher; the browser has none ----
+try {
+  const academicApi = createAcademicApi()
+  const studyController = createStudyController({
+    api: academicApi,
+    native: createNativeCapture(),
+    getConversationId: () => assistantClient.getSessionId?.() ?? null,
+    getExclusions: storedExclusions,
+    onExchange: ({ question, answer }) => chat.addAcademicExchange({ question, answer })
+  })
+  const studyView = createStudyView({ controller: studyController, api: academicApi, onOpen: () => studyController.refreshCourses() })
+  if (studyView) studyController.init().catch(() => {})
+} catch (err) {
+  // The study panel must never take the main screen down with it.
+  console.error('[study] panel failed to start', err)
 }
 
 // ---- Saved conversations: the sidebar's list, and reopening one from the history screen ----

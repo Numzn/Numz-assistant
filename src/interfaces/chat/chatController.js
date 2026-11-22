@@ -276,6 +276,13 @@ export function createChatController({
     emit()
   }
 
+  /** A question explained in a study session: shown as an ordinary exchange (the server saved it in this conversation too). */
+  function addAcademicExchange({ question = '', answer = '' } = {}) {
+    push({ role: 'user', text: question })
+    push({ role: 'assistant', text: answer })
+    emit()
+  }
+
   /** The screenshot was deleted: its messages leave the thread (the server removed them from the saved conversation). */
   function removeScreenshot(shotId) {
     const next = messages.filter((m) => m.shotId !== shotId)
@@ -292,6 +299,7 @@ export function createChatController({
       return () => listeners.delete(listener)
     },
     addScreenshotExchange,
+    addAcademicExchange,
     removeScreenshot,
     send,
     retry,
