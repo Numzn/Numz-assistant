@@ -383,6 +383,69 @@ const MIGRATIONS = [
         BEGIN SELECT RAISE(ABORT, 'meeting-owner-is-permanent'); END;
       `)
     }
+  },
+  {
+    version: 10,
+    name: 'academic knowledge',
+    run(database) {
+      // Course materials a student gives NUMZ AI (text or markdown), cut into passages that can be found again and cited. A document
+      // belongs to one person and one of THEIR courses (the triggers check it); a passage carries its own copy of both ids so every
+      // search can say owner_user_id = ? AND course_id = ? without a join. The search index is an external-content FTS5 table kept in step
+      // by triggers, so deleting a document, a course or a person's knowledge also empties the index. Additive only.
+      database.exec(`
+        CREATE TABLE academic_documents (
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL REFERENCES ai_users(id) ON DELETE CASCADE,
+          course_id TEXT NOT NULL REFERENCES academic_courses(id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          source_type TEXT NOT NULL CHECK (source_type IN ('lecture_notes', 'lecture_transcript', 'course_outline', 'study_guide', 'textbook', 'notes', 'research', 'other')),
+          source_ref TEXT,
+          format TEXT NOT NULL CHECK (format IN ('markdown', 'text')),
+          version INTEGER NOT NULL DEFAULT 1,
+          content_hash TEXT NOT NULL,
+          chars INTEGER NOT NULL,
+          chunk_count INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_academic_documents_title ON academic_documents(owner_user_id, course_id, title);
+        CREATE INDEX idx_academic_documents_source ON academic_documents(owner_user_id, course_id, source_ref);
+
+        CREATE TABLE academic_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          document_id TEXT NOT NULL REFERENCES academic_documents(id) ON DELETE CASCADE,
+          owner_user_id TEXT NOT NULL,
+          course_id TEXT NOT NULL,
+          seq INTEGER NOT NULL,
+          heading_path TEXT NOT NULL DEFAULT '',
+          locator TEXT NOT NULL DEFAULT '',
+          start_line INTEGER,
+          end_line INTEGER,
+          text TEXT NOT NULL
+        );
+        CREATE INDEX idx_academic_chunks_document ON academic_chunks(document_id, seq);
+        CREATE INDEX idx_academic_chunks_scope ON academic_chunks(owner_user_id, course_id);
+
+        CREATE VIRTUAL TABLE academic_chunks_fts USING fts5(
+          text, heading_path, content = 'academic_chunks', content_rowid = 'id', tokenize = 'porter unicode61'
+        );
+        CREATE TRIGGER academic_chunks_fts_insert AFTER INSERT ON academic_chunks BEGIN
+          INSERT INTO academic_chunks_fts(rowid, text, heading_path) VALUES (new.id, new.text, new.heading_path);
+        END;
+        CREATE TRIGGER academic_chunks_fts_delete AFTER DELETE ON academic_chunks BEGIN
+          INSERT INTO academic_chunks_fts(academic_chunks_fts, rowid, text, heading_path) VALUES ('delete', old.id, old.text, old.heading_path);
+        END;
+
+        CREATE TRIGGER trg_document_course_is_own BEFORE INSERT ON academic_documents
+        WHEN (SELECT owner_user_id FROM academic_courses WHERE id = NEW.course_id) IS NOT NEW.owner_user_id
+        BEGIN SELECT RAISE(ABORT, 'course-owner-mismatch'); END;
+
+        CREATE TRIGGER trg_chunk_matches_document BEFORE INSERT ON academic_chunks
+        WHEN (SELECT owner_user_id || '/' || course_id FROM academic_documents WHERE id = NEW.document_id) IS NOT (NEW.owner_user_id || '/' || NEW.course_id)
+        BEGIN SELECT RAISE(ABORT, 'chunk-scope-mismatch'); END;
+      `)
+    }
   }
 ]
 

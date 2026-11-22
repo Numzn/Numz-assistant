@@ -13,6 +13,9 @@ import { createScreenshotRouter } from './routes/screenshots.js'
 import { createAcademicRouter } from './routes/academic.js'
 import { createAcademicRepository } from './persistence/academicRepository.js'
 import { createMemoryLaneManager } from './academic/memoryLanes.js'
+import { createKnowledgeRepository } from './persistence/knowledgeRepository.js'
+import { createKnowledgeService } from './academic/knowledgeService.js'
+import { addKnowledgeRoutes } from './routes/academicKnowledge.js'
 import { createScreenshotService } from './screenshots/screenshotService.js'
 import { createCameraService } from './camera/cameraService.js'
 import { cameraLimitsFromEnv } from './camera/cameraLimits.js'
@@ -159,7 +162,9 @@ const auditAcademic = (event, { userId = null, detail = null } = {}) => {
     /* an audit failure must not break the request it describes */
   }
 }
-const memoryLanes = createMemoryLaneManager({ academic: academicRepo, conversations: sessionService, audit: auditAcademic })
+const knowledgeRepo = createKnowledgeRepository(speechDatabase)
+const knowledgeService = createKnowledgeService({ knowledge: knowledgeRepo, meetingService })
+const memoryLanes = createMemoryLaneManager({ academic: academicRepo, knowledge: knowledgeRepo, conversations: sessionService, audit: auditAcademic })
 setInterval(() => academicRepo.maintain({ retentionDays: Number.parseInt(process.env.ACADEMIC_SESSION_RETENTION_DAYS ?? '14', 10) || 14 }), 10 * 60_000).unref()
 const audioKey = String(process.env.AUDIO_SERVICE_KEY ?? '').trim()
 let access
@@ -322,7 +327,7 @@ function createApp() {
   app.use('/api/v1/assistant/camera', access.requireSession('camera'), createCameraRouter({ service: cameraService }))
   // Screenshot attachments take a raw picture body too, and belong to a chat conversation: the chat capability gates them.
   app.use('/api/v1/assistant/screenshots', access.requireSession('chat'), createScreenshotRouter({ service: screenshotService }))
-  app.use('/api/v1/assistant/academic', access.requireSession('academic'), createAcademicRouter({ lanes: memoryLanes, audit: auditAcademic }))
+  app.use('/api/v1/assistant/academic', access.requireSession('academic'), createAcademicRouter({ lanes: memoryLanes, audit: auditAcademic, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge: knowledgeRepo, knowledgeService })] }))
   app.use('/api/v1/assistant', access.requireSession('chat'), assistantRouter)
   app.use(
     '/api/v1/admin',
