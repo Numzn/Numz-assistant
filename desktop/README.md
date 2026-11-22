@@ -9,11 +9,13 @@ desktop/
   src-tauri/
     src/lib.rs, main.rs          the window; stays on the site (plus Google's sign-in page); registers the commands
     src/screenshot.rs            the five commands the page may call (status, windows, capture, export, discard)
+    src/study.rs                 the five study-watcher commands (watch start, poll, pause, resume, stop) and the window title that says "screen reading ON"
     capabilities/default.json    WHO may call them: https://lab.numz.site/* and nothing else
     capabilities/dev-local.json  local testing only (http://127.0.0.1:*); NOT enabled unless a test build turns it on
-    crates/numz-capture/         the capture library: one still per call, per-OS backends, encoding, in-memory holding (no Tauri in it)
+    crates/numz-capture/         the capture library: one still per call, per-OS backends, encoding, in-memory holding, and the study watcher
+                                 (change detection, exclusions, dead-man switch); no Tauri in it
   shell/index.html              the offline notice (shown only if the site cannot be reached)
-  e2e/                          the real-app end-to-end run and the access check
+  e2e/                          the real-app end-to-end runs (screenshots; the study watcher) and the access check
   scripts/verify-linux-x11.sh   the native-capture check against a real X server
 ```
 
@@ -41,6 +43,25 @@ No simulated keys, mouse movement or clicks; no focus change or raising of a win
 sound, no notification; no video, no recording, no continuous capture. `src-tauri/crates/numz-capture/tests/no_input.rs` fails the build if any API
 that could (`SendInput`, `CGEventPost`, `XTest`, `XSetInputFocus`, `SetForegroundWindow`, `uinput`, `RemoteDesktop`, `enigo`, video recorders,
 notification and audio crates, ...) appears anywhere in the desktop layer's source or the capture crate's dependencies.
+
+## The study watcher (Academic Intelligence)
+
+A study session in the page can ask the app to **watch the screen** ([`docs/academic-intelligence.md`](../docs/academic-intelligence.md)).
+It is the local half of "hybrid" reading: the app decides *whether* anything is worth reading; the server only ever sees pictures that passed.
+
+| Rule | How |
+|---|---|
+| One still at a time, never video | every 1.5–30 s (default 2.5 s) the primary display is captured once and reduced to a 32×18 luminance signature |
+| Only changes, and only once they settle | a picture is reported when the signature has changed and then stayed stable; at least 10 s between reported pictures |
+| **Exclusions come first** | if a password manager, a sign-in / verification / private-browsing window, or any app or title the person listed is open, **no picture is taken at all** (a picture of the screen cannot have a window cut out of it, so the rule is applied before capture) |
+| Visible | while watching, the window title reads "NUMZ AI - study session, screen reading ON" (paused: "...paused") |
+| Dead-man switch | if the page does not collect results for 20 s, the watcher stops by itself and the title goes back |
+| Windows must be listable | it starts only where windows can be listed (X11, Windows, macOS). On **Wayland it is not offered** |
+| Held in memory | the picture is handed to the page once, sent, and discarded; nothing is written to disk |
+
+The five commands (`screenshot_watch_start/poll/pause/resume/stop`) are covered by the same two guards as the screenshot ones (Tauri capability for
+`https://lab.numz.site/*` only, and a per-command origin check). Like everything else here they are never allowed to simulate input or move focus.
+
 
 ## Trust
 
@@ -76,10 +97,15 @@ sent): needs `tauri-driver`, `WebKitWebDriver`, Xvfb, openbox, xdotool, ImageMag
 cargo install tauri-driver --locked
 cd desktop/src-tauri
 TAURI_CONFIG='{"app":{"security":{"capabilities":["numz-ai-site","numz-ai-dev-local"]}}}' cargo build   # the test build
-cd ../.. && node desktop/e2e/run.mjs                              # 26 checks
+cd ../.. && node desktop/e2e/run.mjs                              # 26 checks: screenshots
+node desktop/e2e/study.mjs                                        # 23 checks: the study watcher, signed in through the real broker
 # and, with an app built WITHOUT that config:
-NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # the commands are refused for any other address
+NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # all ten commands are refused for any other address
 ```
+
+`study.mjs` additionally needs numzlab-auth's test rig (`NUMZLAB_AUTH_DIR`, default `/srv/infrastructure/auth`): Academic Intelligence only works for a
+signed-in person. The app only ever navigates to the site (and Google's own sign-in page), so it cannot walk through the rig's pretend Google: the
+run signs in through the real broker with a cookie jar and hands the session cookie to the app's window, as a browser that had signed in would have it.
 
 The run serves the page over plain http, and WebKit (unlike Chromium) obeys the site's `upgrade-insecure-requests`, so the run points the app at a
 small proxy that removes that one directive. The real site is https and needs no such thing.
@@ -88,14 +114,16 @@ small proxy that removes that one directive. The real site is https and needs no
 
 | | Status |
 |---|---|
-| Linux X11 | **Verified here** on Xvfb + openbox: native capture 16/16, the whole app end to end 26/26, access check 6/6 |
-| Linux Wayland | Written (portal Screenshot); **not run** (no Wayland session or portal on this machine). Window capture is not offered there |
-| Windows | Written (Windows Graphics Capture); **type-checks** for `x86_64-pc-windows-msvc`; **never run** |
-| macOS | Written (ScreenCaptureKit); **type-checks** for `aarch64-apple-darwin`; **never run**; macOS 14+ |
+| Linux X11 | **Verified here** on Xvfb + openbox: native capture 16/16, screenshots end to end 26/26, **study watcher end to end 23/23**, access check 11/11, `cargo test --workspace` |
+| Linux Wayland | Written (portal Screenshot); **not run** (no Wayland session or portal on this machine). Window capture is not offered there, and **the study watcher is not offered** |
+| Windows | Written (Windows Graphics Capture); the capture crate (including the watcher) **type-checks** for `x86_64-pc-windows-msvc`; **never run**. The app crate cannot be cross-checked on this host (needs the Windows resource compiler) |
+| macOS | Written (ScreenCaptureKit); the capture crate **type-checks** for `aarch64-apple-darwin`; **never run**; macOS 14+. The app crate cannot be cross-checked here (needs Apple's toolchain) |
 
 ## Limits and things not done
 
-* **Never run on Windows or macOS, or on Wayland.** Those backends compile, but nobody has taken a picture with them. Treat them as unverified.
+* **Never run on Windows or macOS, or on Wayland.** Those backends compile, but nobody has taken a picture with them. Treat them as unverified. That
+  includes the **window listing the watcher's exclusions depend on**: if a backend lists windows wrongly, an excluded window could be missed. Until
+  it has been run on Windows and macOS, do not rely on the exclusions there.
 * **Permission denial** was exercised in the page logic (unit tests with the native error) and in the error mapping (`classify`), not against a real
   operating-system prompt: X11 has none, and Windows/macOS/Wayland were not available.
 * **X11 without a compositing manager:** the part of a window that another window covers cannot be read back (the X server keeps no copy). A
@@ -107,4 +135,6 @@ small proxy that removes that one directive. The real site is https and needs no
 * **No installers.** `cargo tauri build` has not been run; the icons are placeholders and there is no macOS `.icns`, no code signing or
   notarization, no auto-update.
 * An area is chosen by dragging, so it needs a pointer; **Use the whole picture** is the keyboard route.
-* The feature reaches the app's users only once the new site is deployed: the app opens the live site, which does not have it yet.
+* The study watcher judges "an excluded window is open" from the **window list**, which does not know about a window that is minimised behind
+  another, a second monitor (the primary display only is captured), or a title the person did not think to list. It errs towards not reading.
+* The features reach the app's users only once the new site is deployed: the app opens the live site, which does not have them yet.
