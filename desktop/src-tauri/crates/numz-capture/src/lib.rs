@@ -25,7 +25,7 @@ mod backend;
 
 pub use backend::native_backend;
 #[cfg(windows)]
-pub use backend::request_borderless_access;
+pub use backend::{last_screen_method, request_borderless_access};
 pub use image::RgbaImage;
 use serde::Serialize;
 

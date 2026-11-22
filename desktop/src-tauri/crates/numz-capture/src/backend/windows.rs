@@ -1,15 +1,19 @@
 //! Windows: Windows Graphics Capture, one frame.
 //!
 //! Windows draws a yellow outline around the screen or window being captured. For a screenshot that flashes at the edge of the screen on every
-//! capture, and a study session that reads the screen every few seconds would flash it all the time. Windows lets an app capture without the
-//! outline only after the app has ASKED for that (`GraphicsCaptureAccess`, Borderless) and the system, or the person in Settings > Privacy &
-//! security > Screenshot borders, has allowed it. Setting `IsBorderRequired = false` WITHOUT that is accepted and silently ignored (measured on
-//! a Windows machine: the outline stayed). So this asks once, and only if the answer is "allowed" does it request no outline; otherwise it
-//! captures with the outline, because a screenshot that works with an outline beats none. The application's own indicator (the window title
-//! and the panel's "screen reading ON") says when the screen is being read. The cursor setting is left at the system default.
+//! capture, and a study session that reads the screen every few seconds would flash it all the time.
+//!
+//! The screen is therefore captured through Desktop Duplication (DXGI), which draws no outline and needs no setting. Only if that cannot work
+//! on this machine does it fall back to Windows Graphics Capture, and a WINDOW is always taken that way (an outline appears for a moment).
+//! Windows lets a Graphics Capture app drop the outline only after the app has ASKED (`GraphicsCaptureAccess`, Borderless) and the system, or
+//! the person in Settings > Privacy & security > Screenshot borders, has allowed it; setting `IsBorderRequired = false` without that is
+//! accepted and silently ignored (measured on a Windows machine: the outline stayed). So that is asked once, and used only if allowed.
+//! The application's own indicator (the window title and the panel's "screen reading ON") says when the screen is being read.
+//! The cursor is not part of a Desktop Duplication picture, and is left at the system default in the fallback.
 
 use crate::{Backend, CaptureError, Modes, RgbaImage, Support, WindowInfo};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::time::Duration;
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
@@ -96,6 +100,44 @@ where
     }
 }
 
+/// How the last picture of the screen was taken: "dxgi" (no outline), "graphics-capture" (Windows may outline it), or "" before the first.
+static LAST_METHOD: Mutex<&'static str> = Mutex::new("");
+static DXGI_FAILS: AtomicU8 = AtomicU8::new(0);
+
+pub fn last_screen_method() -> &'static str {
+    LAST_METHOD.lock().map(|m| *m).unwrap_or("")
+}
+
+/// The primary screen through Desktop Duplication: no outline is ever drawn. The first frame after the duplication is made carries the whole
+/// desktop; a frame with no present time is only a pointer move, so it is skipped. Any failure is reported so the caller can fall back.
+fn dxgi_screen() -> Result<RgbaImage, String> {
+    use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat};
+    let monitor = Monitor::primary().map_err(|e| e.to_string())?;
+    let mut duplication = DxgiDuplicationApi::new_options(monitor, &[DxgiDuplicationFormat::Bgra8]).map_err(|e| e.to_string())?;
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(2500) {
+        match duplication.acquire_next_frame(100) {
+            Ok(mut frame) => {
+                if frame.frame_info().LastPresentTime == 0 {
+                    continue;
+                }
+                let (width, height) = (frame.width(), frame.height());
+                let buffer = frame.buffer().map_err(|e| e.to_string())?;
+                let mut scratch = Vec::new();
+                let mut pixels = buffer.as_nopadding_buffer(&mut scratch).to_vec();
+                for px in pixels.chunks_exact_mut(4) {
+                    px.swap(0, 2); // BGRA -> RGBA
+                    px[3] = 255;
+                }
+                return RgbaImage::from_raw(width, height, pixels).ok_or_else(|| "the frame had an unexpected size".to_string());
+            }
+            Err(windows_capture::dxgi_duplication_api::Error::Timeout) => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("no frame arrived".into())
+}
+
 fn one_frame<T>(item: T) -> Result<RgbaImage, CaptureError>
 where
     T: TryInto<windows_capture::settings::GraphicsCaptureItemType> + Clone,
@@ -117,9 +159,10 @@ impl Backend for Native {
             session: "windows".into(),
             modes: Modes { screen: true, window: true, region: true, watch: true },
             permission: "granted".into(),
-            note: match borderless_allowed() {
-                Some(false) => "Windows shows an outline around what is captured. To remove it, allow NUMZ AI under Settings > Privacy & security > Screenshot borders.".into(),
-                _ => String::new(),
+            note: if last_screen_method() == "graphics-capture" || borderless_allowed() == Some(false) {
+                "Windows may outline a window while it is captured. To stop that, allow NUMZ AI under Settings > Privacy & security > Screenshot borders.".into()
+            } else {
+                String::new()
             },
         }
     }
@@ -143,8 +186,27 @@ impl Backend for Native {
     }
 
     fn capture_screen(&self) -> Result<RgbaImage, CaptureError> {
+        // No outline first. Two failures in a row mean Desktop Duplication does not work on this machine: stop trying it.
+        if DXGI_FAILS.load(Ordering::Relaxed) < 2 {
+            match dxgi_screen() {
+                Ok(image) => {
+                    DXGI_FAILS.store(0, Ordering::Relaxed);
+                    if let Ok(mut method) = LAST_METHOD.lock() {
+                        *method = "dxgi";
+                    }
+                    return Ok(image);
+                }
+                Err(_) => {
+                    DXGI_FAILS.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
         let monitor = Monitor::primary().map_err(|e| CaptureError::Failed(e.to_string()))?;
-        one_frame(monitor)
+        let image = one_frame(monitor)?;
+        if let Ok(mut method) = LAST_METHOD.lock() {
+            *method = "graphics-capture";
+        }
+        Ok(image)
     }
 
     fn capture_window(&self, id: &str) -> Result<RgbaImage, CaptureError> {

@@ -21,6 +21,8 @@ fn main() {
             let image = backend.capture_screen().unwrap_or_else(|e| show(e));
             image.save(&args[1]).expect("write png");
             println!("{}x{}", image.width(), image.height());
+            #[cfg(windows)]
+            println!("screen taken by: {}", numz_capture::last_screen_method());
             let note = backend.support().note;
             println!("note after capturing: {}", if note.is_empty() { "(none: no outline problem reported)" } else { &note });
         }

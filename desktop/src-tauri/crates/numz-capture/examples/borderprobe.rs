@@ -1,5 +1,6 @@
 //! Windows only, for the verification workflow: holds a capture of the primary screen open for a while with the outline requested, not
-//! requested or left to the system, and says whether Windows accepted that. `borderprobe default|none|with <seconds>`. Not part of the app.
+//! requested or left to the system, and says whether Windows accepted that; `dxgi` holds a Desktop Duplication session open instead (no outline
+//! is possible there). `borderprobe default|none|with|dxgi <seconds>`. Not part of the app.
 
 #[cfg(windows)]
 fn main() {
@@ -23,6 +24,29 @@ fn main() {
     }
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("dxgi") {
+        use windows_capture::dxgi_duplication_api::{DxgiDuplicationApi, DxgiDuplicationFormat};
+        let seconds: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
+        let monitor = Monitor::primary().expect("a primary monitor");
+        match DxgiDuplicationApi::new_options(monitor, &[DxgiDuplicationFormat::Bgra8]) {
+            Ok(mut duplication) => {
+                println!("started: Desktop Duplication session open");
+                let end = std::time::Instant::now() + Duration::from_secs(seconds);
+                let mut frames = 0;
+                while std::time::Instant::now() < end {
+                    if duplication.acquire_next_frame(100).is_ok() {
+                        frames += 1;
+                    }
+                }
+                println!("stopped after {frames} frames");
+            }
+            Err(e) => {
+                println!("start failed with dxgi: {e}");
+                std::process::exit(3);
+            }
+        }
+        return;
+    }
     let border = match args.first().map(String::as_str) {
         Some("none") => DrawBorderSettings::WithoutBorder,
         Some("with") => DrawBorderSettings::WithBorder,

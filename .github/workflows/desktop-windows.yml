@@ -42,7 +42,7 @@ jobs:
         run: cargo test --workspace
 
       # Windows draws a yellow outline around what is captured, which flashed at the screen's edge. The capture code now asks for none.
-      # This holds a capture open with the outline defaulted, required and not required, photographs the screen the plain way meanwhile
+      # This holds a capture open with the outline defaulted, required and not required (and a Desktop Duplication session, which has none), photographs the screen the plain way meanwhile
       # (not with the code under test) and counts yellow pixels along the screen's edge.
       - name: Does Windows draw the outline?
         continue-on-error: true
@@ -50,7 +50,7 @@ jobs:
           cargo build --quiet -p numz-capture --example borderprobe
           mkdir -p ../../probe
           pwsh -File ../scripts/edge-yellow.ps1 ../../probe/border-idle.png "no capture running" | tee ../../probe/border.log
-          for mode in default with none; do
+          for mode in default with none dxgi; do
             ./target/debug/examples/borderprobe.exe $mode 16 > ../../probe/border-$mode.log 2>&1 &
             sleep 6
             pwsh -File ../scripts/edge-yellow.ps1 ../../probe/border-$mode.png "capture open, outline: $mode" | tee -a ../../probe/border.log

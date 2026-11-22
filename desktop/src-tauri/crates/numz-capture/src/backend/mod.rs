@@ -9,7 +9,7 @@ mod macos;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::request_borderless_access;
+pub use windows::{last_screen_method, request_borderless_access};
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod other;
