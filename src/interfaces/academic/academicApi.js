@@ -84,6 +84,7 @@ export function createAcademicApi({ fetchFn = (...args) => globalThis.fetch(...a
     /** One screenshot (the picture is the body, as it is). */
     sendCapture: (sessionId, { bytes, mimeType }) => request(`/sessions/${e(sessionId)}/captures`, { method: 'POST', headers: { 'Content-Type': mimeType }, body: bytes }),
     questions: (sessionId) => request(`/sessions/${e(sessionId)}/questions`),
+    content: (sessionId) => request(`/sessions/${e(sessionId)}/content`),
     answer: (sessionId, questionId, options = {}) => request(`/sessions/${e(sessionId)}/questions/${e(questionId)}/answer`, json('POST', options)),
     ask: (sessionId, text, options = {}) => request(`/sessions/${e(sessionId)}/ask`, json('POST', { text, ...options })),
     concept: (sessionId, concept, options = {}) => request(`/sessions/${e(sessionId)}/concept`, json('POST', { concept, ...options })),

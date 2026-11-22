@@ -294,6 +294,20 @@ test('a screenshot sent to a study session is read; the questions are listed; ot
   })
 })
 
+test('the content of a screen comes back as segments, the session lists what it has seen, and nobody else can see it', async () => {
+  await using(async (r) => {
+    const s = (await r.alice('/sessions', { method: 'POST', body: { type: 'study', captureEnabled: true } })).json
+    r.vision.state.reply = async () => JSON.stringify({ contentKind: 'other_content', segments: [{ kind: 'paragraph', title: 'Keys', text: 'A foreign key is a column in one table that refers to the primary key of another table.', cutOff: 'none' }, { kind: 'code', title: '', text: 'SELECT * FROM orders;', cutOff: 'none' }], position: 'slide 2', confidence: 0.9 })
+    const read = await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', raw: png(1280, 720, 1), type: 'image/png' })
+    assert.equal(read.status, 200)
+    assert.deepEqual([read.json.status, read.json.layout, read.json.arrival, read.json.summary.new, read.json.position], ['recognised', 'multiple', 'new-screen', 2, 'slide 2'])
+    assert.deepEqual(read.json.segments.map((x) => [x.kind, x.status]), [['paragraph', 'new'], ['code', 'new']])
+    assert.deepEqual((await r.alice(`/sessions/${s.id}/content`)).json.segments.map((x) => x.kind), ['paragraph', 'code'])
+    assert.equal((await r.bob(`/sessions/${s.id}/content`)).status, 404)
+    assert.equal((await r.nobody(`/sessions/${s.id}/content`)).status, 401)
+  })
+})
+
 test('answering over HTTP: a typed question, a question from the screen, a concept in a restricted session, and the application\'s refusals', async () => {
   await using(async (r) => {
     const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Database Systems' } })).json

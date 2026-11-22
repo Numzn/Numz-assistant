@@ -80,8 +80,9 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
       }
       const experiences = memory.relevantExperiences({ courseId, topic })
       const picture = entry.captureId ? sessions.runtime(session.id).captures.get(entry.captureId)?.picture : null
+      const related = entry.segmentId ? sessions.runtime(session.id).ledger?.relatedTo(entry.segmentId) ?? [] : []
       const figureNote = entry.hasDiagram && !picture ? 'The question refers to a figure or table that could not be shown: say that part of the answer may be incomplete.' : ''
-      const messages = buildMessages({ mode, task: entry.task, question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote })
+      const messages = buildMessages({ mode, task: entry.task, question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote, related })
 
       const call = ctx.meter?.begin(ctx.identity, 'academic_answer', { requestId: ctx.requestId, conversationId })
       let raw

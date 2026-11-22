@@ -3,7 +3,7 @@ import { AcademicError } from './academicError.js'
 import { enforce } from './integrity.js'
 import { resolveContext } from './contextResolver.js'
 import { buildReadMessages, classifyTask, judgeReading, parseAcademicReading, readingSignals } from './questionUnderstanding.js'
-import { findKnownQuestion, identityText } from '../camera/questionIdentity.js'
+import { createContentLedger } from './contentLedger.js'
 import { imageInfo } from '../screenshots/imageInfo.js'
 
 /**
@@ -16,7 +16,11 @@ import { imageInfo } from '../screenshots/imageInfo.js'
  * picture twice, one read at a time, and the person's daily allowance of study reads (`academic_read`). The picture is read once and dropped;
  * only a picture with a diagram is kept (in memory, two minutes) so the answer can look at the figure.
  *
- * What a capture yields is held in the session's memory only: questions with an id, the course they seem to belong to, and what they are.
+ * What a capture yields is held in the session's memory only. The screen is read as SEGMENTS (any independent piece of content: a question, a
+ * paragraph, code, a table...). Each is matched against everything the session has already seen (`contentLedger.js`) so that the same content
+ * is never processed twice, new content is never dropped because it overlaps an earlier screen, a segment cut off by the edge of one screen and
+ * completed on the next is one segment, and related segments stay related. Questions among the segments get an id the person can have
+ * answered; the rest are organised and shown.
  */
 
 export const CAPTURE_LIMITS = Object.freeze({
@@ -30,6 +34,9 @@ export const CAPTURE_LIMITS = Object.freeze({
 })
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
+
+const briefQuestion = (q) => ({ id: q.id, text: q.text, options: q.options, marks: q.marks, type: q.type, task: q.task, hasDiagram: q.hasDiagram })
+const briefSegment = (s) => ({ id: s.id, kind: s.kind, title: s.title, text: s.text, status: s.status, partial: s.partial, completed: s.completed, added: s.added ? { words: s.added.words } : null, continuesFrom: s.continuesFrom, related: s.related, group: s.group, region: s.region, seenCount: s.seenCount, questionId: s.questionId })
 
 export function createCaptureService({ vision, sessionManager, courses, now = Date.now, newId = randomUUID, limits = {}, logger = console }) {
   const cap = { ...CAPTURE_LIMITS, ...limits }
@@ -104,30 +111,71 @@ export function createCaptureService({ vision, sessionManager, courses, now = Da
         const parsed = parseAcademicReading(raw)
         const captureId = newId()
         runtime.pictureHashes.set(digest, captureId)
-        if (!parsed.ok) return { captureId, status: 'unclear', questions: [], context: null, signals: [], reason: 'The screen could not be understood.' }
+        if (!parsed.ok) return { captureId, status: 'unclear', questions: [], segments: [], context: null, signals: [], reason: 'The screen could not be understood.' }
         const { reading } = parsed
         const verdict = judgeReading(reading)
         const context = resolveContext({ session, courses: mine.list(), reading })
         const signals = readingSignals(reading)
         if (verdict.status !== 'recognised') {
           runtime.captures.set(captureId, { id: captureId, status: verdict.status, picture: null })
-          return { captureId, status: verdict.status, contentKind: reading.contentKind, questions: [], context, signals, reason: verdict.reason }
+          return { captureId, status: verdict.status, contentKind: reading.contentKind, questions: [], segments: [], context, signals, reason: verdict.reason }
         }
 
-        const questions = reading.questions.map((q) => {
-          const identity = identityText(q)
-          const known = findKnownQuestion(identity, runtime.known)
-          if (known) return { id: known.questionId, duplicate: true, text: q.text, options: q.options, marks: q.marks, type: q.type, task: classifyTask(q), hasDiagram: q.hasDiagram }
-          const id = newId()
-          const entry = { id, captureId, text: q.text, options: q.options, marks: q.marks, type: q.type, hasDiagram: q.hasDiagram, task: classifyTask(q), subject: reading.subject, topic: reading.topic, contentKind: reading.contentKind, instructions: reading.instructions, contextSnapshot: context, signals, confirmedPractice: false, answer: null, createdAt: now() }
-          runtime.questions.set(id, entry)
-          runtime.known.push({ questionId: id, identity })
-          return { id, duplicate: false, text: q.text, options: q.options, marks: q.marks, type: q.type, task: entry.task, hasDiagram: q.hasDiagram }
-        })
-        const keepsPicture = questions.some((q) => q.hasDiagram && !q.duplicate)
+        // What is on this screen against everything seen before.
+        runtime.ledger ??= createContentLedger({ now })
+        const ledger = runtime.ledger
+        const outcome = ledger.integrate(captureId, reading.segments, { position: reading.position })
+        const offered = []
+        for (const segment of outcome.segments) {
+          if (segment.kind !== 'question') continue
+          const partial = Boolean(segment.partial)
+          let entry = segment.questionId ? runtime.questions.get(segment.questionId) : null
+          if (!entry) {
+            const id = newId()
+            entry = { id, segmentId: segment.id, captureId, text: segment.text, options: segment.options, marks: segment.marks, type: segment.type, hasDiagram: segment.hasDiagram, task: classifyTask(segment), subject: reading.subject, topic: reading.topic, contentKind: reading.contentKind, instructions: reading.instructions, contextSnapshot: context, signals, confirmedPractice: false, answer: null, createdAt: now(), partial }
+            runtime.questions.set(id, entry)
+            ledger.link(segment.id, id)
+            offered.push({ ...briefQuestion(entry), duplicate: false, segmentId: segment.id, partial })
+            continue
+          }
+          // A question the session already has: seen again, or more of it is visible now.
+          const wasPartial = entry.partial
+          if (segment.status !== 'seen') {
+            entry.text = segment.text
+            if (segment.options.length) entry.options = segment.options
+            entry.task = classifyTask(entry)
+            entry.hasDiagram ||= segment.hasDiagram
+          }
+          entry.partial = partial
+          const completed = wasPartial && !partial && !entry.answer
+          offered.push({ ...briefQuestion(entry), duplicate: !completed, completed: completed || undefined, segmentId: segment.id, partial })
+        }
+        const keepsPicture = offered.some((q) => q.hasDiagram && !q.duplicate)
         runtime.captures.set(captureId, { id: captureId, status: 'recognised', picture: keepsPicture ? { bytes: Buffer.from(bytes), mimeType: info.mimeType, expiresAt: t + cap.diagramKeptMs } : null })
-        log(`session ${sessionId} read: ${verdict.status}, ${questions.length} question(s)`)
-        return { captureId, status: questions.every((q) => q.duplicate) ? 'duplicate' : 'recognised', contentKind: reading.contentKind, subject: reading.subject, topic: reading.topic, questions, context, signals, instructions: reading.instructions }
+        const fresh = outcome.summary.new + outcome.summary.grew + outcome.summary.continued
+        log(`session ${sessionId} read: ${outcome.summary.total} segment(s), ${outcome.summary.new} new, ${outcome.summary.seen} seen, ${outcome.summary.grew + outcome.summary.continued} grown, ${offered.filter((q) => !q.duplicate).length} question(s) offered, ${outcome.arrival}`)
+        return {
+          captureId,
+          status: fresh === 0 ? 'duplicate' : 'recognised',
+          contentKind: reading.contentKind,
+          subject: reading.subject,
+          topic: reading.topic,
+          questions: offered,
+          segments: outcome.segments.map(briefSegment),
+          layout: outcome.layout,
+          arrival: outcome.arrival,
+          summary: outcome.summary,
+          position: outcome.position,
+          context,
+          signals,
+          instructions: reading.instructions
+        }
+      },
+
+      /** The content the session has seen so far (every segment once, with how often it was seen), for the page to list after a reload. */
+      content(sessionId) {
+        sessions.requireOpen(sessionId)
+        return sessions.runtime(sessionId).ledger?.list().map(briefSegment) ?? []
       },
 
       /** The questions recognised so far in the session (newest last), for the page to list. */

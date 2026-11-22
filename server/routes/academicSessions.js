@@ -10,8 +10,10 @@ import { AcademicError } from '../academic/academicError.js'
  *   GET    /sessions/:id
  *   PATCH  /sessions/:id             { topic?, courseId?, captureEnabled?, autoAnswer?, useResearch? }   (the TYPE can never be changed)
  *   POST   /sessions/:id/pause | /resume | /stop
- *   POST   /sessions/:id/captures    body = a screenshot (image/png|jpeg|webp): read with the vision model, questions returned
+ *   POST   /sessions/:id/captures    body = a screenshot (image/png|jpeg|webp): read with the vision model; the segments of content on it are matched
+ *                                    against what the session has seen (new, seen, grown, continued) and its questions returned
  *   GET    /sessions/:id/questions   the questions recognised so far
+ *   GET    /sessions/:id/content     every segment of content the session has seen (once each, with how often it was seen)
  *
  * Errors carry a stable code: session-required, session-paused, session-ended, session-expired, restricted-assessment (with the offer of
  * a conceptual explanation), capture-off, capture-busy, capture-rate-limited (+ Retry-After), session-limit, read-failed, invalid-image.
@@ -52,4 +54,6 @@ export function addSessionRoutes(router, { wrap, body }, { sessionManager, captu
   )
 
   router.get('/sessions/:id/questions', wrap((req, res) => res.json({ questions: captureService.forOwner(req.academic.userId).questions(req.params.id) })))
+
+  router.get('/sessions/:id/content', wrap((req, res) => res.json({ segments: captureService.forOwner(req.academic.userId).content(req.params.id) })))
 }

@@ -4,6 +4,24 @@ import { CAPTURE_LIMITS, createCaptureService } from './captureService.js'
 import { createSessionManager } from './sessionManager.js'
 import { fakeVision, png, quiet, reading, rig } from './testSupport.js'
 
+const TEXT = {
+  tables: 'Relational databases store data in tables made of rows and columns, and every row is identified by a primary key that never repeats.',
+  keys: 'A foreign key is a column in one table that refers to the primary key of another table, which is how related rows are linked together.',
+  norm: 'Normalisation is the process of organising tables so that each fact is stored once, which removes update anomalies and wasted space.',
+  joins: 'A join combines rows from two tables whenever the values in the columns being compared are equal, producing one wider row for each match.',
+  index: 'An index is a separate structure that lets the database find rows by the value of a column without reading every row of the table.'
+}
+const sg = (text, over = {}) => ({ kind: 'paragraph', title: '', text, cutOff: 'none', ...over })
+const sq = (text, over = {}) => ({ kind: 'question', title: '', text, options: [], marks: null, type: 'descriptive', hasDiagram: false, cutOff: 'none', ...over })
+/** A vision reply listing these segments. */
+const screenOf = (segments, over = {}) => JSON.stringify({ contentKind: 'other_content', segments, position: '', instructions: '', subject: 'databases', topic: '', assessmentIndicators: [], confidence: 0.9, reason: '', ...over })
+let shot = 100
+const read = async (t, s, segments, over) => {
+  t.vision.state.reply = async () => screenOf(segments, over)
+  t.clock.t += 9_000
+  return t.alice.read(s.id, { bytes: png(1280, 720, shot++) }, t.ctx)
+}
+
 function setup({ vision = fakeVision(), limits = {} } = {}) {
   const t = rig()
   const sessions = createSessionManager({ academic: t.academic, clock: () => t.clock.t, ttlMs: 3_600_000, audit: t.audit })
@@ -191,4 +209,123 @@ test('the study capture limits are the ones the session promises: 8 seconds betw
   t.clock.t += 8_000
   await t.alice.read(s.id, { bytes: png(1280, 720, 3) }, t.ctx)
   assert.equal(t.vision.calls.length, 2, 'and after the 8 seconds the next screen is read')
+})
+
+// ---- content intelligence: layouts, navigation, overlap, continuity, repeats ---------------------------------------------------
+
+test('a screen of study material with no question is organised and shown, not thrown away as "not a question"', async () => {
+  const t = setup()
+  const s = start(t)
+  const first = await read(t, s, [sg(TEXT.tables, { title: 'Tables' })])
+  assert.deepEqual([first.status, first.layout, first.arrival, first.summary.new, first.questions.length], ['recognised', 'single', 'new-screen', 1, 0])
+  assert.equal(first.segments[0].text, TEXT.tables)
+  assert.equal(t.alice.questions(s.id).length, 0, 'no question was invented')
+  const again = await read(t, s, [sg(TEXT.tables, { title: 'Tables' })])
+  assert.deepEqual([again.status, again.arrival, again.segments[0].status], ['duplicate', 'same', 'seen'])
+  assert.equal(t.alice.content(s.id).length, 1, 'held once')
+})
+
+test('several segments on one screen: each is recognised, the questions among them are offered, and only what is new is new next time', async () => {
+  const t = setup()
+  const s = start(t)
+  const first = await read(t, s, [sg(TEXT.tables, { title: 'Tables' }), sq('Explain why every row in a table needs a primary key that never repeats.', { title: 'Q1' }), sq('Describe what a foreign key does and give one example from a school database.', { title: 'Q2' }), { kind: 'code', title: '', text: 'SELECT name FROM students WHERE id = 7;', cutOff: 'none' }])
+  assert.deepEqual([first.layout, first.summary.total, first.summary.new, first.questions.length], ['multiple', 4, 4, 2])
+  assert.deepEqual(first.segments.map((x) => x.kind), ['paragraph', 'question', 'question', 'code'])
+  assert.ok(first.questions.every((q) => q.duplicate === false && q.segmentId))
+  const second = await read(t, s, [sg(TEXT.tables, { title: 'Tables' }), sq('Describe what a foreign key does and give one example from a school database.', { title: 'Q2' }), sq('Explain what an index is and why it makes some queries faster.', { title: 'Q3' })])
+  assert.deepEqual(second.segments.map((x) => x.status), ['seen', 'seen', 'new'])
+  assert.deepEqual(second.questions.map((q) => q.duplicate), [true, false], 'Q2 is offered once; Q3 is new')
+  assert.equal(second.questions[0].id, first.questions[1].id)
+  assert.equal(t.alice.questions(s.id).length, 3)
+})
+
+test('horizontal navigation (next, previous, tabs): new pages are new, and going back reads nothing again', async () => {
+  const t = setup()
+  const s = start(t)
+  const A = [sg(TEXT.tables, { title: 'Slide 1' })]
+  const B = [sg(TEXT.keys, { title: 'Slide 2' }), sq('Explain how a foreign key keeps two tables consistent with each other.', { title: 'Slide 2 task' })]
+  const C = [sg(TEXT.norm, { title: 'Slide 3' })]
+  const results = []
+  for (const page of [A, B, C, B, A, C]) results.push(await read(t, s, page))
+  assert.deepEqual(results.map((r) => r.arrival), ['new-screen', 'new-screen', 'new-screen', 'revisit', 'revisit', 'revisit'])
+  assert.deepEqual(results.map((r) => r.status), ['recognised', 'recognised', 'recognised', 'duplicate', 'duplicate', 'duplicate'])
+  assert.deepEqual(results.map((r) => r.questions.filter((q) => !q.duplicate).length), [0, 1, 0, 0, 0, 0], 'the one question is offered once')
+  assert.equal(t.alice.content(s.id).length, 4)
+})
+
+test('vertical scrolling: the overlap is not processed again and what appears is', async () => {
+  const t = setup()
+  const s = start(t)
+  const one = await read(t, s, [sg(TEXT.tables), sg(TEXT.keys), sq('Explain what normalisation achieves for a database that stores customer orders.')])
+  const two = await read(t, s, [sg(TEXT.keys), sq('Explain what normalisation achieves for a database that stores customer orders.'), sg(TEXT.joins), sq('Say what a join does when two tables share a column of values.')])
+  assert.deepEqual(two.segments.map((x) => x.status), ['seen', 'seen', 'new', 'new'])
+  assert.equal(two.arrival, 'overlapping')
+  assert.deepEqual(two.questions.map((q) => q.duplicate), [true, false], 'the old question is not offered again, the new one is')
+  assert.equal(two.questions[0].id, one.questions[0].id)
+  const three = await read(t, s, [sg(TEXT.joins), sq('Say what a join does when two tables share a column of values.'), sg(TEXT.index)])
+  assert.deepEqual(three.segments.map((x) => x.status), ['seen', 'seen', 'new'])
+  assert.equal(t.alice.questions(s.id).length, 2)
+})
+
+test('a question cut off by the edge of the screen is held as cut off, and is whole - and newly offered for answering - when the rest appears', async () => {
+  const t = setup()
+  const s = start(t)
+  const full = 'Explain why the primary key of a table must be unique and cannot be empty, and give an example of a suitable key for a table of students.'
+  const first = await read(t, s, [sg(TEXT.tables), sq(full.split(' ').slice(0, 14).join(' '), { cutOff: 'bottom' })])
+  assert.equal(first.questions.length, 1)
+  assert.deepEqual([first.questions[0].partial, first.questions[0].duplicate], [true, false], 'held, marked as cut off, so it is not answered by itself')
+  assert.equal(t.alice.questions(s.id)[0].text.split(' ').length, 14)
+  const second = await read(t, s, [sg(TEXT.keys), sq(full)])
+  const completed = second.questions[0]
+  assert.deepEqual([completed.id, completed.completed, completed.duplicate, completed.partial], [first.questions[0].id, true, false, false])
+  assert.equal(t.alice.questions(s.id)[0].text, full, 'the session now holds the whole question')
+  assert.equal(t.alice.questions(s.id).length, 1, 'one question, not two')
+})
+
+test('content continuing across screens becomes one segment without repeated words, and a continuation that shares no words is linked, not lost', async () => {
+  const t = setup()
+  const s = start(t)
+  const words = TEXT.norm.split(' ')
+  const first = await read(t, s, [sg(words.slice(0, 16).join(' '), { title: 'Normalisation', cutOff: 'bottom' })])
+  const second = await read(t, s, [sg(words.slice(11).join(' '), { cutOff: 'top' })])
+  assert.deepEqual([second.segments[0].status, second.segments[0].id], ['continued', first.segments[0].id])
+  assert.equal(second.segments[0].text, TEXT.norm)
+  assert.equal(t.alice.content(s.id).length, 1)
+  const third = await read(t, s, [sg('The first step in the experiment is to weigh the powder and then pour it carefully into the glass beaker provided', { cutOff: 'bottom', group: 'Method' })])
+  const fourth = await read(t, s, [sg('Stir the mixture slowly for two minutes until nothing remains at the bottom and then let it stand', { cutOff: 'top', group: 'Method' })])
+  assert.equal(fourth.segments[0].status, 'new')
+  assert.equal(fourth.segments[0].continuesFrom, third.segments[0].id)
+  assert.equal(t.alice.content(s.id).length, 3)
+})
+
+test('new content that overlaps earlier content in words is still new: nothing genuinely new is discarded', async () => {
+  const t = setup()
+  const s = start(t)
+  await read(t, s, [sg(TEXT.keys), sq('Calculate the total cost of 12 items at 4 pounds each.')])
+  const next = await read(t, s, [sg('A foreign key is a column in a table that stores the name of the customer who placed the order, which is how the table is linked.'), sq('Calculate the total cost of 13 items at 4 pounds each.')])
+  assert.deepEqual(next.segments.map((x) => x.status), ['new', 'new'])
+  assert.equal(next.questions.filter((q) => !q.duplicate).length, 1)
+})
+
+test('the content list lists every segment once and refuses a session that is not open', async () => {
+  const t = setup()
+  const s = start(t)
+  await read(t, s, [sg(TEXT.tables), sq('Explain why every row in a table needs a primary key that never repeats.')])
+  await read(t, s, [sg(TEXT.tables), sg(TEXT.keys)])
+  const content = t.alice.content(s.id)
+  assert.deepEqual(content.map((x) => [x.kind, x.seenCount]), [['paragraph', 2], ['question', 1], ['paragraph', 1]])
+  t.aliceSessions.stop(s.id)
+  assert.throws(() => t.alice.content(s.id), (err) => err.statusCode === 409 || err.statusCode === 404)
+})
+
+test('the content intelligence changes nothing about who may read: restricted, paused and exhausted sessions read no screen', async () => {
+  const t = setup({ limits: { minReadIntervalMs: 0, maxReadsPerSession: 2 } })
+  const s = start(t)
+  await read(t, s, [sg(TEXT.tables)])
+  await read(t, s, [sg(TEXT.keys)])
+  await assert.rejects(read(t, s, [sg(TEXT.norm)]), (err) => err.code === 'session-limit')
+  t.aliceSessions.pause(s.id)
+  await assert.rejects(read(t, s, [sg(TEXT.joins)]), (err) => err.code === 'session-paused')
+  assert.equal(t.vision.calls.length, 2, 'no model was asked after the limit or while paused')
+  assert.equal(t.alice.content(s.id).length, 2)
 })
