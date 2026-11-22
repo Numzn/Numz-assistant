@@ -1,41 +1,39 @@
 //! Local screen-change detection: the cheap half of hybrid capture. It decides, on this machine and without sending anything anywhere,
 //! whether the screen has changed in a way that is worth reading, so the cloud model is asked only about new content.
 //!
-//! A picture is reduced to a grid of average brightness with cells about 6 screen pixels across (a 1920x1080 screen is 320x180 cells; the grid
-//! is capped at 640x360), so a single digit, word or token of code that changes moves several cells by a lot, whatever the screen size.
-//! Three things are decided from successive looks:
+//! A picture is reduced to a luminance plane (brightness only, averaged down so that it is at most 1280 pixels wide: 1920x1080 is averaged
+//! 2x2, 4K 3x3). Two planes are compared in blocks of 4x4 plane pixels, by the SUM of the absolute differences inside each block (not by the
+//! difference of the block averages: moving or redrawing a thin stroke leaves an average almost unchanged but changes the sum a lot, and a
+//! single digit, word or token of code is exactly that). A block is "moved" when that sum reaches `block_sad`. A capture of an unchanged
+//! screen is identical, so any real edit stands out. Three things are decided from successive looks:
 //!
-//!  * SETTLED: two looks in a row agree (no cell moved by more than `cell_delta`), so a scroll, a page load or someone typing is waited out;
-//!  * NEW: a settled screen is new when at least one cell differs from the screen last reported (any edit to text, numbers or code counts);
+//!  * SETTLED: two looks in a row agree (no block moved), so a scroll, a page load or someone typing is waited out;
+//!  * NEW: a settled screen is new when at least one block differs from the screen last reported (any edit to text, numbers or code counts);
 //!  * NOT NEW: a settled screen that matches the last reported one, however many times it is seen, is never reported again.
 //!
 //! Small things that move on their own would defeat both rules (a text caret that blinks never lets the screen settle; a clock that ticks
-//! looks like an edit every minute), so places that keep moving are learned and ignored. The screen is divided into tiles of 4x4 cells (about
-//! 24 pixels, a character or two); a tile is "flickering" once its recent moves add up to `flicker_score`: a look in which something in it
+//! looks like an edit every minute), so places that keep moving are learned and ignored. The screen is divided into tiles of 4x4 blocks
+//! (a character or two across); a tile is "flickering" once its recent moves add up to `flicker_score`: a look in which something in it
 //! moved back to what it showed two looks earlier (a blink) counts 1.0, any other small move counts 0.5, and the total fades slowly. Only
-//! SMALL moves are held against a tile (a scroll or a new page moves thousands of cells and teaches nothing), and a change as big as a new
+//! SMALL moves are held against a tile (a scroll or a new page moves thousands of blocks and teaches nothing), and a change as big as a new
 //! page forgets what was learned. A real edit made once, twice or three times to the same place is never mistaken for flicker.
 
-use image::imageops::{self, FilterType};
 use image::RgbaImage;
 
-/// About how many screen pixels one cell covers, across.
-const CELL_PX: u32 = 6;
-/// Flicker is remembered per tile of this many cells across and down.
+/// The widest plane compared: wider screens are averaged down by a whole number to fit.
+const MAX_PLANE_WIDTH: usize = 1280;
+/// Plane pixels per block side.
+const BLOCK: usize = 4;
+/// Flicker is remembered per tile of this many blocks across and down.
 const TILE: usize = 4;
-const MAX_GRID: (u32, u32) = (640, 360);
-const MIN_GRID: (u32, u32) = (32, 18);
 
 #[derive(Clone)]
 pub struct Signature {
-    width: u32,
-    height: u32,
-    cells: Vec<u8>,
-}
-
-/// The grid for a screen of this size: cells of about `CELL_PX` pixels, never fewer than 32x18 or more than 640x360.
-pub fn grid_for(width: u32, height: u32) -> (u32, u32) {
-    ((width.div_ceil(CELL_PX)).clamp(MIN_GRID.0, MAX_GRID.0), (height.div_ceil(CELL_PX)).clamp(MIN_GRID.1, MAX_GRID.1))
+    width: usize,
+    height: usize,
+    /// Screen pixels per plane pixel, across and down.
+    factor: usize,
+    plane: Vec<u8>,
 }
 
 /// A rectangle of the screen, in screen pixels (the top-left corner can be off the screen: a window half dragged out of view).
@@ -51,47 +49,55 @@ pub fn signature(image: &RgbaImage) -> Signature {
     signature_without(image, &[])
 }
 
-/// The signature with some areas left out: every cell that touches one is set to a fixed value, so whatever happens inside it, in this look
+/// The signature with some areas left out: every plane pixel inside one is set to a fixed value, so whatever happens inside it, in this look
 /// or any other, is never a difference. Used for this app's own window: what NUMZ AI itself shows (an answer arriving, a counter) is not
 /// what is being studied and must not make the screen look new.
 pub fn signature_without(image: &RgbaImage, ignore: &[Area]) -> Signature {
-    let (width, height) = grid_for(image.width(), image.height());
-    let small = imageops::resize(image, width, height, FilterType::Triangle);
-    let cells = small
-        .pixels()
-        .map(|px| {
-            let [r, g, b, _] = px.0;
-            ((299 * r as u32 + 587 * g as u32 + 114 * b as u32) / 1000) as u8
-        })
-        .collect::<Vec<u8>>();
-    let mut signature = Signature { width, height, cells };
-    let (sx, sy) = (image.width() as f64 / width as f64, image.height() as f64 / height as f64);
+    let factor = (image.width() as usize).div_ceil(MAX_PLANE_WIDTH).max(1);
+    let (width, height) = ((image.width() as usize / factor).max(1), (image.height() as usize / factor).max(1));
+    let stride = image.width() as usize * 4;
+    let raw = image.as_raw();
+    let mut plane = vec![0u8; width * height];
+    let weight = (factor * factor) as u32 * 1000;
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0u32;
+            for dy in 0..factor {
+                let row = (y * factor + dy) * stride + x * factor * 4;
+                for dx in 0..factor {
+                    let p = row + dx * 4;
+                    sum += 299 * raw[p] as u32 + 587 * raw[p + 1] as u32 + 114 * raw[p + 2] as u32;
+                }
+            }
+            plane[y * width + x] = (sum / weight) as u8;
+        }
+    }
     for area in ignore {
-        let (left, top) = (area.x as f64, area.y as f64);
-        let (right, bottom) = (left + area.width as f64, top + area.height as f64);
-        let first_col = (left / sx).floor().max(0.0) as u32;
-        let first_row = (top / sy).floor().max(0.0) as u32;
-        let last_col = ((right / sx).ceil().max(0.0) as u32).min(width);
-        let last_row = ((bottom / sy).ceil().max(0.0) as u32).min(height);
+        let f = factor as f64;
+        let first_col = (area.x as f64 / f).floor().max(0.0) as usize;
+        let first_row = (area.y as f64 / f).floor().max(0.0) as usize;
+        let last_col = (((area.x as f64 + area.width as f64) / f).ceil().max(0.0) as usize).min(width);
+        let last_row = (((area.y as f64 + area.height as f64) / f).ceil().max(0.0) as usize).min(height);
         for row in first_row..last_row {
             for col in first_col..last_col {
-                signature.cells[(row * width + col) as usize] = 0;
+                plane[row * width + col] = 0;
             }
         }
     }
-    signature
+    Signature { width, height, factor, plane }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
-    /// A cell counts as changed when its brightness (0..255) moved by more than this.
-    pub cell_delta: u8,
-    /// How many changed cells (not counting flickering ones) make a settled screen a new one.
-    pub change_cells: usize,
-    /// Two looks agree (the screen has settled) when at most this many cells moved between them.
-    pub settle_cells: usize,
-    /// A look-to-look change of at most this many cells is small enough to be held against a cell as flicker.
-    pub sparse_cells: usize,
+    /// A 4x4 block counts as moved when the sum of the absolute brightness differences (0..255 each) inside it reaches this. An unchanged
+    /// screen sums to exactly 0; a single changed digit sums to hundreds.
+    pub block_sad: u32,
+    /// How many moved blocks (not counting flickering ones) make a settled screen a new one.
+    pub change_blocks: usize,
+    /// Two looks agree (the screen has settled) when at most this many blocks moved between them.
+    pub settle_blocks: usize,
+    /// A look-to-look change covering at most this many screen pixels (square) is small enough to be held against a tile as flicker.
+    pub sparse_area_px: usize,
     /// A tile of the screen is ignored once its flicker score reaches this.
     pub flicker_score: f32,
     /// The score is multiplied by this on every look (so the memory fades over some minutes).
@@ -102,12 +108,61 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { cell_delta: 16, change_cells: 1, settle_cells: 0, sparse_cells: 200, flicker_score: 1.75, flicker_decay: 0.995, new_screen_fraction: 0.02 }
+        Self { block_sad: 40, change_blocks: 1, settle_blocks: 0, sparse_area_px: 8000, flicker_score: 1.75, flicker_decay: 0.995, new_screen_fraction: 0.02 }
     }
 }
 
-fn moved_cells(a: &Signature, b: &Signature, delta: u8) -> Vec<usize> {
-    a.cells.iter().zip(b.cells.iter()).enumerate().filter(|(_, (x, y))| x.abs_diff(**y) > delta).map(|(i, _)| i).collect()
+fn blocks_across(s: &Signature) -> usize {
+    s.width.div_ceil(BLOCK)
+}
+fn blocks_down(s: &Signature) -> usize {
+    s.height.div_ceil(BLOCK)
+}
+
+/// The sum of the absolute differences between two planes inside one block (blocks at the right and bottom edges may be smaller).
+fn block_sad(a: &Signature, b: &Signature, block: usize) -> u32 {
+    let across = blocks_across(a);
+    let (bx, by) = ((block % across) * BLOCK, (block / across) * BLOCK);
+    let (right, bottom) = ((bx + BLOCK).min(a.width), (by + BLOCK).min(a.height));
+    let mut sad = 0u32;
+    for y in by..bottom {
+        let row = y * a.width;
+        for x in bx..right {
+            sad += a.plane[row + x].abs_diff(b.plane[row + x]) as u32;
+        }
+    }
+    sad
+}
+
+/// The blocks whose difference between two planes of the same size reaches `threshold`.
+fn moved_blocks(a: &Signature, b: &Signature, threshold: u32) -> Vec<usize> {
+    let (across, down) = (blocks_across(a), blocks_down(a));
+    let mut moved = vec![];
+    for by in 0..down {
+        let (top, bottom) = (by * BLOCK, ((by + 1) * BLOCK).min(a.height));
+        // The cheap test first: if this whole row of blocks is identical there is nothing to add up (most of an unchanged screen).
+        if a.plane[top * a.width..bottom * a.width] == b.plane[top * a.width..bottom * a.width] {
+            continue;
+        }
+        for bx in 0..across {
+            let block = by * across + bx;
+            if block_sad(a, b, block) >= threshold {
+                moved.push(block);
+            }
+        }
+    }
+    moved
+}
+
+/// Copies one block of `from` into `into`.
+fn copy_block(into: &mut Signature, from: &Signature, block: usize) {
+    let across = blocks_across(into);
+    let (bx, by) = ((block % across) * BLOCK, (block / across) * BLOCK);
+    let (right, bottom) = ((bx + BLOCK).min(into.width), (by + BLOCK).min(into.height));
+    for y in by..bottom {
+        let row = y * into.width;
+        into.plane[row + bx..row + right].copy_from_slice(&from.plane[row + bx..row + right]);
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -145,12 +200,13 @@ impl Detector {
     pub fn observe(&mut self, now: Signature) -> Verdict {
         let cfg = self.config;
         // A different screen size (another display, a changed resolution) is a different screen: start again.
-        if self.previous.as_ref().is_some_and(|p| (p.width, p.height) != (now.width, now.height)) {
+        if self.previous.as_ref().is_some_and(|p| (p.width, p.height, p.factor) != (now.width, now.height, now.factor)) {
             self.reset();
         }
-        let (width, tiles_across) = (now.width as usize, (now.width as usize).div_ceil(TILE));
-        let tile_of = |c: usize| (c / width / TILE) * tiles_across + (c % width) / TILE;
-        let tiles = tiles_across * (now.height as usize).div_ceil(TILE);
+        let across = blocks_across(&now);
+        let tiles_across = across.div_ceil(TILE);
+        let tile_of = |block: usize| ((block / across) / TILE) * tiles_across + (block % across) / TILE;
+        let tiles = tiles_across * blocks_down(&now).div_ceil(TILE);
         if self.scores.len() != tiles {
             self.scores = vec![0.0; tiles];
         }
@@ -160,15 +216,14 @@ impl Detector {
         };
         let before = self.before_previous.take();
 
-        // What moved since the last look, and what that teaches about cells that move on their own.
-        let moved = moved_cells(&previous, &now, cfg.cell_delta);
+        // What moved since the last look, and what that teaches about places that move on their own.
+        let moved = moved_blocks(&previous, &now, cfg.block_sad);
         self.scores.iter_mut().for_each(|s| *s *= cfg.flicker_decay);
-        if moved.len() <= cfg.sparse_cells {
+        let block_px = BLOCK * now.factor;
+        let sparse_blocks = (cfg.sparse_area_px / (block_px * block_px)).max(24);
+        if moved.len() <= sparse_blocks {
             // One count per tile per look: 1.0 if something in it went back to what it showed two looks ago, otherwise 0.5.
-            let mut touched: Vec<(usize, bool)> = moved
-                .iter()
-                .map(|&c| (tile_of(c), before.as_ref().is_some_and(|b| b.cells[c].abs_diff(now.cells[c]) <= cfg.cell_delta)))
-                .collect();
+            let mut touched: Vec<(usize, bool)> = moved.iter().map(|&b| (tile_of(b), before.as_ref().is_some_and(|bf| block_sad(bf, &now, b) < cfg.block_sad))).collect();
             touched.sort_unstable();
             touched.dedup_by(|next, kept| next.0 == kept.0 && {
                 kept.1 |= next.1;
@@ -182,8 +237,8 @@ impl Detector {
         self.previous = Some(now.clone());
 
         let scores = &self.scores;
-        let flickering = |c: usize| scores[tile_of(c)] >= cfg.flicker_score;
-        if moved.iter().filter(|&&c| !flickering(c)).count() > cfg.settle_cells {
+        let flickering = |block: usize| scores[tile_of(block)] >= cfg.flicker_score;
+        if moved.iter().filter(|&&b| !flickering(b)).count() > cfg.settle_blocks {
             return Verdict::Settling;
         }
 
@@ -192,18 +247,18 @@ impl Detector {
             self.reported = Some(now);
             return Verdict::Changed;
         };
+        let differing_blocks = moved_blocks(reported, &now, cfg.block_sad);
         let mut differing = 0usize;
-        let cells = now.cells.len();
-        for c in 0..cells {
-            if flickering(c) {
-                reported.cells[c] = now.cells[c]; // a cell that moves on its own is not part of what was reported
-            } else if reported.cells[c].abs_diff(now.cells[c]) > cfg.cell_delta {
+        for &block in &differing_blocks {
+            if flickering(block) {
+                copy_block(reported, &now, block); // a place that moves on its own is not part of what was reported
+            } else {
                 differing += 1;
             }
         }
-        if differing >= cfg.change_cells {
+        if differing >= cfg.change_blocks {
             *reported = now;
-            if differing as f32 / cells as f32 >= cfg.new_screen_fraction {
+            if differing as f32 / (across * blocks_down(reported)) as f32 >= cfg.new_screen_fraction {
                 self.scores.iter_mut().for_each(|s| *s = 0.0);
             }
             Verdict::Changed
@@ -233,6 +288,18 @@ mod tests {
         all[at] = text.to_string();
         page(width, height, &all)
     }
+    /// Real pictures of a real window (GTK text, anti-aliased) on a 1600x900 screen, taken with this crate's own capture.
+    fn real(name: &str) -> RgbaImage {
+        let bytes: &[u8] = match name {
+            "start" => include_bytes!("../tests/fixtures/screen-1-start.png"),
+            "again" => include_bytes!("../tests/fixtures/screen-1-again.png"),
+            "number" => include_bytes!("../tests/fixtures/screen-2-number.png"),
+            "word" => include_bytes!("../tests/fixtures/screen-3-word.png"),
+            "code" => include_bytes!("../tests/fixtures/screen-4-code.png"),
+            other => panic!("no fixture {other}"),
+        };
+        image::load_from_memory(bytes).expect("a fixture picture").to_rgba8()
+    }
 
     #[test]
     fn the_first_screen_is_reported_once_it_has_settled_and_not_again() {
@@ -260,7 +327,7 @@ mod tests {
 
     #[test]
     fn a_single_changed_digit_on_a_full_page_is_noticed_at_every_common_screen_size() {
-        for (w, h) in [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)] {
+        for (w, h) in [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)] {
             let mut d = Detector::new(Config::default());
             feed(&mut d, &with_line(w, h, 9, "x = 12 + 7; (4 + 5) = 9"), 3);
             let verdicts = feed(&mut d, &with_line(w, h, 9, "x = 13 + 7; (4 + 5) = 9"), 3);
@@ -278,6 +345,7 @@ mod tests {
             ("a closing bracket", "(4 + 5) = 9 x = 1;", "(4 + 5 = 9 x = 1;"),
             ("one added character", "cab dead ace", "cab dead acee"),
             ("the first character of a line", "6 + 2 = 8 abc", "5 + 2 = 8 abc"),
+            ("a colon becoming a semicolon", "x = 12 + 7: abc", "x = 12 + 7; abc"),
         ];
         for (what, before, after) in edits {
             let mut d = Detector::new(Config::default());
@@ -285,6 +353,17 @@ mod tests {
             let verdicts = feed(&mut d, &with_line(1600, 900, 12, after), 3);
             assert_eq!(verdicts, vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "{what}: {before:?} -> {after:?}");
         }
+    }
+
+    #[test]
+    fn real_anti_aliased_text_one_digit_one_word_one_token_of_code() {
+        // Pictures of a real GTK window, 15 px monospace: "total = 12 + 7" -> "13", "abc" -> "abd", "==" -> "!=".
+        let mut d = Detector::new(Config::default());
+        assert_eq!(feed(&mut d, &real("start"), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged]);
+        assert_eq!(feed(&mut d, &real("again"), 3), vec![Verdict::Unchanged; 3], "a second picture of the same screen is not a change");
+        assert_eq!(feed(&mut d, &real("number"), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "12 -> 13 is a change");
+        assert_eq!(feed(&mut d, &real("word"), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "abc -> abd is a change");
+        assert_eq!(feed(&mut d, &real("code"), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "== -> != is a change");
     }
 
     #[test]
@@ -313,8 +392,11 @@ mod tests {
         let base = page(1600, 900, &lines(30));
         let mut with_caret = base.clone();
         caret(&mut with_caret, 700, 400);
-        feed(&mut d, &base, 3);
-        let blinks: Vec<_> = (0..30).map(|i| d.observe(signature(if i % 2 == 0 { &with_caret } else { &base }))).collect();
+        let (base, with_caret) = (signature(&base), signature(&with_caret));
+        for _ in 0..3 {
+            d.observe(base.clone());
+        }
+        let blinks: Vec<_> = (0..30).map(|i| d.observe(if i % 2 == 0 { with_caret.clone() } else { base.clone() })).collect();
         assert!(count(&blinks[..], Verdict::Changed) <= 1, "at most one read while the caret is still being learned: {blinks:?}");
         assert_eq!(count(&blinks[10..], Verdict::Changed), 0, "never once it is known");
         assert_eq!(blinks[20..], [Verdict::Unchanged; 10], "and the screen settles");
@@ -326,9 +408,12 @@ mod tests {
         let base = page(1600, 900, &lines(30));
         let mut with_caret = base.clone();
         caret(&mut with_caret, 700, 400);
-        feed(&mut d, &base, 3);
+        let (base, with_caret) = (signature(&base), signature(&with_caret));
+        for _ in 0..3 {
+            d.observe(base.clone());
+        }
         let pattern = [1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 0];
-        let verdicts: Vec<_> = pattern.iter().map(|on| d.observe(signature(if *on == 1 { &with_caret } else { &base }))).collect();
+        let verdicts: Vec<_> = pattern.iter().map(|on| d.observe(if *on == 1 { with_caret.clone() } else { base.clone() })).collect();
         assert!(count(&verdicts, Verdict::Changed) <= 2, "{verdicts:?}");
         assert_eq!(count(&verdicts[18..], Verdict::Changed), 0, "{verdicts:?}");
     }
@@ -379,7 +464,7 @@ mod tests {
             }
         }
         assert!(changed_at.len() <= 5, "a ticking clock must stop costing reads: read at minutes {changed_at:?}");
-        assert!(changed_at.iter().all(|m| *m <= 6), "and from the sixth minute on it is ignored: {changed_at:?}");
+        assert!(changed_at.iter().all(|m| *m <= 4 || *m == 10), "the ticking digit is ignored from the fifth minute; only the tens digit, changing for the first time at minute 10, is read once more: {changed_at:?}");
     }
 
     #[test]
@@ -388,9 +473,12 @@ mod tests {
         let base = page(1600, 900, &lines(30));
         let mut with_caret = base.clone();
         caret(&mut with_caret, 700, 400);
-        feed(&mut d, &base, 3);
+        let (base, with_caret) = (signature(&base), signature(&with_caret));
+        for _ in 0..3 {
+            d.observe(base.clone());
+        }
         for i in 0..20 {
-            d.observe(signature(if i % 2 == 0 { &with_caret } else { &base }));
+            d.observe(if i % 2 == 0 { with_caret.clone() } else { base.clone() });
         }
         // a completely different page arrives, and the caret is in the same place on it
         let mut next = page(1600, 900, &lines(24));
@@ -429,7 +517,14 @@ mod tests {
     #[test]
     fn an_area_partly_off_the_screen_is_clipped_not_a_crash() {
         let s = signature_without(&page(1600, 900, &lines(30)), &[Area { x: -200, y: -100, width: 500, height: 400 }, Area { x: 1500, y: 800, width: 900, height: 900 }, Area { x: 5000, y: 5000, width: 10, height: 10 }]);
-        assert_eq!(s.cells.len(), 267 * 150);
+        assert_eq!((s.width, s.height), (800, 450));
+    }
+
+    #[test]
+    fn a_different_screen_size_is_a_new_screen_not_a_crash() {
+        let mut d = Detector::new(Config::default());
+        feed(&mut d, &page(1600, 900, &lines(30)), 3);
+        assert_eq!(feed(&mut d, &page(1920, 1080, &lines(30)), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "another display, or a changed resolution");
     }
 
     #[test]
@@ -442,22 +537,11 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_follows_the_screen_size_at_about_six_pixels_a_cell_and_is_capped() {
-        assert_eq!(grid_for(1920, 1080), (320, 180));
-        assert_eq!(grid_for(1280, 720), (214, 120));
-        assert_eq!(grid_for(3840, 2160), (640, 360), "a 4K screen is capped (cells of 6 px would be 640x360)");
-        assert_eq!(grid_for(7680, 4320), (640, 360));
-        assert_eq!(grid_for(100, 50), (32, 18), "and never smaller than 32x18");
-        let a = signature(&page(1600, 900, &lines(30)));
-        assert_eq!((a.width, a.height), (267, 150));
-        assert_eq!(a.cells.len(), 267 * 150);
-        assert!(moved_cells(&a, &a, 0).is_empty(), "a screen does not differ from itself");
-    }
-
-    #[test]
-    fn a_different_screen_size_is_a_new_screen_not_a_crash() {
-        let mut d = Detector::new(Config::default());
-        feed(&mut d, &page(1600, 900, &lines(30)), 3);
-        assert_eq!(feed(&mut d, &page(1920, 1080, &lines(30)), 3), vec![Verdict::Settling, Verdict::Changed, Verdict::Unchanged], "another display, or a changed resolution");
+    fn the_plane_is_averaged_down_to_at_most_1280_wide_and_a_screen_does_not_differ_from_itself() {
+        for (w, h, f, pw, ph) in [(1280, 720, 1, 1280, 720), (1600, 900, 2, 800, 450), (1920, 1080, 2, 960, 540), (2560, 1440, 2, 1280, 720), (3840, 2160, 3, 1280, 720)] {
+            let s = signature(&page(w, h, &lines(30)));
+            assert_eq!((s.factor, s.width, s.height), (f, pw, ph), "{w}x{h}");
+            assert!(moved_blocks(&s, &s, 1).is_empty(), "a screen does not differ from itself");
+        }
     }
 }
