@@ -14,7 +14,7 @@ desktop/
     capabilities/dev-local.json  local testing only (http://127.0.0.1:*); NOT enabled unless a test build turns it on
     crates/numz-capture/         the capture library: one still per call, per-OS backends, encoding, in-memory holding, and the study watcher
                                  (change detection, exclusions, dead-man switch); no Tauri in it
-  shell/index.html              the offline notice (shown only if the site cannot be reached)
+  shell/index.html              a placeholder page the build needs (nothing shows it: if the site cannot be reached, the web view's own error page appears, with Refresh)
   e2e/                          the real-app end-to-end runs (screenshots; the study watcher) and the access check
   scripts/verify-linux-x11.sh   the native-capture check against a real X server
 ```
@@ -116,12 +116,12 @@ small proxy that removes that one directive. The real site is https and needs no
 |---|---|
 | Linux X11 | **Verified here** on Xvfb + openbox: native capture 16/16, screenshots end to end 26/26, **study watcher end to end 23/23**, access check 11/11, `cargo test --workspace` |
 | Linux Wayland | Written (portal Screenshot); **not run** (no Wayland session or portal on this machine). Window capture is not offered there, and **the study watcher is not offered** |
-| Windows | Written (Windows Graphics Capture); the capture crate (including the watcher) **type-checks** for `x86_64-pc-windows-msvc`; **never run**. The app crate cannot be cross-checked on this host (needs the Windows resource compiler) |
+| Windows | Built and tested on **GitHub's Windows machine** (`.github/workflows/desktop-windows.yml`): the Rust workspace tests pass there (28), the installer builds, the app starts and opens its window, and the capture code took a **real full-screen picture and a real window picture** (the app's own window) of that machine's desktop. **Not verified:** loading the live site (GitHub's machines cannot reach it), Google sign-in inside the window, the watcher, the area mode, Windows 10, a real person's PC. The installer is **unsigned** (SmartScreen warns) |
 | macOS | Written (ScreenCaptureKit); the capture crate **type-checks** for `aarch64-apple-darwin`; **never run**; macOS 14+. The app crate cannot be cross-checked here (needs Apple's toolchain) |
 
 ## Limits and things not done
 
-* **Never run on Windows or macOS, or on Wayland.** Those backends compile, but nobody has taken a picture with them. Treat them as unverified. That
+* **Never run on macOS or Wayland, and run on Windows only in the limited way above.** Those backends compile, but nobody has taken a picture with them. Treat them as unverified. That
   includes the **window listing the watcher's exclusions depend on**: if a backend lists windows wrongly, an excluded window could be missed. Until
   it has been run on Windows and macOS, do not rely on the exclusions there.
 * **Permission denial** was exercised in the page logic (unit tests with the native error) and in the error mapping (`classify`), not against a real
