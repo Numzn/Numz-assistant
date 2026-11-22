@@ -51,13 +51,16 @@ It is the local half of "hybrid" reading: the app decides *whether* anything is 
 
 | Rule | How |
 |---|---|
-| One still at a time, never video | every 1.5–30 s (default 2.5 s) the primary display is captured once and reduced to a 32×18 luminance signature |
-| Only changes, and only once they settle | a picture is reported when the signature has changed and then stayed stable; at least 10 s between reported pictures |
+| One still at a time, never video | a look every 1.5–30 s (default 2.5 s): the open windows are listed and, only if none is excluded, the primary display is captured once and reduced to a brightness plane |
+| Only changes, and only once they settle | blocks of the plane are compared with the last *reported* screen by the sum of absolute differences, so one changed digit, word or token of code counts; a picture is reported when a difference has stayed the same across two looks; at least 10 s between reported pictures |
+| Things that move by themselves | a blinking caret or a ticking clock is learned per tile and ignored; a real edit, even repeated, is not |
+| **This app's own window is left out** | its position is reported by the backend and its area is masked in the *comparison* only (the picture is whole): what NUMZ AI shows about the session cannot make the screen look new |
 | **Exclusions come first** | if a password manager, a sign-in / verification / private-browsing window, or any app or title the person listed is open, **no picture is taken at all** (a picture of the screen cannot have a window cut out of it, so the rule is applied before capture) |
 | Visible | while watching, the window title reads "NUMZ AI - study session, screen reading ON" (paused: "...paused") |
 | Dead-man switch | if the page does not collect results for 20 s, the watcher stops by itself and the title goes back |
 | Windows must be listable | it starts only where windows can be listed (X11, Windows, macOS). On **Wayland it is not offered** |
 | Held in memory | the picture is handed to the page once, sent, and discarded; nothing is written to disk |
+| No bypassing | it uses the operating system's ordinary capture; a protected window or a permission the system refuses stays refused |
 
 The five commands (`screenshot_watch_start/poll/pause/resume/stop`) are covered by the same two guards as the screenshot ones (Tauri capability for
 `https://lab.numz.site/*` only, and a per-command origin check). Like everything else here they are never allowed to simulate input or move focus.
@@ -98,7 +101,7 @@ cargo install tauri-driver --locked
 cd desktop/src-tauri
 TAURI_CONFIG='{"app":{"security":{"capabilities":["numz-ai-site","numz-ai-dev-local"]}}}' cargo build   # the test build
 cd ../.. && node desktop/e2e/run.mjs                              # 26 checks: screenshots
-node desktop/e2e/study.mjs                                        # 23 checks: the study watcher, signed in through the real broker
+node desktop/e2e/study.mjs                                        # the study watcher end to end, signed in through the real broker
 # and, with an app built WITHOUT that config:
 NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # all ten commands are refused for any other address
 ```
@@ -114,7 +117,7 @@ small proxy that removes that one directive. The real site is https and needs no
 
 | | Status |
 |---|---|
-| Linux X11 | **Verified here** on Xvfb + openbox: native capture 16/16, screenshots end to end 26/26, **study watcher end to end 23/23**, access check 11/11, `cargo test --workspace` |
+| Linux X11 | **Verified here** on Xvfb + openbox: native capture 16/16, screenshots end to end 26/26, **study watcher end to end 29/29**, access check 11/11, `cargo test --workspace` |
 | Linux Wayland | Written (portal Screenshot); **not run** (no Wayland session or portal on this machine). Window capture is not offered there, and **the study watcher is not offered** |
 | Windows | Built and tested on **GitHub's Windows machine** (`.github/workflows/desktop-windows.yml`): the Rust workspace tests pass there (28), the installer builds, the app starts and opens its window, and the capture code took a **real full-screen picture and a real window picture** (the app's own window) of that machine's desktop. Measured there: Windows Graphics Capture draws a yellow outline at the screen edge (5 500+ yellow pixels in a 4 px band) and ignores a request for none unless the app is allowed in Settings (it answered *denied by user*); Desktop Duplication drew **none** (0 pixels), so the screen is taken that way. **Not verified:** loading the live site (GitHub's machines cannot reach it), Google sign-in inside the window, the watcher, the area mode, Windows 10, a real person's PC. The installer is **unsigned** (SmartScreen warns) |
 | macOS | Written (ScreenCaptureKit); the capture crate **type-checks** for `aarch64-apple-darwin`; **never run**; macOS 14+. The app crate cannot be cross-checked here (needs Apple's toolchain) |

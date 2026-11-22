@@ -168,13 +168,20 @@ async function quietFor(ms) {
   }
   return model.pictures.length - n
 }
-const nextPicture = async (label, ms = 60000) => {
+const nextPicture = async (label, ms = 90000) => {
+  // Changes the screen (a test window moves) and gives the change time to stay put: the watcher reports a screen only once two looks in a
+  // row agree, so a window flipping every fraction of a second would never be captured, by design.
   const n = model.pictures.length
-  await waitFor(() => {
-    if (model.pictures.length === n) changeScreen()
-    return model.pictures.length > n
-  }, ms, label)
-  return model.pictures.at(-1)
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    changeScreen()
+    const hold = Date.now() + 9000
+    while (Date.now() < hold) {
+      if (model.pictures.length > n) return model.pictures.at(-1)
+      await sleep(300)
+    }
+  }
+  throw new Error(`timed out waiting for ${label}`)
 }
 
 try {

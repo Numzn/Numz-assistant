@@ -65,17 +65,54 @@ that an exam is an exam (a screenshot cannot prove it), so:
 
 ## Hybrid screen reading: local first, then selective cloud
 
+When a study session has **Read my screen** on (desktop app only), reading is automatic from the screen to the answer. Nobody presses anything:
+
+1. The person starts the session. The page asks the app's watcher to start (with the person's exclusions); the panel and the window title say
+   "screen reading ON".
+2. **Every 2.5 s** the watcher takes one look: it lists the open windows, and, only if none is excluded, captures one still of the screen and
+   reduces it to a fingerprint.
+3. The fingerprint is compared with the screen it **last reported** (see below). Nothing is sent for a screen that is the same.
+4. A difference means a **possible** new screen. It is not captured yet: the watcher waits until **two looks in a row agree** (the screen has settled), so a
+   scroll, a page load or someone still typing is waited out.
+5. A settled new screen is **captured** (kept in the app's memory) and counted, never closer than **10 s** to the last one.
+6. The page collects it at its next check (about every 1.5 s, which is also the watcher's heartbeat), shrinks it (JPEG, at most 1600 px) and sends it
+   to the server in the background, one at a time; the native copy is discarded at once.
+7. The server runs the existing pipeline: integrity gate, capture switch, image checks, **8 s** between reads, **80** reads per session, duplicate
+   hash, vision model (`academic_read`), question recognition. A screen it cannot take yet (too soon, busy, a failed read, the network) is sent
+   again after 4 s and 8 s, then let go; a newer screen replaces one that is waiting.
+8. **Results appear by themselves**: new questions are listed as cards in the Study panel, the panel's line says what the last screen held, and
+   each new question (up to three per screen, one at a time) is **answered** from the person's course notes into the Study panel **and the
+   conversation**. A screen that may be an assessment is listed but not answered until the person confirms; "Explain the questions it finds, without
+   me pressing anything" is on by default and can be turned off before the session starts.
+9. The watcher keeps looking; the next change starts again at 2.
+
+How a screen is judged to have **changed** (`detect.rs`):
+
+* The still is reduced to a brightness plane (averaged down to at most 1280 px wide) and compared with the last reported screen in blocks of
+  4x4 plane pixels by the **sum of the absolute brightness differences** in each block. An unchanged screen sums to exactly 0; one changed digit,
+  word or token of code sums to hundreds, so edits to **numbers, text and code are not ignored** (proved on real anti-aliased text: `12 -> 13`,
+  `abc -> abd`, `== -> !=`).
+* **Stable** means two looks in a row with no block moved. **Unchanged** means a settled screen with no block different from the reported one.
+* Things that move on their own are **learned and ignored**: a blinking caret, a ticking clock. A tile of the screen (a character or two across)
+  that keeps moving by itself stops counting; a one-off edit, or the same place edited a few times, is never mistaken for that, and a change as big
+  as a new page forgets what was learned. A once-a-minute clock is read a few times, then ignored.
+* **This app's own window is left out of the comparison** (not out of the picture): counters, the "last read" line and answers arriving in the
+  Study panel and the conversation would otherwise make every read cause the next. It needs the window's position, which Linux, Windows and macOS
+  report.
+
 | Half | Where | What it does |
 |---|---|---|
-| Local | the desktop app (Rust, `numz-capture`) | every 1.5–30 s (default 2.5) takes ONE still, compares a 32×18 luminance signature, and reports a picture only when the screen has changed **and settled**; at least 10 s between pictures |
+| Local | the desktop app (Rust, `numz-capture`) | a look every 1.5–30 s (default **2.5**); one still per look, never video; reports a picture only for a changed **and settled** screen; at least **10 s** between pictures |
 | Exclusions | the desktop app | **before** any picture: if a password manager, a sign-in/verification/private-browsing window or any window the person listed is open, no picture is taken at all |
-| Cloud | the server (`captureService.js`) | integrity gate, capture switch, image checks (≤ 4 MB, ≤ 36 MP), 8 s between reads, 80 reads per session, duplicate-picture hash, metered as `academic_read` |
+| Cloud | the server (`captureService.js`) | integrity gate, capture switch, image checks (≤ 4 MB, ≤ 36 MP), **8 s** between reads, **80** reads per session, duplicate-picture hash, metered as `academic_read` |
 
 The watcher is visible: the panel indicator reads **"Study · screen reading ON"**, and the app window's title says **"NUMZ AI - study session,
 screen reading ON"** (paused: "study session paused"). A **dead-man switch** stops the watcher by itself if the page stops asking for results for
-20 s (a closed or crashed page cannot leave it running). It never simulates input, takes no video, and writes nothing to disk. The picture is
-discarded as soon as it is sent. It starts only where windows can be listed (X11, Windows, macOS), **not on Wayland**, where the desktop's own
-portal prompt would be needed for every picture.
+20 s (a closed or crashed page cannot leave it running); the page's check-in never waits for a read to finish, so a slow vision read cannot
+trip it. Pause and End session take effect before the next look, and a screen that was in flight when pause was pressed is never sent. It never
+simulates input, takes no video, writes nothing to disk, and does not bypass any operating-system capture permission or protected-window
+restriction: what the system will not let it capture, it does not capture. The picture is discarded as soon as it is sent. It starts only where
+windows can be listed (X11, Windows, macOS), **not on Wayland**, where the desktop's own portal prompt would be needed for every picture.
 
 A reload turns screen reading **off**: the person has to turn it on again.
 
@@ -134,10 +171,10 @@ admin 600/800) and the emergency pause (`aiAdmin pause academic`) stops both. Sp
 
 | | |
 |---|---|
-| `npm test` | 1190 passing (server, repositories, identity, routes, page logic) |
-| `cargo test --workspace` (Linux) | passing, incl. the watcher's 26 tests (change detection, exclusions, dead-man switch, pause, pacing) |
+| `npm test` | 1204 passing (server, repositories, identity, routes, page logic, the study controller) |
+| `cargo test --workspace` (Linux) | 46 capture-library tests + 2 source scans passing: change detection on synthetic and **real** anti-aliased text, flicker learning, the app's own window left out, the watcher's gap, exclusions, pause, stop and heartbeat |
 | Real Chromium, real server, real numzlab-auth broker | `node scripts/academic-e2e/run.mjs`: 33/33 — Study panel end to end, restricted behaviour, no leakage between two people, delete-everything, phone width |
-| Real desktop app on X11 (Xvfb + openbox), real server and broker | `node desktop/e2e/study.mjs` (see `desktop/README.md`) (23 checks) — pictures taken only while reading; none with a password manager or a listed window open; none while paused or after Stop; the watcher stops itself when the page goes away; a restricted session never reads; focus, pointer and stacking untouched |
+| Real desktop app on X11 (Xvfb + openbox), real server and broker | `node desktop/e2e/study.mjs` (see `desktop/README.md`) (29 checks) — a changed screen is captured, read and answered with nobody pressing anything, down to one changed digit, word or code token; an unchanged screen and the app's own window changing cause no capture; pictures are taken only while reading; none with a password manager or a listed window open; none while paused or after Stop; the watcher stops itself when the page goes away; a restricted session never reads; focus, pointer and stacking untouched |
 | **Not verified** | Windows and macOS capture/watcher (only type-check), Wayland, a real vision/text model, the live OpenAlex/Crossref services, a real phone, a real person's screen |
 
 The model in every test is a stand-in: answer *quality* is unmeasured. The wording rules (natural student writing, citing only given sources) are
