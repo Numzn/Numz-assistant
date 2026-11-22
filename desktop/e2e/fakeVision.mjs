@@ -3,7 +3,7 @@
 import { execFileSync } from 'node:child_process'
 import http from 'node:http'
 
-function look(bytes) {
+export function look(bytes) {
   const run = (args) => execFileSync('convert', ['jpg:-', ...args], { input: bytes, encoding: 'utf8' })
   const info = execFileSync('identify', ['-format', '%w %h', 'jpg:-'], { input: bytes, encoding: 'utf8' }).trim().split(' ').map(Number)
   const at = (x, y) => run(['-crop', `1x1+${Math.min(x, info[0] - 1)}+${Math.min(y, info[1] - 1)}`, '+repage', '-depth', '8', 'txt:-']).match(/#[0-9A-Fa-f]{6}/)?.[0]?.toUpperCase()
