@@ -1,0 +1,5 @@
+# build output and generated files
+src-tauri/target/
+src-tauri/gen/
+src-tauri/crates/*/target/
+node_modules/

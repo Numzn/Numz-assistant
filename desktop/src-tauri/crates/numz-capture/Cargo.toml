@@ -1,0 +1,31 @@
+[package]
+name = "numz-capture"
+version = "0.1.0"
+edition = "2021"
+description = "Native screenshots for NUMZ AI: one still image per request, through the operating system's own capture API. No input is ever sent."
+publish = false
+
+[dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+serde = { version = "1", features = ["derive"] }
+
+# Linux: X11 (read-only requests on the display) or, on Wayland, the desktop portal's Screenshot interface.
+[target.'cfg(target_os = "linux")'.dependencies]
+xcap = { version = "0.9", default-features = false }
+
+# Windows: Windows Graphics Capture, with the operating system's own border and cursor defaults left alone.
+[target.'cfg(windows)'.dependencies]
+windows-capture = "2"
+
+# macOS: ScreenCaptureKit (macOS 14 or later for stills). The system asks for the Screen Recording permission itself.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-foundation = "0.3"
+objc2-screen-capture-kit = "0.3"
+
+[dev-dependencies]
+serde_json = "1"
