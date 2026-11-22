@@ -16,6 +16,9 @@ import { createMemoryLaneManager } from './academic/memoryLanes.js'
 import { createSessionManager } from './academic/sessionManager.js'
 import { createCaptureService } from './academic/captureService.js'
 import { addSessionRoutes } from './routes/academicSessions.js'
+import { addAnswerRoutes } from './routes/academicAnswers.js'
+import { createAnswerService } from './academic/answerService.js'
+import { createResearchService } from './academic/researchService.js'
 import { createKnowledgeRepository } from './persistence/knowledgeRepository.js'
 import { createKnowledgeService } from './academic/knowledgeService.js'
 import { addKnowledgeRoutes } from './routes/academicKnowledge.js'
@@ -230,10 +233,24 @@ const auditAcademic = (event, { userId = null, detail = null } = {}) => {
 const knowledgeRepo = createKnowledgeRepository(speechDatabase)
 const knowledgeService = createKnowledgeService({ knowledge: knowledgeRepo, meetingService })
 const sessionManager = createSessionManager({ academic: academicRepo, audit: auditAcademic, ttlMs: (Number.parseInt(process.env.ACADEMIC_SESSION_HOURS ?? '4', 10) || 4) * 3_600_000 })
+const researchService = ['off', '0', 'false', 'no'].includes(String(process.env.ACADEMIC_RESEARCH ?? 'on').trim().toLowerCase()) ? null : createResearchService({})
 const captureService = createCaptureService({ vision: cameraVision, sessionManager, courses: (userId) => academicRepo.forOwner(userId).courses })
 const memoryLanes = createMemoryLaneManager({ academic: academicRepo, knowledge: knowledgeRepo, conversations: sessionService, sessionManager, audit: auditAcademic })
 setInterval(() => academicRepo.maintain({ retentionDays: Number.parseInt(process.env.ACADEMIC_SESSION_RETENTION_DAYS ?? '14', 10) || 14 }), 10 * 60_000).unref()
 setInterval(() => sessionManager.sweep(), 60_000).unref()
+const answerService = createAnswerService({
+  generate: async (messages, opts) => {
+    requireAi()
+    return generateResponse(messages, opts)
+  },
+  knowledgeService,
+  lanes: memoryLanes,
+  sessionManager,
+  researchService,
+  conversations: sessionService,
+  courses: (userId) => academicRepo.forOwner(userId).courses,
+  audit: auditAcademic
+})
 // No live connection survives a process restart: interrupted meetings move to RECOVERING.
 const meetingRecovery = meetingService.recoverInterruptedMeetings()
 console.log(
@@ -335,7 +352,8 @@ function createApp() {
   app.use('/api/v1/assistant/screenshots', access.requireSession('chat'), createScreenshotRouter({ service: screenshotService }))
   app.use('/api/v1/assistant/academic', access.requireSession('academic'), createAcademicRouter({ lanes: memoryLanes, audit: auditAcademic, extend: [
         (router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge: knowledgeRepo, knowledgeService }),
-        (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService })
+        (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService }),
+        (router, helpers) => addAnswerRoutes(router, helpers, { answerService, researchService, knowledge: knowledgeRepo })
       ] }))
   app.use('/api/v1/assistant', access.requireSession('chat'), assistantRouter)
   app.use(

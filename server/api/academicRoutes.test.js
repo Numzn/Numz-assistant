@@ -5,6 +5,10 @@ import { fakeVision, png, reading, rig } from '../academic/testSupport.js'
 import { createCaptureService } from '../academic/captureService.js'
 import { createSessionManager } from '../academic/sessionManager.js'
 import { addSessionRoutes } from '../routes/academicSessions.js'
+import { addAnswerRoutes } from '../routes/academicAnswers.js'
+import { createAnswerService } from '../academic/answerService.js'
+import { createSessionService } from '../sessions/sessionService.js'
+import { createConversationRepository } from '../persistence/conversationRepository.js'
 import { createMemoryLaneManager } from '../academic/memoryLanes.js'
 import { LEGACY_IDENTITY, personIdentity } from '../auth/identity.js'
 import { errorHandler } from '../http/errorHandler.js'
@@ -23,7 +27,11 @@ async function serve() {
   vision.state.reply = async () => reading()
   const sessionManager = createSessionManager({ academic: t.academic, clock: () => t.clock.t, audit: t.audit })
   const captureService = createCaptureService({ vision, sessionManager, courses: (userId) => t.academic.forOwner(userId).courses, now: () => t.clock.t, logger: quiet, limits: { minReadIntervalMs: 0 } })
-  const lanes = createMemoryLaneManager({ academic: t.academic, knowledge, sessionManager, audit: t.audit })
+  const lanes = createMemoryLaneManager({ academic: t.academic, knowledge, sessionManager, audit: t.audit, clock: () => t.clock.t })
+  const conversations = createSessionService({ store: createConversationRepository(t.database), logger: quiet })
+  const model = { calls: [], reply: 'Third normal form means no transitive dependency [S1].' }
+  const research = { forOwner: () => ({ search: async () => ({ works: [{ label: 'R1', title: 'Codd', authors: ['E. Codd'], year: 1970, doi: '10.1145/362384.362685', verified: true, url: 'https://doi.org/10.1145/362384.362685', abstract: 'a' }], query: 'q' }) }) }
+  const answerService = createAnswerService({ generate: async (messages) => { model.calls.push(messages); return model.reply }, knowledgeService, lanes, sessionManager, researchService: research, conversations, courses: (u) => t.academic.forOwner(u).courses, now: () => t.clock.t, audit: t.audit, logger: quiet })
   const identities = {
     alice: personIdentity({ id: t.who.alice, external_id: 'a', email: 'alice@example.com', name: 'alice', role: 'viewer' }, { ref: 'r', csrf: 'x' }),
     bob: personIdentity({ id: t.who.bob, external_id: 'b', email: 'bob@example.com', name: 'bob', role: 'viewer' }, { ref: 'r', csrf: 'x' }),
@@ -37,7 +45,7 @@ async function serve() {
     next()
   })
   const gate = (req, res, next) => (req.identity ? next() : res.status(401).json({ error: 'sign in', code: 'session-required' }))
-  app.use('/academic', gate, createAcademicRouter({ lanes, audit: t.audit, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge, knowledgeService }), (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService })] }))
+  app.use('/academic', gate, createAcademicRouter({ lanes, audit: t.audit, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge, knowledgeService }), (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService }), (router, helpers) => addAnswerRoutes(router, helpers, { answerService, researchService: research, knowledge })] }))
   app.use(errorHandler({ logger: quiet }))
   const server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s))
@@ -58,7 +66,7 @@ async function serve() {
     }
     return { status: res.status, json, text, headers: res.headers }
   }
-  return { t, vision, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
+  return { t, vision, model, conversations, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
 }
 
 async function using(body) {
@@ -274,5 +282,85 @@ test('a screenshot sent to a study session is read; the questions are listed; ot
     assert.equal((await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', raw: Buffer.from('not a picture at all but long enough'), type: 'image/png' })).json.code, 'invalid-image')
     assert.equal((await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', raw: Buffer.alloc(5_000_000, 1), type: 'image/png' })).status, 413)
     assert.equal((await r.nobody(`/sessions/${s.id}/captures`, { method: 'POST', raw: png(), type: 'image/png' })).status, 401)
+  })
+})
+
+test('answering over HTTP: a typed question, a question from the screen, a concept in a restricted session, and the application\'s refusals', async () => {
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Database Systems' } })).json
+    await r.alice(`/courses/${course.id}/documents?title=Lecture+3`, { method: 'POST', text: '# Normalisation\n\n## Third normal form\n\nNo transitive dependency on the key.', type: 'text/markdown' })
+    const conversation = r.conversations.forOwner(r.t.who.alice).createSession({}).id
+    const s = (await r.alice('/sessions', { method: 'POST', body: { type: 'study', courseId: course.id, captureEnabled: true } })).json
+
+    const typed = await r.alice(`/sessions/${s.id}/ask`, { method: 'POST', body: { text: 'What is third normal form?', conversationId: conversation } })
+    assert.equal(typed.status, 200)
+    assert.equal(typed.json.status, 'answered')
+    assert.equal(typed.json.grounding, 'course')
+    assert.match(typed.json.markdown, /\*\*Sources\*\*/)
+    assert.equal(typed.json.savedToConversation, true)
+
+    const read = (await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', raw: png(), type: 'image/png' })).json
+    const fromScreen = await r.alice(`/sessions/${s.id}/questions/${read.questions[0].id}/answer`, { method: 'POST', body: { conversationId: conversation, style: 'simpler' } })
+    assert.equal(fromScreen.json.status, 'answered')
+    assert.equal(fromScreen.json.approach, 'simpler')
+    assert.equal((await r.alice(`/sessions/${s.id}/ask`, { method: 'POST', body: { text: '' } })).json.code, 'invalid-input')
+    assert.equal((await r.bob(`/sessions/${s.id}/ask`, { method: 'POST', body: { text: 'What is a key?' } })).status, 404)
+    assert.equal((await r.nobody(`/sessions/${s.id}/ask`, { method: 'POST', body: { text: 'What is a key?' } })).status, 401)
+
+    const restricted = (await r.alice('/sessions', { method: 'POST', body: { type: 'restricted', courseId: course.id } })).json
+    const callsBefore = r.model.calls.length
+    const refused = await r.alice(`/sessions/${restricted.id}/ask`, { method: 'POST', body: { text: 'What is third normal form?' } })
+    assert.equal(refused.status, 403)
+    assert.equal(refused.json.code, 'restricted-assessment')
+    assert.equal(refused.json.details.offer, 'explain_concept')
+    assert.equal(r.model.calls.length, callsBefore, 'the model was not asked')
+    const concept = await r.alice(`/sessions/${restricted.id}/concept`, { method: 'POST', body: { concept: 'third normal form' } })
+    assert.equal(concept.json.status, 'answered')
+    assert.match(r.model.calls.at(-1)[0].content, /RESTRICTED assessment context/)
+    const pasted = await r.alice(`/sessions/${restricted.id}/concept`, { method: 'POST', body: { concept: 'Explain why a table in 2NF may still fail 3NF and give a worked example with a schema of five attributes' } })
+    assert.equal(pasted.status, 400)
+    assert.equal(pasted.json.code, 'concept-looks-like-question')
+  })
+})
+
+test('feedback, progress and saved concepts over HTTP; the person\'s learning is theirs alone, and can be switched off', async () => {
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    const fb = (body) => r.alice('/feedback', { method: 'POST', body: { courseId: course.id, topic: 'joins', ...body } })
+    assert.equal((await fb({ kind: 'misunderstanding', note: 'mixes up inner and outer' })).json.recorded, true)
+    assert.equal((await fb({ kind: 'not_helpful' })).json.experience.difficulty, 'needs_practice')
+    assert.equal((await fb({ kind: 'sulking' })).json.code, 'invalid-input')
+    assert.equal((await fb({ kind: 'helpful', approach: 'telepathy' })).status, 400)
+    const progress = (await r.alice(`/progress?course=${course.id}`)).json
+    assert.equal(progress.topics[0].topic, 'joins')
+    assert.deepEqual(progress.suggestedReview.map((x) => x.topic), ['joins'])
+    assert.equal((await r.alice('/progress?course=nope')).status, 404)
+    assert.equal((await r.bob('/progress')).json.topics.length, 0)
+    assert.equal((await r.bob('/feedback', { method: 'POST', body: { kind: 'helpful', courseId: course.id, topic: 'joins' } })).json.code, 'course-not-found')
+    const mem = (await r.alice('/memory')).json.lanes.experience.items[0]
+    assert.equal((await r.alice(`/memory/experiences/${mem.id}/reviewed`, { method: 'POST' })).json.lastReviewedAt !== null, true)
+    assert.equal((await r.bob(`/memory/experiences/${mem.id}/reviewed`, { method: 'POST' })).status, 404)
+
+    await r.alice('/profile', { method: 'PUT', body: { adaptiveLearning: false } })
+    assert.deepEqual((await fb({ kind: 'not_helpful', topic: 'indexing' })).json, { recorded: false, reason: 'adaptive-learning-off' })
+    assert.equal((await r.alice('/memory')).json.lanes.experience.items.every((e) => e.topic === 'joins'), true)
+
+    const saved = await r.alice('/feedback', { method: 'POST', body: { kind: 'save_concept', courseId: course.id, topic: 'inner joins', text: '# Inner join\n\nKeeps only the rows that match on both sides.' } })
+    assert.equal(saved.status, 201, 'keeping an explanation is the student\'s own act: it works with adaptive learning off')
+    assert.equal(saved.json.document.title, 'Saved concept: inner joins')
+    assert.match((await r.alice(`/search?course=${course.id}&q=inner+join+rows`)).json.passages[0].text, /Keeps only the rows/)
+    assert.equal((await r.alice('/feedback', { method: 'POST', body: { kind: 'save_concept', courseId: 'nope', topic: 'x', text: 'y z' } })).status, 404)
+  })
+})
+
+test('research over HTTP is labelled and counted; a person with no sign-in cannot use it', async () => {
+  await using(async (r) => {
+    const found = await r.alice('/research?q=relational+model')
+    assert.equal(found.status, 200)
+    assert.equal(found.json.works[0].verified, true)
+    assert.equal(found.json.works[0].url, 'https://doi.org/10.1145/362384.362685')
+    assert.equal((await r.nobody('/research?q=x')).status, 401)
+    assert.equal((await r.legacy('/research?q=x')).status, 403)
+    assert.ok(r.t.audits.some((a) => a.event === 'academic.research' && a.detail.verified === 1))
   })
 })

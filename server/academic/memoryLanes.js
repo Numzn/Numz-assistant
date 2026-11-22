@@ -1,5 +1,6 @@
 import { AcademicError, textField } from './academicError.js'
 import { DEFAULT_SETTINGS, DIFFICULTIES } from '../persistence/academicRepository.js'
+import { createLearningMemory } from './learningMemory.js'
 
 /**
  * The six memory lanes of Academic Intelligence, as ONE place that knows where each lives. It stores nothing of its own: it is a facade over
@@ -19,7 +20,7 @@ import { DEFAULT_SETTINGS, DIFFICULTIES } from '../persistence/academicRepositor
 
 export const LANES = Object.freeze(['profile', 'academic', 'knowledge', 'conversation', 'experience', 'session'])
 
-export function createMemoryLaneManager({ academic, knowledge = null, conversations = null, sessionManager = null, audit = () => {} } = {}) {
+export function createMemoryLaneManager({ academic, knowledge = null, conversations = null, sessionManager = null, audit = () => {}, clock = Date.now } = {}) {
   if (!academic) throw new Error('the academic repository is required')
 
   function forOwner(userId) {
@@ -27,6 +28,7 @@ export function createMemoryLaneManager({ academic, knowledge = null, conversati
     const theirKnowledge = knowledge ? knowledge.forOwner(userId) : null
     const history = () => conversations?.forOwner?.(userId)?.getHistory?.() ?? null
     const note = (event, detail) => audit(event, { userId, detail })
+    const learning = createLearningMemory({ academic, userId, clock, audit })
 
     const manager = {
       userId,
@@ -90,6 +92,12 @@ export function createMemoryLaneManager({ academic, knowledge = null, conversati
         if (removed) note('academic.memory_delete', { lane: 'experience', experienceId: id })
         return removed
       },
+
+      // ---- lane 5, continued: recording and using what is learned (learningMemory.js has the rules) -------------------------
+      recordFeedback: (input) => learning.recordFeedback(input),
+      relevantExperiences: (input) => learning.relevantExperiences(input),
+      progress: (input) => learning.progress(input),
+      markReviewed: (id) => learning.markReviewed(id),
 
       // ---- lane 6: the session ---------------------------------------------------------------------------------------------
       currentSession: () => mine.sessions.current(),
