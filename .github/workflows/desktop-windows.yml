@@ -56,6 +56,22 @@ jobs:
       - name: Build the installer
         run: npx --yes @tauri-apps/cli@2.12.4 build --bundles nsis
 
+      # Starts the app that was just built, as a person would, waits for it to load the live NUMZ AI page in Windows' own web view, and
+      # photographs the desktop and the app's own window with the capture code under test. Then closes it.
+      - name: Launch the built app and look at it
+        continue-on-error: true
+        run: |
+          mkdir -p ../../probe
+          ./target/release/numz-ai-desktop.exe &
+          sleep 35
+          shot() { cargo run --quiet -p numz-capture --example shot -- "$@"; }
+          { echo "== windows with the app open"; shot windows; } 2>&1 | tee ../../probe/with-app.log
+          shot screen ../../probe/with-app-screen.png
+          ID=$(shot windows | awk -F'\t' '$2 ~ /NUMZ AI/ { print $1; exit }')
+          echo "app window id: ${ID:-none}" | tee -a ../../probe/with-app.log
+          if [ -n "$ID" ]; then shot window "$ID" ../../probe/app-window.png 2>&1 | tee -a ../../probe/with-app.log; fi
+          taskkill //IM numz-ai-desktop.exe //F || true
+
       - name: Collect
         run: |
           mkdir -p ../../out
