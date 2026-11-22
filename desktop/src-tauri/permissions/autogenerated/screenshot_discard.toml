@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-screenshot-discard"
+description = "Enables the screenshot_discard command without any pre-configured scope."
+commands.allow = ["screenshot_discard"]
+
+[[permission]]
+identifier = "deny-screenshot-discard"
+description = "Denies the screenshot_discard command without any pre-configured scope."
+commands.deny = ["screenshot_discard"]

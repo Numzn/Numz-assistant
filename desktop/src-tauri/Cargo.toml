@@ -1,0 +1,28 @@
+[package]
+name = "numz-ai-desktop"
+version = "0.1.0"
+description = "NUMZ AI as a desktop app: the NUMZ AI site in a native window, plus native screenshots."
+edition = "2021"
+publish = false
+
+[workspace]
+members = ["crates/numz-capture"]
+
+[lib]
+name = "numz_ai_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+numz-capture = { path = "crates/numz-capture" }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

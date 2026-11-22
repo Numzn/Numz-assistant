@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-screenshot-windows"
+description = "Enables the screenshot_windows command without any pre-configured scope."
+commands.allow = ["screenshot_windows"]
+
+[[permission]]
+identifier = "deny-screenshot-windows"
+description = "Denies the screenshot_windows command without any pre-configured scope."
+commands.deny = ["screenshot_windows"]

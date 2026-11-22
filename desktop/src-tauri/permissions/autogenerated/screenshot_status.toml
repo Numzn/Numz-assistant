@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-screenshot-status"
+description = "Enables the screenshot_status command without any pre-configured scope."
+commands.allow = ["screenshot_status"]
+
+[[permission]]
+identifier = "deny-screenshot-status"
+description = "Denies the screenshot_status command without any pre-configured scope."
+commands.deny = ["screenshot_status"]

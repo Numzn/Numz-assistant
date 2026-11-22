@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "numz-ai-dev-local",
+  "description": "FOR LOCAL TESTING ONLY. Lets a copy of the NUMZ AI site on this computer (http://127.0.0.1:<any port>) use the screenshot commands, for desktop/e2e/run.mjs. It is NOT listed in tauri.conf.json, so it is not part of the app; a test build turns it on with TAURI_CONFIG (see desktop/README.md).",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*"]
+  },
+  "permissions": [
+    "allow-screenshot-status",
+    "allow-screenshot-windows",
+    "allow-screenshot-capture",
+    "allow-screenshot-export",
+    "allow-screenshot-discard"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NUMZ AI",
+  "version": "0.1.0",
+  "identifier": "site.numz.ai.desktop",
+  "build": {
+    "frontendDist": "../shell"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
+      "capabilities": [
+        "numz-ai-site"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "category": "Productivity",
+    "shortDescription": "NUMZ AI as a desktop app",
+    "longDescription": "The NUMZ AI assistant in its own window, with native screenshots you can ask about."
+  }
+}
