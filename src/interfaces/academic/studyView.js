@@ -60,7 +60,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
   const indicator = $('studyIndicator')
   const tabs = [...panel.querySelectorAll('[data-study-tab]')]
   let tab = 'session'
-  let formState = { type: 'study', courseId: '', topic: '', capture: false, autoAnswer: false, research: false, exclusions: loadExclusions() }
+  let formState = { type: 'study', courseId: '', topic: '', capture: false, autoAnswer: true, research: false, exclusions: loadExclusions() }
   let materials = { courseId: '', documents: [], lectures: [], message: '', busy: false }
   let memory = { data: null, message: '', busy: false, failed: false }
   let askText = ''
@@ -90,7 +90,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
         { class: 'study-types' },
         h(doc, 'legend', { text: 'This session is' }),
         SESSION_TYPES.map(([value, title, text]) =>
-          h(doc, 'label', { class: 'study-type' }, h(doc, 'input', { type: 'radio', name: 'studyType', value, checked: formState.type === value, onchange: () => { formState.type = value; if (value === 'restricted') Object.assign(formState, { capture: false, autoAnswer: false, research: false }); render(true) } }), h(doc, 'span', { class: 'study-type-title', text: title }), h(doc, 'small', { text }))
+          h(doc, 'label', { class: 'study-type' }, h(doc, 'input', { type: 'radio', name: 'studyType', value, checked: formState.type === value, onchange: () => { formState.type = value; if (value === 'restricted') Object.assign(formState, { capture: false, research: false }); render(true) } }), h(doc, 'span', { class: 'study-type-title', text: title }), h(doc, 'small', { text }))
         )
       ),
       field('Course', h(doc, 'select', { onchange: (e) => (formState.courseId = e.target.value) }, h(doc, 'option', { value: '', text: state.courses.length ? 'No course chosen' : 'No courses yet (add one in Materials)' }), state.courses.map((c) => h(doc, 'option', { value: c.id, selected: c.id === formState.courseId, text: c.code ? `${c.code} ${c.title}` : c.title })))),
@@ -99,7 +99,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
       h(doc, 'small', { class: 'study-note', text: restricted ? 'Not available in a restricted session.' : watchOk ? 'Looks at the screen every few seconds, and only reads it when it changes. Never while a password manager, a sign-in screen or a window you list below is open.' : state.watch.note || 'Not available here.' }),
       formState.capture && !restricted && watchOk
         ? [
-            h(doc, 'label', { class: 'study-check' }, h(doc, 'input', { type: 'checkbox', checked: formState.autoAnswer, onchange: (e) => (formState.autoAnswer = e.target.checked) }), h(doc, 'span', { text: 'Explain questions it finds without asking me' })),
+            h(doc, 'label', { class: 'study-check' }, h(doc, 'input', { type: 'checkbox', checked: formState.autoAnswer, onchange: (e) => (formState.autoAnswer = e.target.checked) }), h(doc, 'span', { text: 'Explain the questions it finds, without me pressing anything' })),
             field('Never read the screen while a window with these words is open', h(doc, 'input', { type: 'text', value: formState.exclusions, placeholder: 'for example: slack, bank, payroll', oninput: (e) => (formState.exclusions = e.target.value) }), 'Password managers and sign-in screens are always left out.')
           ]
         : null,
@@ -151,7 +151,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
         !restricted && state.watch.available && state.watch.status === 'off' ? h(doc, 'button', { type: 'button', text: 'Turn screen reading on', onclick: () => controller.resumeWatching() }) : null,
         h(doc, 'button', { type: 'button', 'data-danger': 'true', text: 'End session', onclick: () => controller.stop() })
       ),
-      state.watch.status !== 'off' ? h(doc, 'p', { id: 'studyWatchNote', class: 'study-note', text: `Looked ${state.watch.looks} times, read ${state.watch.reported}${state.watch.skipped ? `, held back ${state.watch.skipped} times for something excluded` : ''}.` }) : null,
+      state.watch.status !== 'off' ? h(doc, 'p', { id: 'studyWatchNote', class: 'study-note', 'aria-live': 'off', text: watchNote(state) }) : null,
       restricted ? h(doc, 'p', { class: 'study-warn', text: 'Restricted assessment: NUMZ AI is not reading your screen and will not answer questions. Name a concept below to have it explained in general terms.' }) : null,
       state.questions.length ? h(doc, 'ul', { class: 'study-questions' }, state.questions.map((q) => renderQuestion(state, q))) : !restricted ? h(doc, 'p', { class: 'study-empty', text: state.watch.status === 'watching' ? 'Waiting for something on your screen to read…' : 'Questions NUMZ AI finds on your screen appear here. You can also type one below.' }) : null,
       h(
@@ -313,7 +313,14 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
 
   // ---- drawing ------------------------------------------------------------------------------------------------------------------
 
-  const watchNote = (state) => `Looked ${state.watch.looks} times, read ${state.watch.reported}${state.watch.skipped ? `, held back ${state.watch.skipped} times for something excluded` : ''}.`
+  const clockText = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const readText = (read) => ({ questions: `${read.count} new question${read.count === 1 ? '' : 's'}`, same: 'nothing new: the same question as before', none: 'no question on the screen', unclear: 'the screen could not be understood', 'held-back': 'it could not be read this time' })[read.status] ?? ''
+  /** The live line under the session bar: what the watcher has done, and what the last screen it sent turned out to hold. */
+  const watchNote = (state) => {
+    const counts = `Looked ${state.watch.looks} times, sent ${state.watch.reported}${state.watch.skipped ? `, held back ${state.watch.skipped} times for something excluded` : ''}.`
+    if (state.reading) return `${counts} Reading your screen…`
+    return state.lastRead ? `${counts} Last read ${clockText(state.lastRead.at)}: ${readText(state.lastRead)}.` : counts
+  }
   /** What the session tab shows, apart from the counters: the panel is redrawn only when this changes, so typing is never interrupted. */
   const signature = (state) => JSON.stringify([tab, state.phase, state.session && [state.session.id, state.session.status, state.session.sessionType], state.message, state.tone, state.busy, state.watch.available, state.watch.status, state.watch.excludedNow, state.watch.note, state.courses.map((c) => c.id), state.questions.map((q) => [q.id, q.state, q.message]), state.lastAnswer?.answerId ?? null])
   let drawn = ''

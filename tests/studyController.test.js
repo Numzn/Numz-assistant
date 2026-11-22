@@ -88,9 +88,10 @@ function build({ native = fakeNative(), api = fakeApi(), conversation = 'conv-1'
   // The watcher's loop waits between looks. In a test that fails before it stops the controller, an endless loop would hold the process
   // open: after a generous number of waits the wait simply never returns (a pending promise does not keep Node alive).
   let waits = 0
-  const wait = () => (++waits > 20_000 ? new Promise(() => {}) : tick())
-  const controller = createStudyController({ api, native, getConversationId: () => conversation, onExchange: (e) => exchanges.push(e), getExclusions: () => ({ apps: ['slack'], titles: ['payroll'] }), wait })
-  return { controller, api, native, exchanges }
+  const clock = { t: 1_000_000 } // moves 1.5 s with every look, like the real loop
+  const wait = () => (++waits > 20_000 ? new Promise(() => {}) : ((clock.t += 1500), tick()))
+  const controller = createStudyController({ api, native, getConversationId: () => conversation, onExchange: (e) => exchanges.push(e), getExclusions: () => ({ apps: ['slack'], titles: ['payroll'] }), wait, now: () => clock.t })
+  return { controller, api, native, exchanges, clock }
 }
 
 test('a plain browser has no screen reading, and says so; an existing session is picked up but never starts reading the screen by itself', async () => {
@@ -159,7 +160,7 @@ test('if the server refuses to start the session nothing is left running; if the
 test('a changed screen reported by the watcher is sent for reading and its question appears once; the native copy is always let go', async () => {
   const t = build()
   await t.controller.init()
-  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
   t.native.script.polls = [polled({ pending: pending('cap-1') }), polled()]
   await until(() => t.controller.getState().questions.length === 1)
   assert.deepEqual(t.native.calls.export[0], { captureId: 'cap-1', maxSide: 1600, quality: 80 })
@@ -239,7 +240,7 @@ test('a question can be answered by itself when the person asked for that, but n
 test('an answer joins the conversation and the answer card; a screen that may be an exam asks the person first; an unclear course asks which', async () => {
   const t = build()
   await t.controller.init()
-  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
   t.native.script.polls = [polled({ pending: pending() }), polled()]
   await until(() => t.controller.getState().questions.length === 1)
 
@@ -372,4 +373,192 @@ test('feedback: what helped is remembered with the approach used, "simpler" asks
   await t.controller.feedback('simpler')
   assert.equal(t.api.calls.answer.length, before + 1)
   assert.equal(t.api.calls.answer.at(-1)[1].style, 'simpler')
+})
+
+// ---- the automatic flow: from a changed screen to an answer in the panel and the conversation ------------------------------------
+
+const questions = (n) => Array.from({ length: n }, (_, i) => ({ id: `q${i + 1}`, text: `Question ${i + 1}. Explain a normal form.`, options: [], task: 'explain', duplicate: false }))
+
+test('reading the screen answers by itself unless the person turned that off: every new question of a screen (up to three), one at a time, each into the conversation', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true }) // no autoAnswer option: the default is on
+  assert.equal(t.api.calls.start[0].autoAnswer, true)
+  assert.equal(t.controller.getState().session.autoAnswer, true)
+  let running = 0
+  let overlapped = false
+  t.api.script.send = async () => recognised({ questions: questions(4) })
+  t.api.script.answer = async () => {
+    overlapped ||= ++running > 1
+    await tick()
+    await tick()
+    running--
+    return answered({ questionId: `q${t.api.calls.answer.length}`, markdown: `Answer ${t.api.calls.answer.length}` })
+  }
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.exchanges.length === 3)
+  assert.equal(overlapped, false, 'one answer at a time')
+  assert.deepEqual(t.exchanges.map((e) => e.answer), ['Answer 1', 'Answer 2', 'Answer 3'], 'in the order found, into the conversation')
+  assert.deepEqual(t.controller.getState().questions.map((q) => q.state), ['answered', 'answered', 'answered', 'new'], 'the fourth waits for an Explain press')
+  assert.match(t.controller.getState().message, /first 3 of 4/)
+  assert.equal(t.controller.getState().lastAnswer.markdown, 'Answer 3')
+  await t.controller.stop()
+})
+
+test('turning "explain by itself" off lists the question and leaves the answering to the person', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  assert.equal(t.api.calls.start[0].autoAnswer, false)
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.controller.getState().questions.length === 1)
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(t.api.calls.answer.length, 0)
+  assert.equal(t.controller.getState().questions[0].state, 'new')
+  await t.controller.stop()
+})
+
+test('a screen that may be an assessment is listed but not answered by itself, and the person is told why', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  t.api.script.send = async () => recognised({ signals: ['closed-book'] })
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.controller.getState().questions.length === 1)
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(t.api.calls.answer.length, 0)
+  assert.match(t.controller.getState().message, /may be an assessment/)
+  await t.controller.stop()
+})
+
+test('the heartbeat to the app keeps going while a screen is being read, however long the read takes', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  let release
+  t.api.script.send = () => new Promise((resolve) => (release = () => resolve(recognised())))
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.api.calls.send.length === 1)
+  assert.equal(t.controller.getState().reading, true, 'the panel can say a screen is being read')
+  const before = t.native.calls.poll
+  await until(() => t.native.calls.poll >= before + 10)
+  assert.equal(t.controller.getState().watch.status, 'watching', 'still watching: the loop was not held up by the read')
+  release()
+  await until(() => t.controller.getState().questions.length === 1)
+  assert.equal(t.controller.getState().reading, false)
+  await t.controller.stop()
+})
+
+test('only one screen is sent at a time; a newer one replaces one that is still waiting, and the older native copy is let go', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  let release
+  t.api.script.send = () => new Promise((resolve) => (release = () => resolve(recognised({ status: 'no-question', questions: [] }))))
+  t.native.script.polls = [polled({ pending: pending('cap-1') }), polled({ pending: pending('cap-2') }), polled({ pending: pending('cap-3') }), polled()]
+  await until(() => t.native.calls.poll >= 6)
+  assert.equal(t.api.calls.send.length, 1, 'the first is being read; the others wait')
+  assert.deepEqual(t.native.calls.export.map((e) => e.captureId), ['cap-1'], 'the waiting ones are not even exported yet')
+  assert.ok(t.native.calls.discard.includes('cap-2'), 'the older of the two waiting screens was let go')
+  t.api.script.send = async () => recognised({ status: 'no-question', questions: [] })
+  release()
+  await until(() => t.api.calls.send.length === 2)
+  assert.deepEqual(t.native.calls.export.map((e) => e.captureId), ['cap-1', 'cap-3'], 'then the newest')
+  await t.controller.stop()
+})
+
+test('a screen the server could not take yet is sent again after a wait, then given up on; the next change is read when it comes', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  let attempts = 0
+  t.api.script.send = async () => {
+    if (++attempts === 1) throw err(429, 'capture-rate-limited', 'Screens are coming too fast.', { retryAfterMs: 5000 })
+    return recognised()
+  }
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.controller.getState().questions.length === 1)
+  assert.equal(attempts, 2, 'sent again, and this time it was read')
+  assert.ok(t.api.calls.send[1][1].bytes.length === 3, 'the same picture')
+  await t.controller.stop()
+
+  const failing = build()
+  await failing.controller.init()
+  await failing.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  failing.api.script.send = async () => {
+    throw err(502, 'read-failed', 'The screen could not be read just now.')
+  }
+  failing.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => failing.controller.getState().lastRead?.status === 'held-back')
+  assert.equal(failing.api.calls.send.length, 3, 'once, and twice again')
+  for (let i = 0; i < 20; i++) await tick()
+  assert.equal(failing.api.calls.send.length, 3, 'and then it is let go')
+  await failing.controller.stop()
+})
+
+test('a screen waiting to be sent again is replaced by a newer one, and let go when the session is paused or ends', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  let calls = 0
+  t.api.script.send = async () => {
+    calls++
+    throw err(409, 'capture-busy', 'The last screen is still being read.')
+  }
+  t.native.script.polls = [polled({ pending: pending('cap-1') }), polled()]
+  await until(() => calls === 1)
+  t.api.script.send = async () => recognised({ status: 'no-question', questions: [] })
+  t.native.script.polls = [polled({ pending: pending('cap-2') }), polled()]
+  await until(() => t.api.calls.send.length === 2 && t.controller.getState().lastRead?.status === 'none')
+  assert.deepEqual(t.native.calls.export.map((e) => e.captureId), ['cap-1', 'cap-2'])
+  assert.equal(t.api.calls.send.length, 2, 'the newer screen was sent; the old one was not sent again')
+
+  const paused = build()
+  await paused.controller.init()
+  await paused.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  paused.api.script.send = async () => {
+    throw err(409, 'capture-busy', 'busy')
+  }
+  paused.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => paused.api.calls.send.length === 1)
+  await paused.controller.pause()
+  paused.clock.t += 60_000
+  for (let i = 0; i < 20; i++) await tick()
+  assert.equal(paused.api.calls.send.length, 1, 'nothing is sent again for a paused session')
+  await t.controller.stop()
+  await paused.controller.stop()
+})
+
+test('a screen that arrives after the session was paused is let go, not read', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true })
+  await t.controller.pause()
+  t.native.script.polls = [polled({ pending: pending('late') }), polled()]
+  await until(() => t.native.calls.discard.includes('late'))
+  for (let i = 0; i < 5; i++) await tick()
+  assert.equal(t.api.calls.send.length, 0, 'the picture that was in flight when pause was pressed is never sent')
+  await t.controller.stop()
+})
+
+test('the panel is told what was read: questions found, the same screen again, nothing to read, or a screen that could not be understood', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  const cases = [
+    [{ status: 'recognised', questions: questions(2), context: {}, signals: [] }, 'questions', 2],
+    [{ status: 'duplicate', questions: [{ ...questions(1)[0], id: 'q1', duplicate: true }], context: {}, signals: [] }, 'same', 0],
+    [{ status: 'no-question', questions: [], context: null, signals: [] }, 'none', 0],
+    [{ status: 'unclear', questions: [], context: null, signals: [] }, 'unclear', 0]
+  ]
+  for (const [i, [reply, status, count]] of cases.entries()) {
+    t.api.script.send = async () => reply
+    t.native.script.polls = [polled({ pending: pending(`cap-${i}`) }), polled()]
+    await until(() => t.api.calls.send.length === i + 1 && t.controller.getState().lastRead?.status === status)
+    assert.equal(t.controller.getState().lastRead.count, count, status)
+    assert.ok(t.controller.getState().lastRead.at >= 1_000_000)
+    for (let k = 0; k < 3; k++) await tick()
+  }
+  await t.controller.stop()
+  assert.equal(t.controller.getState().lastRead, null, 'and it is forgotten when the session ends')
 })

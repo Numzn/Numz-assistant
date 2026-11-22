@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createCaptureService } from './captureService.js'
+import { CAPTURE_LIMITS, createCaptureService } from './captureService.js'
 import { createSessionManager } from './sessionManager.js'
 import { fakeVision, png, quiet, reading, rig } from './testSupport.js'
 
@@ -175,4 +175,20 @@ test('only a picture that holds a diagram is kept (in memory, briefly); all othe
   t.clock.t += 3 * 60_000
   await t.alice.read(s.id, { bytes: png(1280, 720, 3) }, t.ctx).catch(() => {})
   assert.equal(runtime.captures.get(withFigure.captureId).picture, null, 'and dropped after two minutes')
+})
+
+test('the study capture limits are the ones the session promises: 8 seconds between reads and 80 screens per session; an identical picture costs nothing', async () => {
+  assert.equal(CAPTURE_LIMITS.minReadIntervalMs, 8000)
+  assert.equal(CAPTURE_LIMITS.maxReadsPerSession, 80)
+  // with those defaults in force
+  const t = setup({ limits: { minReadIntervalMs: CAPTURE_LIMITS.minReadIntervalMs, maxReadsPerSession: CAPTURE_LIMITS.maxReadsPerSession } })
+  const s = start(t)
+  const first = png(1280, 720, 1)
+  await t.alice.read(s.id, { bytes: first }, t.ctx)
+  await assert.rejects(t.alice.read(s.id, { bytes: png(1280, 720, 2) }, t.ctx), (err) => err.code === 'capture-rate-limited' && err.retryAfterSeconds <= 8)
+  assert.equal((await t.alice.read(s.id, { bytes: first }, t.ctx)).status, 'duplicate', 'an identical picture is answered without a read')
+  assert.equal(t.vision.calls.length, 1, 'one screen read so far: the refused one and the repeat cost nothing')
+  t.clock.t += 8_000
+  await t.alice.read(s.id, { bytes: png(1280, 720, 3) }, t.ctx)
+  assert.equal(t.vision.calls.length, 2, 'and after the 8 seconds the next screen is read')
 })

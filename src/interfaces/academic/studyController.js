@@ -15,6 +15,11 @@ import { AcademicApiError } from './academicApi.js'
  */
 
 const POLL_MS = 1500
+/** Questions answered by themselves from one screen (more are listed with an Explain button). */
+const AUTO_ANSWER_LIMIT = 3
+/** A picture the server could not take yet (too soon, busy, a failed read, the network) is sent again after these waits, then dropped. */
+const RETRY_WAITS_MS = [4000, 8000]
+const RETRYABLE = ['capture-rate-limited', 'capture-busy', 'read-failed', 'network']
 
 const initial = () => ({
   phase: 'idle', // 'idle' | 'starting' | 'active' | 'paused' | 'stopping'
@@ -23,6 +28,8 @@ const initial = () => ({
   watch: { available: false, status: 'off', excludedNow: false, looks: 0, reported: 0, skipped: 0, note: '' },
   questions: [], // { id, text, options, task, marks, signals, state: 'new'|'answering'|'answered'|'confirm'|'needs-course'|'failed', message?, candidates?, answer? }
   lastAnswer: null, // { answerId, questionId, courseId, topic, approach, markdown, sources, grounding, evidence, flags }
+  reading: false, // a screen is on its way to be read
+  lastRead: null, // { at, status: 'questions'|'same'|'none'|'unclear'|'held-back', count } the last screen the server read
   message: '',
   tone: 'info',
   busy: false
@@ -36,10 +43,14 @@ function describe(err) {
   return { code: 'failed', message: 'Something went wrong. Try again.', details: null }
 }
 
-export function createStudyController({ api, native, getConversationId = () => null, onExchange = () => {}, getExclusions = () => ({ apps: [], titles: [] }), wait = delay } = {}) {
+export function createStudyController({ api, native, getConversationId = () => null, onExchange = () => {}, getExclusions = () => ({ apps: [], titles: [] }), wait = delay, now = Date.now } = {}) {
   let state = initial()
   let pollToken = 0
   const listeners = new Set()
+  let working = false // a screen is being sent and read
+  let queued = null // the newest screen that arrived meanwhile (an older one is let go)
+  let retry = null // { picture, tries, due }: a screen to send again
+  let answering = Promise.resolve() // automatic answers go one at a time
 
   function set(patch) {
     state = { ...state, ...patch }
@@ -102,7 +113,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     }
     let session
     try {
-      session = await api.sessions.start({ ...options, captureEnabled: wantsCapture, autoAnswer: wantsCapture && options.autoAnswer === true })
+      session = await api.sessions.start({ ...options, captureEnabled: wantsCapture, autoAnswer: wantsCapture && options.autoAnswer !== false })
     } catch (err) {
       set({ phase: 'idle' })
       say(describe(err).message, 'error')
@@ -143,6 +154,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     if (state.phase !== 'active' || !state.session) return state
     try {
       set({ session: await api.sessions.pause(state.session.id), phase: 'paused' })
+      await dropWaiting()
       if (state.watch.status === 'watching') await native.watchPause().catch(() => {})
       if (state.watch.status === 'watching') setWatch({ status: 'paused' })
       say('Paused. Nothing is being read.', 'info')
@@ -172,20 +184,54 @@ export function createStudyController({ api, native, getConversationId = () => n
     if (!state.session) return state
     set({ phase: 'stopping' })
     pollToken++
+    await dropWaiting()
     if (native?.available) await native.watchStop()
     try {
       await api.sessions.stop(state.session.id)
     } catch {
       /* it may already have ended */
     }
-    set({ session: null, phase: 'idle', questions: [], lastAnswer: null, watch: { ...state.watch, status: 'off', excludedNow: false } })
+    set({ session: null, phase: 'idle', questions: [], lastAnswer: null, reading: false, lastRead: null, watch: { ...state.watch, status: 'off', excludedNow: false } })
     say(reason || 'The study session has ended. Nothing it held is kept.', 'info')
     return state
   }
 
   // ---- the watcher -----------------------------------------------------------------------------------------------------
 
-  async function handlePending(pending) {
+  /** Lets go of every screen that is waiting to be sent: the native copy of a queued one and the page's copy of one to retry. */
+  async function dropWaiting() {
+    retry = null
+    const waiting = queued
+    queued = null
+    if (waiting && native?.available) await native.discard(waiting.captureId).catch(() => {})
+  }
+
+  /** A screen from the watcher. One is sent at a time; if another arrives meanwhile only the newest is kept. The poll loop never waits for it. */
+  function submit(pending) {
+    retry = null // a newer screen replaces one that was waiting to be sent again
+    if (working) {
+      const older = queued
+      queued = pending
+      if (older && native?.available) native.discard(older.captureId).catch(() => {})
+      return
+    }
+    run(() => prepare(pending))
+  }
+
+  function run(job) {
+    working = true
+    Promise.resolve()
+      .then(job)
+      .catch(() => {})
+      .finally(() => {
+        working = false
+        const next = queued
+        queued = null
+        if (next && state.session) run(() => prepare(next))
+      })
+  }
+
+  async function prepare(pending) {
     let out
     try {
       out = await native.exportCapture({ captureId: pending.captureId, maxSide: 1600, quality: 80 })
@@ -194,14 +240,26 @@ export function createStudyController({ api, native, getConversationId = () => n
     } finally {
       await native.discard(pending.captureId)
     }
+    await deliver({ bytes: out.bytes, mimeType: out.mimeType }, 0)
+  }
+
+  const summary = (status, count) => set({ lastRead: { at: now(), status, count } })
+
+  async function deliver(picture, tries) {
     const session = state.session
-    if (!session) return
+    if (!session || state.phase !== 'active') return // nothing is read for a session that is paused or over
+    set({ reading: true })
     let result
     try {
-      result = await api.sendCapture(session.id, { bytes: out.bytes, mimeType: out.mimeType })
+      result = await api.sendCapture(session.id, picture)
     } catch (err) {
+      set({ reading: false })
       const d = describe(err)
-      if (['capture-rate-limited', 'capture-busy', 'read-failed', 'network'].includes(d.code)) return // the next change is read when it comes
+      if (RETRYABLE.includes(d.code)) {
+        if (tries < RETRY_WAITS_MS.length) retry = { picture, tries: tries + 1, due: now() + Math.max(err?.retryAfterMs ?? 0, RETRY_WAITS_MS[tries]) }
+        else summary('held-back', 0) // it could not be read this time; the next change is read when it comes
+        return
+      }
       if (['session-ended', 'session-expired', 'session-required'].includes(d.code)) return void (await stop('The study session has ended.'))
       if (d.code === 'daily-limit' || err?.status === 429) {
         if (native?.available) await native.watchPause().catch(() => {})
@@ -210,13 +268,22 @@ export function createStudyController({ api, native, getConversationId = () => n
       }
       return say(d.message, 'warn')
     }
-    if (result.status === 'recognised') {
-      const fresh = result.questions.filter((q) => !q.duplicate && !state.questions.some((known) => known.id === q.id))
-      const added = fresh.map((q) => ({ id: q.id, text: q.text, options: q.options ?? [], task: q.task, marks: q.marks ?? null, signals: result.signals ?? [], state: 'new', context: result.context }))
-      set({ questions: [...state.questions, ...added] })
-      if (added.length) say(`Found ${added.length === 1 ? 'a question' : `${added.length} questions`} on your screen.`, 'ok')
-      if (session.autoAnswer && added.length && !(result.signals ?? []).length) answerQuestion(added[0].id)
+    set({ reading: false })
+    if (state.session?.id !== session.id) return // the session ended while the screen was being read
+    if (result.status !== 'recognised') {
+      summary(result.status === 'duplicate' ? 'same' : result.status === 'unclear' ? 'unclear' : 'none', 0)
+      return
     }
+    const fresh = result.questions.filter((q) => !q.duplicate && !state.questions.some((known) => known.id === q.id))
+    const added = fresh.map((q) => ({ id: q.id, text: q.text, options: q.options ?? [], task: q.task, marks: q.marks ?? null, signals: result.signals ?? [], state: 'new', context: result.context }))
+    set({ questions: [...state.questions, ...added] })
+    summary(added.length ? 'questions' : 'same', added.length)
+    if (!added.length) return
+    say(`Found ${added.length === 1 ? 'a question' : `${added.length} questions`} on your screen.`, 'ok')
+    if (!session.autoAnswer) return
+    if ((result.signals ?? []).length) return say('This screen may be an assessment, so nothing was answered automatically. Press Explain if it is practice.', 'warn')
+    for (const q of added.slice(0, AUTO_ANSWER_LIMIT)) answering = answering.then(() => answerQuestion(q.id)).catch(() => {})
+    if (added.length > AUTO_ANSWER_LIMIT) say(`Answering the first ${AUTO_ANSWER_LIMIT} of ${added.length} questions. Press Explain on the rest.`, 'info')
   }
 
   async function poll(token) {
@@ -238,9 +305,16 @@ export function createStudyController({ api, native, getConversationId = () => n
       setWatch({ excludedNow: polled.excludedNow, looks: polled.stats.looks, reported: polled.stats.reported, skipped: polled.stats.skippedExcluded })
       if (polled.status === 'stopped') {
         setWatch({ status: 'off' })
+        await dropWaiting()
         return say(polled.stoppedBecause === 'page-gone' ? 'Screen reading stopped because this page stopped checking in.' : 'Screen reading stopped.', 'warn')
       }
-      if (polled.pending) await handlePending(polled.pending)
+      // The screens are sent and read in the background: this loop is also the heartbeat that keeps the watcher alive, so it never waits for one.
+      if (polled.pending) submit(polled.pending)
+      else if (retry && !working && now() >= retry.due) {
+        const again = retry
+        retry = null
+        run(() => deliver(again.picture, again.tries))
+      }
     }
   }
 
@@ -360,6 +434,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     /** The page is closing: stop reading the screen. */
     async destroy() {
       pollToken++
+      await dropWaiting()
       if (native?.available) await native.watchStop()
       listeners.clear()
     }
