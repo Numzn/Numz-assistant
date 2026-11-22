@@ -13,6 +13,9 @@ import { createScreenshotRouter } from './routes/screenshots.js'
 import { createAcademicRouter } from './routes/academic.js'
 import { createAcademicRepository } from './persistence/academicRepository.js'
 import { createMemoryLaneManager } from './academic/memoryLanes.js'
+import { createSessionManager } from './academic/sessionManager.js'
+import { createCaptureService } from './academic/captureService.js'
+import { addSessionRoutes } from './routes/academicSessions.js'
 import { createKnowledgeRepository } from './persistence/knowledgeRepository.js'
 import { createKnowledgeService } from './academic/knowledgeService.js'
 import { addKnowledgeRoutes } from './routes/academicKnowledge.js'
@@ -151,21 +154,6 @@ const assistantAuth = createAssistantAuth({
   ttlSeconds: Number.parseInt(process.env.ASSISTANT_SESSION_TTL_S ?? '43200', 10) || 43200
 })
 const identityRepo = createIdentityRepository(speechDatabase)
-// Academic Intelligence: a person's courses, study sessions and learning memory (docs/academic-intelligence.md). The memory lanes are one
-// facade over the stores that already exist; nothing here is a second assistant. No live session survives a restart.
-const academicRepo = createAcademicRepository(speechDatabase)
-academicRepo.endAllOpenSessions('server-restart')
-const auditAcademic = (event, { userId = null, detail = null } = {}) => {
-  try {
-    identityRepo.audit({ event, userId, detail })
-  } catch {
-    /* an audit failure must not break the request it describes */
-  }
-}
-const knowledgeRepo = createKnowledgeRepository(speechDatabase)
-const knowledgeService = createKnowledgeService({ knowledge: knowledgeRepo, meetingService })
-const memoryLanes = createMemoryLaneManager({ academic: academicRepo, knowledge: knowledgeRepo, conversations: sessionService, audit: auditAcademic })
-setInterval(() => academicRepo.maintain({ retentionDays: Number.parseInt(process.env.ACADEMIC_SESSION_RETENTION_DAYS ?? '14', 10) || 14 }), 10 * 60_000).unref()
 const audioKey = String(process.env.AUDIO_SERVICE_KEY ?? '').trim()
 let access
 if (authMode === 'broker') {
@@ -228,6 +216,24 @@ setInterval(() => cameraService.sweep(), 30_000).unref()
 // an analysis is saved as ordinary messages marked with the screenshot's id; the picture itself is held in memory for a few minutes.
 const screenshotService = createScreenshotService({ vision: cameraVision, sessions: sessionService })
 setInterval(() => screenshotService.sweep(), 30_000).unref()
+// Academic Intelligence: a person's courses, study sessions and learning memory (docs/academic-intelligence.md). The memory lanes are one
+// facade over the stores that already exist; nothing here is a second assistant. No live session survives a restart.
+const academicRepo = createAcademicRepository(speechDatabase)
+academicRepo.endAllOpenSessions('server-restart')
+const auditAcademic = (event, { userId = null, detail = null } = {}) => {
+  try {
+    identityRepo.audit({ event, userId, detail })
+  } catch {
+    /* an audit failure must not break the request it describes */
+  }
+}
+const knowledgeRepo = createKnowledgeRepository(speechDatabase)
+const knowledgeService = createKnowledgeService({ knowledge: knowledgeRepo, meetingService })
+const sessionManager = createSessionManager({ academic: academicRepo, audit: auditAcademic, ttlMs: (Number.parseInt(process.env.ACADEMIC_SESSION_HOURS ?? '4', 10) || 4) * 3_600_000 })
+const captureService = createCaptureService({ vision: cameraVision, sessionManager, courses: (userId) => academicRepo.forOwner(userId).courses })
+const memoryLanes = createMemoryLaneManager({ academic: academicRepo, knowledge: knowledgeRepo, conversations: sessionService, sessionManager, audit: auditAcademic })
+setInterval(() => academicRepo.maintain({ retentionDays: Number.parseInt(process.env.ACADEMIC_SESSION_RETENTION_DAYS ?? '14', 10) || 14 }), 10 * 60_000).unref()
+setInterval(() => sessionManager.sweep(), 60_000).unref()
 // No live connection survives a process restart: interrupted meetings move to RECOVERING.
 const meetingRecovery = meetingService.recoverInterruptedMeetings()
 console.log(
@@ -327,7 +333,10 @@ function createApp() {
   app.use('/api/v1/assistant/camera', access.requireSession('camera'), createCameraRouter({ service: cameraService }))
   // Screenshot attachments take a raw picture body too, and belong to a chat conversation: the chat capability gates them.
   app.use('/api/v1/assistant/screenshots', access.requireSession('chat'), createScreenshotRouter({ service: screenshotService }))
-  app.use('/api/v1/assistant/academic', access.requireSession('academic'), createAcademicRouter({ lanes: memoryLanes, audit: auditAcademic, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge: knowledgeRepo, knowledgeService })] }))
+  app.use('/api/v1/assistant/academic', access.requireSession('academic'), createAcademicRouter({ lanes: memoryLanes, audit: auditAcademic, extend: [
+        (router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge: knowledgeRepo, knowledgeService }),
+        (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService })
+      ] }))
   app.use('/api/v1/assistant', access.requireSession('chat'), assistantRouter)
   app.use(
     '/api/v1/admin',

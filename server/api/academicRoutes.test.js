@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import express from 'express'
-import { rig } from '../academic/testSupport.js'
+import { fakeVision, png, reading, rig } from '../academic/testSupport.js'
+import { createCaptureService } from '../academic/captureService.js'
+import { createSessionManager } from '../academic/sessionManager.js'
+import { addSessionRoutes } from '../routes/academicSessions.js'
 import { createMemoryLaneManager } from '../academic/memoryLanes.js'
 import { LEGACY_IDENTITY, personIdentity } from '../auth/identity.js'
 import { errorHandler } from '../http/errorHandler.js'
@@ -16,7 +19,11 @@ async function serve() {
   const t = rig()
   const knowledge = createKnowledgeRepository(t.database)
   const knowledgeService = createKnowledgeService({ knowledge })
-  const lanes = createMemoryLaneManager({ academic: t.academic, knowledge, audit: t.audit })
+  const vision = fakeVision()
+  vision.state.reply = async () => reading()
+  const sessionManager = createSessionManager({ academic: t.academic, clock: () => t.clock.t, audit: t.audit })
+  const captureService = createCaptureService({ vision, sessionManager, courses: (userId) => t.academic.forOwner(userId).courses, now: () => t.clock.t, logger: quiet, limits: { minReadIntervalMs: 0 } })
+  const lanes = createMemoryLaneManager({ academic: t.academic, knowledge, sessionManager, audit: t.audit })
   const identities = {
     alice: personIdentity({ id: t.who.alice, external_id: 'a', email: 'alice@example.com', name: 'alice', role: 'viewer' }, { ref: 'r', csrf: 'x' }),
     bob: personIdentity({ id: t.who.bob, external_id: 'b', email: 'bob@example.com', name: 'bob', role: 'viewer' }, { ref: 'r', csrf: 'x' }),
@@ -30,17 +37,17 @@ async function serve() {
     next()
   })
   const gate = (req, res, next) => (req.identity ? next() : res.status(401).json({ error: 'sign in', code: 'session-required' }))
-  app.use('/academic', gate, createAcademicRouter({ lanes, audit: t.audit, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge, knowledgeService })] }))
+  app.use('/academic', gate, createAcademicRouter({ lanes, audit: t.audit, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge, knowledgeService }), (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService })] }))
   app.use(errorHandler({ logger: quiet }))
   const server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s))
   })
   const base = `http://127.0.0.1:${server.address().port}/academic`
-  const as = (who) => async (path, { method = 'GET', body, text: textBody, type } = {}) => {
+  const as = (who) => async (path, { method = 'GET', body, text: textBody, type, raw } = {}) => {
     const res = await fetch(base + path, {
       method,
       headers: { ...(who ? { 'x-test-user': who } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(type ? { 'content-type': type } : {}) },
-      body: textBody !== undefined ? textBody : body === undefined ? undefined : JSON.stringify(body)
+      body: raw ?? (textBody !== undefined ? textBody : body === undefined ? undefined : JSON.stringify(body))
     })
     const text = await res.text()
     let json = null
@@ -51,7 +58,7 @@ async function serve() {
     }
     return { status: res.status, json, text, headers: res.headers }
   }
-  return { t, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
+  return { t, vision, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
 }
 
 async function using(body) {
@@ -215,5 +222,57 @@ test('searching another of your courses needs a stated reason; a lecture that is
     assert.equal(ok.json.passages[0].crossCourse, true)
     const lecture = await r.alice(`/courses/${a.id}/documents/from-meeting`, { method: 'POST', body: { meetingId: 'someone-elses' } })
     assert.equal(lecture.status, 503, 'this test server has no meetings (503 is the plain answer)')
+  })
+})
+
+test('study sessions over HTTP: start with a declared type, pause, resume, stop; the type cannot be changed and a restricted session refuses capture', async () => {
+  await using(async (r) => {
+    assert.equal((await r.alice('/sessions/current')).json.session, null)
+    assert.equal((await r.alice('/sessions', { method: 'POST', body: {} })).json.code, 'invalid-input', 'the type must be declared')
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Database Systems' } })).json
+    const started = await r.alice('/sessions', { method: 'POST', body: { type: 'study', courseId: course.id, captureEnabled: true, topic: 'normal forms' } })
+    assert.equal(started.status, 201)
+    const id = started.json.id
+    assert.equal((await r.alice('/sessions/current')).json.session.id, id)
+    assert.equal((await r.alice(`/sessions/${id}/pause`, { method: 'POST' })).json.status, 'paused')
+    assert.equal((await r.alice(`/sessions/${id}/resume`, { method: 'POST' })).json.status, 'active')
+    const patched = await r.alice(`/sessions/${id}`, { method: 'PATCH', body: { topic: 'joins', type: 'restricted' } })
+    assert.equal(patched.json.activeTopic, 'joins')
+    assert.equal(patched.json.sessionType, 'study', 'the type in the request is ignored')
+    assert.equal((await r.bob(`/sessions/${id}`)).status, 404, 'bob cannot see it')
+    assert.equal((await r.bob(`/sessions/${id}/stop`, { method: 'POST' })).status, 404)
+    assert.equal((await r.alice(`/sessions/${id}/stop`, { method: 'POST' })).json.status, 'ended')
+    assert.equal((await r.alice(`/sessions/${id}/resume`, { method: 'POST' })).json.code, 'session-ended')
+
+    const restricted = await r.alice('/sessions', { method: 'POST', body: { type: 'restricted' } })
+    assert.equal(restricted.json.captureEnabled, false)
+    assert.equal((await r.alice('/sessions', { method: 'POST', body: { type: 'restricted', captureEnabled: true } })).json.code, 'restricted-no-capture')
+    const again = (await r.alice('/sessions', { method: 'POST', body: { type: 'restricted' } })).json
+    const refused = await r.alice(`/sessions/${again.id}/captures`, { method: 'POST', raw: png(), type: 'image/png' })
+    assert.equal(refused.status, 403)
+    assert.equal(refused.json.code, 'restricted-assessment')
+    assert.equal(refused.json.details.offer, 'explain_concept')
+    assert.equal(r.vision.calls.length, 0, 'the model was never asked')
+  })
+})
+
+test('a screenshot sent to a study session is read; the questions are listed; other kinds of body are refused', async () => {
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Database Systems' } })).json
+    const s = (await r.alice('/sessions', { method: 'POST', body: { type: 'practice', courseId: course.id, captureEnabled: true } })).json
+    const read = await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', raw: png(), type: 'image/png' })
+    assert.equal(read.status, 200)
+    assert.equal(read.json.status, 'recognised')
+    assert.equal(read.json.questions[0].task, 'explain')
+    assert.equal(read.json.context.courseId, course.id)
+    const listed = (await r.alice(`/sessions/${s.id}/questions`)).json.questions
+    assert.equal(listed.length, 1)
+    assert.equal(listed[0].id, read.json.questions[0].id)
+    assert.equal((await r.bob(`/sessions/${s.id}/questions`)).status, 404)
+    assert.equal((await r.bob(`/sessions/${s.id}/captures`, { method: 'POST', raw: png(), type: 'image/png' })).status, 404)
+    assert.equal((await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', text: 'not a picture', type: 'text/plain' })).json.code, 'invalid-image')
+    assert.equal((await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', raw: Buffer.from('not a picture at all but long enough'), type: 'image/png' })).json.code, 'invalid-image')
+    assert.equal((await r.alice(`/sessions/${s.id}/captures`, { method: 'POST', raw: Buffer.alloc(5_000_000, 1), type: 'image/png' })).status, 413)
+    assert.equal((await r.nobody(`/sessions/${s.id}/captures`, { method: 'POST', raw: png(), type: 'image/png' })).status, 401)
   })
 })

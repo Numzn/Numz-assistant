@@ -33,10 +33,14 @@ export const FEATURE_OF = Object.freeze({
   stt: 'voice',
   vision_read: 'camera',
   vision_answer: 'camera',
+  // Academic Intelligence has its own allowances: a study session reads many screens, and that must neither use up the camera's few
+  // pictures nor be stopped by pausing the camera. academic_read is a picture sent to the vision model, academic_answer a written answer.
+  academic_read: 'academic',
+  academic_answer: 'academic',
   health_probe: 'admin'
 })
 const CHAT_KINDS = ['chat', 'stream']
-const FEATURES = ['all', 'chat', 'voice', 'camera']
+const FEATURES = ['all', 'chat', 'voice', 'camera', 'academic']
 
 const dayStart = (ms) => new Date(Math.floor(ms / 86_400_000) * 86_400_000).toISOString()
 const monthStart = (ms) => {
@@ -106,6 +110,14 @@ export function createMeter({ database, clock = Date.now, env = process.env, log
     } else if (kind === 'vision_read') {
       if (countSince.get(owner, since, JSON.stringify(['vision_read'])).n >= quotas.visionPerDay) {
         throw new AiLimitError(429, 'daily-limit', 'You have reached the day\'s limit for camera reads. It resets at midnight UTC.', { retryAfterSeconds: 3600 })
+      }
+    } else if (kind === 'academic_read') {
+      if (countSince.get(owner, since, JSON.stringify(['academic_read'])).n >= quotas.academicReadsPerDay) {
+        throw new AiLimitError(429, 'daily-limit', 'You have reached the day\'s limit for study screens read. It resets at midnight UTC.', { retryAfterSeconds: 3600 })
+      }
+    } else if (kind === 'academic_answer') {
+      if (countSince.get(owner, since, JSON.stringify(['academic_answer'])).n >= quotas.academicAnswersPerDay) {
+        throw new AiLimitError(429, 'daily-limit', 'You have reached the day\'s limit for study answers. It resets at midnight UTC.', { retryAfterSeconds: 3600 })
       }
     } else if (kind === 'stt') {
       if (secondsSince.get(owner, since).s >= quotas.sttSecondsPerDay) {
@@ -208,9 +220,11 @@ export function createMeter({ database, clock = Date.now, env = process.env, log
       used: {
         chat: countSince.get(identity.ownerKey, since, JSON.stringify(CHAT_KINDS)).n,
         vision: countSince.get(identity.ownerKey, since, JSON.stringify(['vision_read'])).n,
+        academicReads: countSince.get(identity.ownerKey, since, JSON.stringify(['academic_read'])).n,
+        academicAnswers: countSince.get(identity.ownerKey, since, JSON.stringify(['academic_answer'])).n,
         sttSeconds: Math.round(secondsSince.get(identity.ownerKey, since).s)
       },
-      limits: { chat: quotas.chatPerDay, vision: quotas.visionPerDay, sttSeconds: quotas.sttSecondsPerDay, perMinute: quotas.perMinute, concurrent: quotas.concurrent }
+      limits: { chat: quotas.chatPerDay, vision: quotas.visionPerDay, academicReads: quotas.academicReadsPerDay, academicAnswers: quotas.academicAnswersPerDay, sttSeconds: quotas.sttSecondsPerDay, perMinute: quotas.perMinute, concurrent: quotas.concurrent }
     }
   }
 
@@ -220,7 +234,7 @@ export function createMeter({ database, clock = Date.now, env = process.env, log
     return database
       .prepare(
         `SELECT user_id AS userId, COUNT(*) AS calls,
-                SUM(kind IN ('chat','stream')) AS chat, SUM(kind = 'vision_read') AS vision, ROUND(COALESCE(SUM(audio_seconds),0)) AS sttSeconds,
+                SUM(kind IN ('chat','stream')) AS chat, SUM(kind = 'vision_read') AS vision, SUM(kind = 'academic_read') AS academicReads, SUM(kind = 'academic_answer') AS academicAnswers, ROUND(COALESCE(SUM(audio_seconds),0)) AS sttSeconds,
                 COALESCE(SUM(tokens_in),0) AS tokensIn, COALESCE(SUM(tokens_out),0) AS tokensOut,
                 COALESCE(SUM(est_cost_micro_usd),0) AS costMicroUsd, SUM(status != 'ok') AS notOk
            FROM ai_usage WHERE ts >= ? GROUP BY user_id ORDER BY calls DESC`

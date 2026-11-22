@@ -108,11 +108,33 @@ test('the day\'s allowance, by kind, per person: questions, camera reads, speech
   refused(() => r.meter.begin(person('u'), 'stt'), 'daily-limit', 429)
   r.meter.begin(person('v'), 'chat').finish()
   const summary = r.meter.summary(person('u'))
-  assert.deepEqual(summary.used, { chat: 2, vision: 1, sttSeconds: 100 })
+  assert.deepEqual(summary.used, { chat: 2, vision: 1, academicReads: 0, academicAnswers: 0, sttSeconds: 100 })
   assert.equal(summary.day, '2026-11-21')
   r.advance(12 * 3600_000 + 1000) // past midnight
   r.meter.begin(person('u'), 'chat').finish()
   assert.equal(r.meter.summary(person('u')).day, '2026-11-22')
+})
+
+test('study (academic) calls have their own allowances, apart from the camera\'s, and their own pause switch', () => {
+  const r = rig({ AI_QUOTA_OVERRIDES: JSON.stringify({ viewer: { visionPerDay: 1, academicReadsPerDay: 2, academicAnswersPerDay: 1, perMinute: 1000, concurrent: 10 } }) })
+  r.meter.begin(person('s'), 'vision_read').finish()
+  refused(() => r.meter.begin(person('s'), 'vision_read'), 'daily-limit', 429)
+  r.meter.begin(person('s'), 'academic_read').finish()
+  r.meter.begin(person('s'), 'academic_read').finish()
+  refused(() => r.meter.begin(person('s'), 'academic_read'), 'daily-limit', 429)
+  r.meter.begin(person('s'), 'academic_answer').finish()
+  refused(() => r.meter.begin(person('s'), 'academic_answer'), 'daily-limit', 429)
+  const summary = r.meter.summary(person('s'))
+  assert.equal(summary.used.academicReads, 2)
+  assert.equal(summary.used.academicAnswers, 1)
+  assert.equal(summary.limits.academicReads, 2)
+  r.meter.begin(person('other'), 'academic_read').finish() // another person has their own
+  r.meter.pause('academic', 'test')
+  refused(() => r.meter.begin(person('other'), 'academic_answer'), 'ai-paused', 503)
+  r.meter.begin(person('other'), 'chat').finish() // pausing study does not stop the rest of the assistant
+  r.meter.resume('academic', 'test')
+  assert.ok(r.meter.FEATURES.includes('academic'))
+  assert.ok(quotasFor('viewer').academicReadsPerDay > quotasFor('viewer').visionPerDay, 'a study session reads many screens')
 })
 
 test('roles have their own allowances and capabilities; only administrators administer; nobody reads anybody else\'s conversations', () => {
@@ -199,7 +221,7 @@ test('the administrator\'s report is counts and money per person, with no text i
   const report = r.meter.report(7)
   assert.deepEqual(report.map((x) => [x.userId, x.calls, x.chat, x.notOk]), [['u1', 4, 4, 1], ['u2', 1, 1, 0]])
   assert.equal(report[0].tokensIn, 300)
-  assert.deepEqual(Object.keys(report[0]).sort(), ['calls', 'chat', 'costMicroUsd', 'notOk', 'sttSeconds', 'tokensIn', 'tokensOut', 'userId', 'vision'])
+  assert.deepEqual(Object.keys(report[0]).sort(), ['academicAnswers', 'academicReads', 'calls', 'chat', 'costMicroUsd', 'notOk', 'sttSeconds', 'tokensIn', 'tokensOut', 'userId', 'vision'])
 })
 
 test('a route without a meter (a one-route test) is not limited, but the real server always supplies one', () => {

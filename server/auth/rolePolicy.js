@@ -19,9 +19,9 @@ const CAPABILITIES_BY_ROLE = {
 }
 
 const DEFAULT_QUOTAS = {
-  viewer: { chatPerDay: 100, visionPerDay: 30, sttSecondsPerDay: 30 * 60, perMinute: 30, concurrent: 2 },
-  operator: { chatPerDay: 300, visionPerDay: 100, sttSecondsPerDay: 90 * 60, perMinute: 30, concurrent: 2 },
-  admin: { chatPerDay: 1000, visionPerDay: 300, sttSecondsPerDay: 240 * 60, perMinute: 60, concurrent: 3 }
+  viewer: { chatPerDay: 100, visionPerDay: 30, academicReadsPerDay: 120, academicAnswersPerDay: 150, sttSecondsPerDay: 30 * 60, perMinute: 30, concurrent: 2 },
+  operator: { chatPerDay: 300, visionPerDay: 100, academicReadsPerDay: 300, academicAnswersPerDay: 400, sttSecondsPerDay: 90 * 60, perMinute: 30, concurrent: 2 },
+  admin: { chatPerDay: 1000, visionPerDay: 300, academicReadsPerDay: 600, academicAnswersPerDay: 800, sttSecondsPerDay: 240 * 60, perMinute: 60, concurrent: 3 }
 }
 
 export const ROLES = Object.freeze(Object.keys(CAPABILITIES_BY_ROLE))

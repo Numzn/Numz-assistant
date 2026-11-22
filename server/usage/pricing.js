@@ -18,7 +18,7 @@ export function estimateTokens(text) {
 }
 
 export function costMicroUsd({ kind, tokensIn = 0, tokensOut = 0, audioSeconds = 0 }, env = process.env) {
-  const vision = kind === 'vision_read' || kind === 'vision_answer'
+  const vision = kind === 'vision_read' || kind === 'vision_answer' || kind === 'academic_read'
   const inPrice = number(vision ? env.AI_PRICE_VISION_INPUT_PER_MTOK ?? env.AI_PRICE_INPUT_PER_MTOK : env.AI_PRICE_INPUT_PER_MTOK)
   const outPrice = number(vision ? env.AI_PRICE_VISION_OUTPUT_PER_MTOK ?? env.AI_PRICE_OUTPUT_PER_MTOK : env.AI_PRICE_OUTPUT_PER_MTOK)
   const sttPrice = number(env.AI_PRICE_STT_PER_MINUTE)
