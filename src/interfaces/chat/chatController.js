@@ -256,12 +256,33 @@ export function createChatController({
       .map((m) => {
         if (m.role === 'assistant') return { id: newId(), role: 'assistant', status: 'done', text: m.content }
         const { text, attachments } = splitMessage(m.content)
-        return { id: newId(), role: 'user', status: 'done', text, attachments }
+        return { id: newId(), role: 'user', status: 'done', text, attachments, ...(attachments.find((a) => a.kind === 'screenshot') ? { shotId: attachments.find((a) => a.kind === 'screenshot').shotId } : {}) }
       })
+    // A screenshot's answer is the message right after its marker: remember the pairing so that deleting the screenshot removes both.
+    messages = messages.map((m, i) => (m.role === 'assistant' && messages[i - 1]?.shotId ? { ...m, shotId: messages[i - 1].shotId } : m))
     busy = false
     lastUserText = ''
     lastDisplay = null
     emit()
+  }
+
+  /**
+   * A screenshot was analysed (or asked about): its question and the model's reading join the thread as an ordinary exchange. The
+   * user's side shows a "Screenshot" chip (with the typed question, if any); the reading is a normal reply, drawn as Markdown.
+   */
+  function addScreenshotExchange({ shotId, question = '', analysis = '', followUp = false } = {}) {
+    push({ role: 'user', text: question, attachments: [{ name: 'Screenshot', kind: 'screenshot', shotId, followUp, size: 0 }], shotId })
+    push({ role: 'assistant', text: analysis, shotId })
+    emit()
+  }
+
+  /** The screenshot was deleted: its messages leave the thread (the server removed them from the saved conversation). */
+  function removeScreenshot(shotId) {
+    const next = messages.filter((m) => m.shotId !== shotId)
+    if (next.length === messages.length) return false
+    messages = next
+    emit()
+    return true
   }
 
   return {
@@ -270,6 +291,8 @@ export function createChatController({
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    addScreenshotExchange,
+    removeScreenshot,
     send,
     retry,
     cancel,

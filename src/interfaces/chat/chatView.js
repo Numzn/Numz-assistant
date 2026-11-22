@@ -19,7 +19,7 @@ export function greetingFor(date = new Date(), name = '') {
 }
 
 // userName: the signed-in user's name, once the app has accounts. Nothing passes it today, so the greeting is generic.
-export function createChatView({ chat, doc = document, onVoiceMode = null, autofocus = true, userName = '' } = {}) {
+export function createChatView({ chat, doc = document, onVoiceMode = null, onDeleteScreenshot = null, autofocus = true, userName = '' } = {}) {
   const $ = (id) => {
     const element = doc.getElementById(id)
     if (!element) throw new Error(`Chat view: missing #${id}`)
@@ -52,11 +52,27 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, autof
     element.className = 'chip'
     const name = doc.createElement('span')
     name.className = 'name'
-    name.textContent = file.name
+    name.textContent = file.kind === 'screenshot' ? (file.followUp ? 'Screenshot (follow-up)' : 'Screenshot') : file.name
+    element.append(name)
+    if (file.kind === 'screenshot') {
+      element.dataset.kind = 'screenshot'
+      // A screenshot can be deleted from the thread it was added to: its picture is dropped and its messages are removed.
+      if (onDeleteScreenshot && !file.followUp) {
+        const remove = doc.createElement('button')
+        remove.type = 'button'
+        remove.className = 'remove'
+        remove.textContent = '×'
+        remove.setAttribute('aria-label', 'Delete this screenshot and its analysis')
+        remove.title = 'Delete this screenshot and its analysis'
+        remove.addEventListener('click', () => onDeleteScreenshot(file.shotId))
+        element.append(remove)
+      }
+      return element
+    }
     const size = doc.createElement('span')
     size.className = 'size'
     size.textContent = formatSize(file.size)
-    element.append(name, size)
+    element.append(size)
     if (removable) {
       const remove = doc.createElement('button')
       remove.type = 'button'

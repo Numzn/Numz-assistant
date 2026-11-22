@@ -93,11 +93,19 @@ export function composeMessage(text, attachments = []) {
 
 /**
  * The reverse of composeMessage, for showing a stored message without the file contents:
- * { text, attachments: [{ name, size }] }. A message with no attachment header is returned unchanged.
+ * { text, attachments: [{ name, size }] } (a screenshot is { name: 'Screenshot', kind: 'screenshot', shotId, followUp }).
+ * A message with no attachment header is returned unchanged.
  */
+const SHOT_MARKER = /(?:\n)?\[Screenshot id=([0-9a-f-]{36})( follow-up)?\]/g
+
 export function splitMessage(content) {
-  const source = String(content ?? '')
+  let source = String(content ?? '')
   const attachments = []
+  // A screenshot is a picture: its message carries only a marker (server/screenshots/screenshotService.js), shown as a chip.
+  source = source.replace(SHOT_MARKER, (_match, shotId, followUp) => {
+    attachments.push({ name: 'Screenshot', kind: 'screenshot', shotId, followUp: Boolean(followUp), size: 0 })
+    return ''
+  })
   const pattern = new RegExp(`(?:\\n\\n)?${HEADER.source}\\n(\`{3,})\\n([\\s\\S]*?)\\n\\2(?=\\n\\n|\\n?$)`, 'g')
   const text = source
     .replace(pattern, (_match, name, _fence, body) => {

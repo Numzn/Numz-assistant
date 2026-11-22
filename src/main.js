@@ -19,6 +19,10 @@ import { createMeetingPanel } from './interfaces/meeting/meetingPanel.js'
 import { checkLiveSpeechSupport } from './interfaces/meeting/liveSupport.js'
 import { createChatController } from './interfaces/chat/chatController.js'
 import { createChatView } from './interfaces/chat/chatView.js'
+import { createNativeCapture } from './interfaces/screenshot/nativeCapture.js'
+import { createScreenshotApi } from './interfaces/screenshot/screenshotApi.js'
+import { createScreenshotController } from './interfaces/screenshot/screenshotController.js'
+import { createScreenshotView } from './interfaces/screenshot/screenshotView.js'
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 import { createHistoryApi } from './interfaces/history/historyApi.js'
 import { createRecentConversations, createSidebar, enableWebFonts, loadModelLabel, watchOnline } from './interfaces/layout/workspace.js'
@@ -359,7 +363,30 @@ const chat = createChatController({
   // One stop for everything in flight: the stream and, in voice mode, the speech and the listening loop.
   interrupt: () => (voiceModeActive && voiceApi?.interrupt ? voiceApi.interrupt() : assistantController.interrupt())
 })
-chatView = createChatView({ chat, onVoiceMode: () => enterVoiceMode() })
+let screenshotController = null
+chatView = createChatView({
+  chat,
+  onVoiceMode: () => enterVoiceMode(),
+  // A screenshot chip in the thread has a delete button: the picture and the screenshot's messages are removed (server and thread).
+  onDeleteScreenshot: (shotId) =>
+    screenshotController?.removeById(shotId, assistantClient.getSessionId?.() ?? '').catch(() => chatView?.notify('The screenshot could not be deleted. Try again.'))
+})
+
+// ---- Screenshot Intelligence: pictures are taken by the desktop app's native layer; in a browser the button says so ----
+try {
+  screenshotController = createScreenshotController({
+    native: createNativeCapture(),
+    api: createScreenshotApi(),
+    getConversationId: () => assistantClient.getSessionId?.() ?? null,
+    onExchange: ({ shotId, question, analysis, kind }) => chat.addScreenshotExchange({ shotId, question, analysis, followUp: kind === 'follow-up' }),
+    onRemoved: ({ shotId }) => chat.removeScreenshot(shotId)
+  })
+  createScreenshotView({ controller: screenshotController })
+  screenshotController.init().catch(() => {})
+} catch (err) {
+  // The screenshot panel must never take the main screen down with it.
+  console.error('[screenshot] panel failed to start', err)
+}
 
 // ---- Saved conversations: the sidebar's list, and reopening one from the history screen ----
 {

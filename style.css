@@ -2649,3 +2649,202 @@ body[data-page="camera"] [hidden] {
 #accessGoogle[hidden] {
   display: none;
 }
+
+/* ---- Screenshot Intelligence: the panel above the composer, and the capture menu ---- */
+#shotPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.4;
+}
+#shotPanel[hidden],
+#shotPanel [hidden],
+#shotMenu[hidden] {
+  display: none !important;
+}
+#shotHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#shotHeading {
+  font-weight: 600;
+}
+#shotChip {
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+#shotChip[data-tone="ok"] {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+#shotChip[data-tone="warn"] {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+#shotChip[data-tone="error"] {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+#shotClose {
+  margin-left: auto;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+}
+#shotWindowList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+#shotWindowList button {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+#shotWindowList button:hover {
+  background: var(--surface-hover);
+}
+#shotWindowList .app {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+#shotStage {
+  position: relative;
+  margin: 0;
+  max-height: 260px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #000;
+  line-height: 0;
+  touch-action: none;
+}
+#shotPreview {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  user-select: none;
+}
+#shotStage[data-selectable="true"] {
+  cursor: crosshair;
+}
+#shotSelection {
+  position: absolute;
+  border: 2px solid var(--accent);
+  background: var(--accent-glow);
+  pointer-events: none;
+}
+#shotQuestion,
+#shotAskInput {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text);
+  font: inherit;
+}
+#shotMessage {
+  min-height: 1.2em;
+  margin: 0;
+  color: var(--text-muted);
+}
+#shotMessage[data-tone="error"] {
+  color: var(--danger);
+}
+#shotMessage[data-tone="warn"] {
+  color: var(--warn);
+}
+#shotMessage[data-tone="ok"] {
+  color: var(--ok);
+}
+#shotActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+#shotActions button,
+#shotAskButton {
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+#shotActions button[data-primary="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+#shotActions button[data-danger="true"] {
+  color: var(--danger);
+}
+#shotActions button:disabled,
+#shotAskButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+#shotAsk {
+  display: flex;
+  gap: 8px;
+}
+#shotMenu {
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  margin: 0 0 8px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-lg);
+}
+#shotMenu button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+#shotMenu button:hover,
+#shotMenu button:focus-visible {
+  background: var(--surface-hover);
+}
+#shotMenu button:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+.chip[data-kind="screenshot"] .remove {
+  margin-left: 4px;
+}
