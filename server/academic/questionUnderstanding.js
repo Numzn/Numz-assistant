@@ -69,6 +69,24 @@ const MAX_SEGMENTS = 12
 
 const wordCount = (text) => text.split(/\s+/).filter(Boolean).length
 
+/**
+ * A short heading directly above a segment is that segment's title, not a segment of its own (a screen of notes would otherwise list every
+ * "Part 3" as a separate piece of content). A heading with nothing below it on the screen stays, so that nothing is lost.
+ */
+function foldHeadings(segments) {
+  const out = []
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i]
+    const next = segments[i + 1]
+    if (s.kind === 'heading' && wordCount(s.text) <= 12 && next && next.kind !== 'heading') {
+      if (!next.title) next.title = s.text.slice(0, 120)
+      continue
+    }
+    out.push(s)
+  }
+  return out
+}
+
 function parseSegment(raw, index) {
   const kind = SEGMENT_KINDS.includes(raw?.kind) ? raw.kind : 'other'
   const text = clip(raw?.text, kind === 'question' ? 2000 : 2500)
@@ -103,11 +121,12 @@ export function parseAcademicReading(raw) {
   const kind = CONTENT_KINDS.includes(data.contentKind) ? data.contentKind : null
   if (!kind) return { ok: false }
   const listed = Array.isArray(data.segments) ? data.segments : (Array.isArray(data.questions) ? data.questions : []).map((q) => ({ ...q, kind: 'question' }))
-  const segments = listed
-    .slice(0, MAX_SEGMENTS)
-    .map(parseSegment)
-    .filter(Boolean)
-    .map((s, i) => ({ ...s, order: i }))
+  const segments = foldHeadings(
+    listed
+      .slice(0, MAX_SEGMENTS)
+      .map(parseSegment)
+      .filter(Boolean)
+  ).map((s, i) => ({ ...s, order: i }))
   const confidence = Number(data.confidence)
   return {
     ok: true,

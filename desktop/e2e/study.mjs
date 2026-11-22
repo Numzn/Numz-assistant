@@ -80,6 +80,60 @@ const changeScreen = () => {
   x('xdotool', 'windowmove', TARGET_ID, flip ? '120' : '60', flip ? '520' : '60')
 }
 
+// ---- the stand-in's reading of content: coloured bands in the test windows stand for segments of content ----------------------
+// (the vision model itself is not run here: this checks the capture, timing, ledger and panel on the picture the watcher really took)
+const BAND = 140 // a whole band is this tall, in pixels
+const VOCAB = 'table row column key value index query join record field entry schema relation tuple domain constraint transaction commit rollback storage memory cache buffer thread process kernel signal pipe socket packet header payload frame protocol layer route switch cable fibre wireless channel noise filter sample pixel colour shade tone pitch volume tempo rhythm melody chord scale'.split(' ')
+const paragraph = (seed, n = 36) => Array.from({ length: n }, (_, i) => VOCAB[(seed * 31 + i * 17 + ((i * i) % 7)) % VOCAB.length] + (i % 11 === 10 ? '.' : '')).join(' ')
+const BANDS = {
+  e6194b: { name: 'A', kind: 'question', text: 'Explain why the primary key of a relational table must be unique and can never be empty, with a short example from a table of students.' },
+  '3cb44b': { name: 'B', kind: 'paragraph', text: paragraph(1) },
+  '4363d8': { name: 'C', kind: 'paragraph', text: paragraph(2) },
+  f58231: { name: 'D', kind: 'paragraph', text: paragraph(3) },
+  '911eb4': { name: 'E', kind: 'paragraph', text: paragraph(4) },
+  '42d4f4': { name: 'F', kind: 'paragraph', text: paragraph(5) },
+  f032e6: { name: 'G', kind: 'paragraph', text: paragraph(6) },
+  bfef45: { name: 'H', kind: 'paragraph', text: paragraph(7) },
+  '008080': { name: 'I', kind: 'question', text: 'Describe what a foreign key does and give one example of two tables that a foreign key would link together in a school database.' },
+  '9a6324': { name: 'J', kind: 'paragraph', text: paragraph(9, 44) },
+  '808000': { name: 'K', kind: 'paragraph', text: paragraph(10, 44) }
+}
+const REGIONS = [{ name: 'L', x: 220, y: 580, h: 300 }, { name: 'R', x: 600, y: 580, h: 300 }, { name: 'V', x: 965, y: 580, h: 330 }]
+const nearest = (hex) => {
+  const [r, g, b] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16))
+  let best = null
+  for (const key of Object.keys(BANDS)) {
+    const [pr, pg, pb] = [0, 2, 4].map((i) => Number.parseInt(key.slice(i, i + 2), 16))
+    const distance = Math.abs(r - pr) + Math.abs(g - pg) + Math.abs(b - pb)
+    if (distance < 60 && (!best || distance < best.distance)) best = { key, distance }
+  }
+  return best?.key ?? null
+}
+/** The segments the bands in the test windows stand for, in reading order (left to right, top to bottom), with the cut-off edges. */
+function readBands(jpeg) {
+  const segments = []
+  for (const region of REGIONS) {
+    const out = execFileSync('convert', ['jpg:-', '-crop', `1x${region.h}+${region.x}+${region.y}`, '+repage', '-depth', '8', 'txt:-'], { input: jpeg, encoding: 'utf8', maxBuffer: 8_000_000 })
+    const rows = out.split('\n').filter((l) => l.includes('#')).map((l) => nearest(l.match(/#[0-9A-Fa-f]{6}/)[0].toLowerCase()))
+    for (let top = 0; top < rows.length; ) {
+      let bottom = top
+      while (bottom + 1 < rows.length && rows[bottom + 1] === rows[top]) bottom++
+      const length = bottom - top + 1
+      if (rows[top] && length >= 24) {
+        const band = BANDS[rows[top]]
+        const words = band.text.split(' ')
+        const cutTop = top === 0 && length < BAND - 8
+        const cutBottom = bottom === rows.length - 1 && length < BAND - 8
+        const share = Math.min(1, length / BAND)
+        const shown = cutBottom ? words.slice(0, Math.max(6, Math.ceil(words.length * share))) : cutTop ? words.slice(words.length - Math.max(6, Math.ceil(words.length * share))) : words
+        segments.push({ kind: band.kind, title: '', text: shown.join(' '), options: [], marks: null, type: band.kind === 'question' ? 'descriptive' : 'other', hasDiagram: false, cutOff: cutBottom ? 'bottom' : cutTop ? 'top' : 'none', group: '', dependsOn: '', band: band.name, window: region.name, visible: length })
+      }
+      top = bottom + 1
+    }
+  }
+  return segments
+}
+
 // ---- the stand-in model: a picture becomes a question that names the colour in the middle --------------------------------
 const model = { pictures: [], texts: 0 }
 const modelServer = http.createServer((req, res) => {
@@ -96,7 +150,18 @@ const modelServer = http.createServer((req, res) => {
       } catch (e) {
         seen = { error: String(e.message).slice(0, 80) }
       }
-      model.pictures.push({ at: Date.now(), seen, bytes: Buffer.from(m[1], 'base64') })
+      const jpeg = Buffer.from(m[1], 'base64')
+      let scene = []
+      try {
+        scene = readBands(jpeg)
+      } catch {
+        scene = []
+      }
+      model.pictures.push({ at: Date.now(), seen, bytes: jpeg, scene })
+      if (scene.length) {
+        const reading = { contentKind: 'other_content', segments: scene.map(({ band, window, visible, ...segment }) => segment), position: '', instructions: '', subject: 'databases', topic: '', assessmentIndicators: [], confidence: 0.9, reason: '' }
+        return res.end(JSON.stringify({ model: 'fake-vision', choices: [{ message: { role: 'assistant', content: JSON.stringify(reading) } }], usage: { prompt_tokens: 900, completion_tokens: 80 } }))
+      }
       const reading = {
         contentKind: 'revision_question',
         questions: [{ text: `Which colour is the window in the middle of the screen (${seen.center})?`, options: [], marks: '2', type: 'short_answer', hasDiagram: false }],
@@ -300,6 +365,86 @@ try {
   check('and once it has stopped changing it is not captured again', model.pictures.length === afterEdits, `${model.pictures.length - afterEdits} pictures in 25 s`)
   textWindow.kill('SIGTERM')
   await quiet(30, 'after the text window closed')
+
+  // ---- layouts and navigation, on what the watcher really captures ------------------------------------------------------------------
+  // Three test windows draw coloured bands for segments of content: L and R side by side (several segments at once, next and previous),
+  // V a scrolling document (overlapping screens, a segment cut by the edge that is whole on the next screen, content that comes back).
+  const getJson = (p) => wd('POST', `/session/${sid}/execute/async`, { script: 'const done = arguments[arguments.length-1]; fetch(arguments[0], { credentials: "same-origin" }).then((r) => r.json()).then(done, (e) => done({ error: String(e) }))', args: [p] })
+  const studyId = (await getJson('/ai/api/v1/assistant/academic/sessions/current')).session.id
+  const contentNow = async () => (await getJson(`/ai/api/v1/assistant/academic/sessions/${studyId}/content`)).segments
+  const bandFile = { L: path.join(workDir, 'L.txt'), R: path.join(workDir, 'R.txt'), V: path.join(workDir, 'V.txt') }
+  const showBands = (name, list) => fs.writeFileSync(bandFile[name], list.map(([colour, top, bottom]) => `${colour} ${top} ${bottom}`).join('\n'))
+  for (const name of Object.keys(bandFile)) showBands(name, [])
+  const bandWindows = [
+    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-L', bandFile.L, '360x300+40+580']),
+    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-R', bandFile.R, '360x300+420+580']),
+    track('python3', [path.join(here, 'bandwindow.py'), 'NUMZ-V', bandFile.V, '330x330+800+580'])
+  ]
+  await waitFor(() => ['NUMZ-L', 'NUMZ-R', 'NUMZ-V'].every((t) => x('xdotool', 'search', '--name', t)), 40000, 'the band windows')
+  await quiet(30, 'after the band windows opened')
+  const bandText = (c) => BANDS[c].text
+  const words = (c, from, to) => bandText(c).split(' ').slice(from, to).join(' ')
+  const find = (segments, colour) => segments.find((g) => g.text.includes(words(colour, 12, 20)) || g.text.includes(words(colour, 0, 8)))
+  /** Changes what the windows show, waits for the watcher to capture it, and for the session to finish with it. */
+  async function step(label, change) {
+    const n = model.pictures.length
+    const answersBefore = model.texts
+    change()
+    await waitFor(() => model.pictures.length > n, 80000, `a picture after: ${label}`)
+    await quiet(12, label)
+    const pictures = model.pictures.length - n
+    const segments = await contentNow()
+    return { pictures, picture: model.pictures.at(-1), segments, answers: model.texts - answersBefore, note: (await readText('#studyWatchNote')) ?? '' }
+  }
+  const readText = (selector) => run('return (document.querySelector(arguments[0])||{}).textContent', selector)
+  const names = (picture) => picture.scene.map((g) => `${g.band}${g.cutOff !== 'none' ? `(cut ${g.cutOff})` : ''}`).join(' ')
+  let base = (await contentNow()).length
+
+  // one segment
+  let r = await step('one segment', () => showBands('L', [['3cb44b', 0, 140]]))
+  check('a single segment is captured, read, and listed once', r.pictures === 1 && names(r.picture) === 'B' && r.segments.length === base + 1 && /1 new segment/.test(r.note), `${r.pictures} picture(s) saw ${names(r.picture)}; ${r.segments.length - base} new; "${r.note.slice(-70)}"`)
+  base = r.segments.length
+
+  // several segments at once, in two windows
+  r = await step('several segments', () => {
+    showBands('L', [['e6194b', 0, 140], ['3cb44b', 140, 280]])
+    showBands('R', [['4363d8', 0, 140], ['f58231', 140, 280]])
+  })
+  check('several segments on one screen are captured as one picture and recognised separately, the old one is not new', r.pictures === 1 && names(r.picture) === 'A B C D' && r.segments.length === base + 3 && /3 new segments/.test(r.note) && /1 already seen/.test(r.note), `${names(r.picture)}; ${r.segments.length - base} new; "${r.note.slice(-90)}"`)
+  check('the question among them was answered by itself, once', r.answers === 1, `${r.answers} answer(s)`)
+  check('the one that was seen before is counted as seen twice, not listed twice', find(r.segments, '3cb44b')?.seenCount === 2)
+  base = r.segments.length
+
+  // next: new content in the left window
+  r = await step('next', () => showBands('L', [['911eb4', 0, 140], ['42d4f4', 140, 280]]))
+  check('horizontal navigation (next): the new content is captured and new, the unchanged panel is not new', r.pictures === 1 && names(r.picture) === 'E F C D' && r.segments.length === base + 2 && /2 new segments/.test(r.note) && /2 already seen/.test(r.note), `${names(r.picture)}; ${r.segments.length - base} new; "${r.note.slice(-90)}"`)
+  base = r.segments.length
+
+  // previous: back to what was there
+  r = await step('previous', () => showBands('L', [['e6194b', 0, 140], ['3cb44b', 140, 280]]))
+  check('horizontal navigation (previous): content seen before is captured but nothing in it is new and nothing is processed again', r.pictures === 1 && r.segments.length === base && r.answers === 0 && /already seen/.test(r.note) && /seen before/.test(r.note), `${r.segments.length - base} new, ${r.answers} answers; "${r.note.slice(-100)}"`)
+
+  // vertical scrolling, V
+  showBands('R', [])
+  showBands('L', [])
+  await quiet(14, 'before scrolling')
+  base = (await contentNow()).length
+  r = await step('scroll position 0', () => showBands('V', [['f032e6', 0, 140], ['bfef45', 140, 280], ['808000', 280, 420]]))
+  check('scrolling, first view: three segments, the last cut off by the bottom edge and held as cut off', r.pictures === 1 && names(r.picture) === 'G H K(cut bottom)' && r.segments.length === base + 3 && find(r.segments, '808000')?.partial?.bottom === true, `${names(r.picture)}; K partial ${JSON.stringify(find(r.segments, '808000')?.partial)}`)
+  base = r.segments.length
+  r = await step('scrolled 100', () => showBands('V', [['f032e6', -100, 40], ['bfef45', 40, 180], ['808000', 180, 320], ['008080', 320, 460]]))
+  const k = find(r.segments, '808000')
+  check('scrolling, overlapping view: what overlaps is not new, a part of a known segment is not new, the cut-off one is whole now and still one segment', r.pictures === 1 && /G\(cut top\) H K/.test(names(r.picture)) && r.segments.length === base && k?.partial === null && k.text.split(' ').length === bandText('808000').split(' ').length && k.seenCount === 2, `${names(r.picture)}; ${r.segments.length - base} new; K whole: ${k?.partial === null}, ${k?.text.split(' ').length} words`)
+  r = await step('scrolled 260', () => showBands('V', [['bfef45', -120, 20], ['808000', 20, 160], ['008080', 160, 300], ['9a6324', 300, 440]]))
+  check('scrolling on: the segment that comes into view is new (and answered, it is a question), the one cut at the bottom is held as cut off, the rest is seen', r.pictures === 1 && /K I J\(cut bottom\)/.test(names(r.picture)) && r.segments.length === base + 2 && r.answers === 1 && find(r.segments, '9a6324')?.partial?.bottom === true, `${names(r.picture)}; ${r.segments.length - base} new, ${r.answers} answer(s)`)
+  base = r.segments.length
+  r = await step('scrolled to the end of J', () => showBands('V', [['9a6324', 0, 140]]))
+  const j = find(r.segments, '9a6324')
+  check('content continuing: the segment that was cut at the bottom is whole on a later screen, completed, not duplicated', r.pictures === 1 && r.segments.length === base && j?.partial === null && j.text.split(' ').length === bandText('9a6324').split(' ').length, `${r.segments.length - base} new; J whole: ${j?.partial === null}`)
+  r = await step('back to the top', () => showBands('V', [['f032e6', 0, 140], ['bfef45', 140, 280], ['808000', 280, 420]]))
+  check('repeated content: scrolling back to the top is captured and nothing in it is new or processed again', r.pictures === 1 && r.segments.length === base && r.answers === 0 && /seen before/.test(r.note), `${r.segments.length - base} new, ${r.answers} answers; "${r.note.slice(-90)}"`)
+  for (const w of bandWindows) w.kill('SIGTERM')
+  await quiet(30, 'after the band windows closed')
 
   // ---- a password manager is open: nothing is read ---------------------------------------------------------------------
   const keepass = colourWindow('KeePassXC - Passwords', '#00aa00', '300x200+1000+600')

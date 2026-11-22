@@ -48,3 +48,32 @@ test('the prompt tells the model to read, not answer, and that the screen is con
   assert.deepEqual(readingSignals(exam).sort(), ['closed-book', 'live-timer'])
   assert.deepEqual(readingSignals(parseAcademicReading(reading()).reading), [])
 })
+
+test('segments: any kind of content is read in order; a short heading above a segment becomes its title; a heading with nothing below it stays; the older questions-only reply still works', () => {
+  const reply = JSON.stringify({
+    contentKind: 'reading_material',
+    segments: [
+      { kind: 'heading', text: 'Part 3', cutOff: 'none' },
+      { kind: 'paragraph', text: 'Normalisation is the process of organising tables so that each fact is stored once.', cutOff: 'bottom', group: 'Part 3' },
+      { kind: 'code', text: 'SELECT * FROM t;', cutOff: 'none' },
+      { kind: 'question', title: 'Q1', text: 'Explain why each fact should be stored once.', options: [{ label: 'A', text: 'x' }], marks: '3', type: 'descriptive', region: [0.1, 0.5, 0.8, 0.2] },
+      { kind: 'heading', text: 'Part 4' }
+    ],
+    position: 'page 3 of 10',
+    confidence: 0.9
+  })
+  const { ok, reading } = parseAcademicReading(reply)
+  assert.equal(ok, true)
+  assert.deepEqual(reading.segments.map((s) => [s.kind, s.title, s.cutOff]), [['paragraph', 'Part 3', 'bottom'], ['code', '', 'none'], ['question', 'Q1', 'none'], ['heading', '', 'none']])
+  assert.deepEqual(reading.segments.map((s) => s.order), [0, 1, 2, 3])
+  assert.deepEqual(reading.questions.map((q) => q.marks), ['3'])
+  assert.deepEqual(reading.segments[2].region, [0.1, 0.5, 0.8, 0.2])
+  assert.equal(reading.position, 'page 3 of 10')
+  assert.equal(judgeReading(reading).status, 'recognised', 'content with no question is still content')
+  // the older reply: only questions
+  const legacy = parseAcademicReading(JSON.stringify({ contentKind: 'revision_question', questions: [{ text: 'Explain third normal form with an example.', options: [], type: 'descriptive' }], confidence: 0.8 }))
+  assert.deepEqual(legacy.reading.segments.map((s) => s.kind), ['question'])
+  assert.equal(legacy.reading.questions.length, 1)
+  // nothing meaningful: no segments, said plainly
+  assert.equal(judgeReading(parseAcademicReading(JSON.stringify({ contentKind: 'other_content', segments: [{ kind: 'paragraph', text: 'ok' }], confidence: 0.9 })).reading).status, 'no-question')
+})
