@@ -7,7 +7,7 @@ name: Desktop app (Windows)
 on:
   workflow_dispatch:
   push:
-    branches: [feature/desktop-windows-build]
+    branches: [feature/desktop-windows-build, fix/windows-capture-border]
     paths:
       - .github/workflows/desktop-windows.yml
       - desktop/**
@@ -40,6 +40,23 @@ jobs:
       # The capture library's own tests, including the scan that fails if anything that could send input or move focus appears.
       - name: Tests (the whole Rust workspace, on Windows)
         run: cargo test --workspace
+
+      # Windows draws a yellow outline around what is captured, which flashed at the screen's edge. The capture code now asks for none.
+      # This holds a capture open with the outline defaulted, required and not required, photographs the screen the plain way meanwhile
+      # (not with the code under test) and counts yellow pixels along the screen's edge.
+      - name: Does Windows draw the outline?
+        continue-on-error: true
+        run: |
+          cargo build --quiet -p numz-capture --example borderprobe
+          mkdir -p ../../probe
+          pwsh -File ../scripts/edge-yellow.ps1 ../../probe/border-idle.png "no capture running" | tee ../../probe/border.log
+          for mode in default with none; do
+            ./target/debug/examples/borderprobe.exe $mode 16 > ../../probe/border-$mode.log 2>&1 &
+            sleep 6
+            pwsh -File ../scripts/edge-yellow.ps1 ../../probe/border-$mode.png "capture open, outline: $mode" | tee -a ../../probe/border.log
+            wait
+            cat ../../probe/border-$mode.log | tee -a ../../probe/border.log
+          done
 
       # The first time the Windows capture code runs anywhere: ask it what it supports, which windows it sees, and for one picture of the
       # screen. This machine's desktop is a virtual one, so a failure here may be the runner and not the code: the log says which.

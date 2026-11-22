@@ -21,6 +21,8 @@ fn main() {
             let image = backend.capture_screen().unwrap_or_else(|e| show(e));
             image.save(&args[1]).expect("write png");
             println!("{}x{}", image.width(), image.height());
+            let note = backend.support().note;
+            println!("note after capturing: {}", if note.is_empty() { "(none: no outline problem reported)" } else { &note });
         }
         Some("window") => {
             let image = backend.capture_window(&args[1]).unwrap_or_else(|e| show(e));
