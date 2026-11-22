@@ -32,7 +32,7 @@ when the person presses **Analyse**. Nothing is written to disk.
 
 | Platform | Interface used | Permission |
 |---|---|---|
-| Windows | Windows Graphics Capture (`windows-capture`); the system's border and cursor defaults are left alone | none; Windows may outline what is captured |
+| Windows | the screen: **Desktop Duplication** (DXGI, no outline), falling back to Windows Graphics Capture; a window: Windows Graphics Capture (`windows-capture`) | none; Windows outlines a *window* while it is captured unless the app is allowed under Settings > Privacy & security > Screenshot borders |
 | macOS | ScreenCaptureKit `SCScreenshotManager` (`objc2-screen-capture-kit`), macOS 14+ | the system asks for Screen Recording itself and shows its own indicator |
 | Linux X11 | read-only X requests (`GetImage`) through `xcap` | none |
 | Linux Wayland | the desktop portal's Screenshot interface through `xcap` | the desktop asks, and shows its own indicator |
@@ -116,7 +116,7 @@ small proxy that removes that one directive. The real site is https and needs no
 |---|---|
 | Linux X11 | **Verified here** on Xvfb + openbox: native capture 16/16, screenshots end to end 26/26, **study watcher end to end 23/23**, access check 11/11, `cargo test --workspace` |
 | Linux Wayland | Written (portal Screenshot); **not run** (no Wayland session or portal on this machine). Window capture is not offered there, and **the study watcher is not offered** |
-| Windows | Built and tested on **GitHub's Windows machine** (`.github/workflows/desktop-windows.yml`): the Rust workspace tests pass there (28), the installer builds, the app starts and opens its window, and the capture code took a **real full-screen picture and a real window picture** (the app's own window) of that machine's desktop. **Not verified:** loading the live site (GitHub's machines cannot reach it), Google sign-in inside the window, the watcher, the area mode, Windows 10, a real person's PC. The installer is **unsigned** (SmartScreen warns) |
+| Windows | Built and tested on **GitHub's Windows machine** (`.github/workflows/desktop-windows.yml`): the Rust workspace tests pass there (28), the installer builds, the app starts and opens its window, and the capture code took a **real full-screen picture and a real window picture** (the app's own window) of that machine's desktop. Measured there: Windows Graphics Capture draws a yellow outline at the screen edge (5 500+ yellow pixels in a 4 px band) and ignores a request for none unless the app is allowed in Settings (it answered *denied by user*); Desktop Duplication drew **none** (0 pixels), so the screen is taken that way. **Not verified:** loading the live site (GitHub's machines cannot reach it), Google sign-in inside the window, the watcher, the area mode, Windows 10, a real person's PC. The installer is **unsigned** (SmartScreen warns) |
 | macOS | Written (ScreenCaptureKit); the capture crate **type-checks** for `aarch64-apple-darwin`; **never run**; macOS 14+. The app crate cannot be cross-checked here (needs Apple's toolchain) |
 
 ## Limits and things not done

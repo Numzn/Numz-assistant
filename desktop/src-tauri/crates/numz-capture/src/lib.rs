@@ -4,7 +4,7 @@
 //!
 //! | platform | interface |
 //! |----------|-----------|
-//! | Windows  | Windows Graphics Capture (the system's own border and cursor defaults are left as they are) |
+//! | Windows  | the screen: Desktop Duplication (no outline), falling back to Windows Graphics Capture; a window: Windows Graphics Capture |
 //! | macOS    | ScreenCaptureKit (`SCScreenshotManager`, macOS 14 or later); the system asks for Screen Recording permission itself |
 //! | Linux    | X11: read-only requests on the display. Wayland: the desktop portal's Screenshot interface (the desktop asks the person) |
 //!
