@@ -56,6 +56,16 @@ jobs:
       - name: Build the installer
         run: npx --yes @tauri-apps/cli@2.12.4 build --bundles nsis
 
+      # GitHub's machines cannot look up numz.site through their own resolver (the reach-check workflow shows lookups time out), so this
+      # runner is told the site's address by hand. Only this throw-away machine's hosts file is touched.
+      - name: Tell this runner where the site is
+        shell: pwsh
+        working-directory: .
+        run: |
+          $ip = (Resolve-DnsName lab.numz.site -Server 8.8.8.8 -Type A | Where-Object { $_.Type -eq 'A' } | Select-Object -First 1).IPAddress
+          "resolved via 8.8.8.8: $ip"
+          if ($ip) { Add-Content -Path "$env:windir\System32\drivers\etc\hosts" -Value "$ip lab.numz.site" }
+
       # Starts the app that was just built, as a person would, waits for it to load the live NUMZ AI page in Windows' own web view, and
       # photographs the desktop and the app's own window with the capture code under test. Then closes it.
       - name: Launch the built app and look at it
