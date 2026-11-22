@@ -177,6 +177,7 @@ assistantRouter.delete('/conversations/:conversationId', (req, res) => {
   if (!history) return res.status(404).json({ error: 'Conversation history is off', requestId: req.id })
   const removed = history.remove(id)
   sessionsOf(req).forget(id)
+  req.screenshots?.forgetConversation(id, { owner: requireIdentity(req).ownerKey }) // its screenshots' pictures go with it
   if (!removed) return res.status(404).json({ error: 'Conversation not found', requestId: req.id })
   res.status(204).end()
 })
@@ -188,6 +189,7 @@ assistantRouter.delete('/conversations', (req, res) => {
   if (req.query.confirm !== 'all') {
     return res.status(400).json({ error: 'Deleting every conversation needs ?confirm=all', requestId: req.id })
   }
+  req.screenshots?.forgetOwner({ owner: requireIdentity(req).ownerKey })
   res.json({ deleted: history.removeAll() })
 })
 

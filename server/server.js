@@ -9,6 +9,8 @@ import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
 import { createCameraRouter } from './routes/camera.js'
+import { createScreenshotRouter } from './routes/screenshots.js'
+import { createScreenshotService } from './screenshots/screenshotService.js'
 import { createCameraService } from './camera/cameraService.js'
 import { cameraLimitsFromEnv } from './camera/cameraLimits.js'
 import { createVisionFromEnv, describeVision } from './camera/vision.js'
@@ -201,6 +203,10 @@ const cameraService = createCameraService({
 })
 console.log(`[camera] up to ${cameraService.limits.maxReads} pictures are read per camera session`)
 setInterval(() => cameraService.sweep(), 30_000).unref()
+// Screenshot Intelligence (the desktop app's screenshots) uses the SAME vision provider as the camera and the same conversations:
+// an analysis is saved as ordinary messages marked with the screenshot's id; the picture itself is held in memory for a few minutes.
+const screenshotService = createScreenshotService({ vision: cameraVision, sessions: sessionService })
+setInterval(() => screenshotService.sweep(), 30_000).unref()
 // No live connection survives a process restart: interrupted meetings move to RECOVERING.
 const meetingRecovery = meetingService.recoverInterruptedMeetings()
 console.log(
@@ -254,6 +260,7 @@ function createApp() {
   app.use(express.json({ limit: '256kb' }))
   app.use((req, _res, next) => {
     req.meter = meter
+    req.screenshots = screenshotService
     next()
   })
 
@@ -297,6 +304,8 @@ function createApp() {
   app.get('/api/v1/assistant/usage', access.requireSession('usage.self', { touch: false }), (req, res) => res.json(meter.summary(req.identity)))
   // The camera takes a raw picture body, so it is mounted ahead of the generic assistant router; same access gate.
   app.use('/api/v1/assistant/camera', access.requireSession('camera'), createCameraRouter({ service: cameraService }))
+  // Screenshot attachments take a raw picture body too, and belong to a chat conversation: the chat capability gates them.
+  app.use('/api/v1/assistant/screenshots', access.requireSession('chat'), createScreenshotRouter({ service: screenshotService }))
   app.use('/api/v1/assistant', access.requireSession('chat'), assistantRouter)
   app.use(
     '/api/v1/admin',

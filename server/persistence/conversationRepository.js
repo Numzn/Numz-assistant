@@ -18,10 +18,17 @@
 
 const MAX_TITLE = 80
 const ATTACHMENT_MARKER = '[Attached file: '
+const SCREENSHOT_MARKER = '[Screenshot id='
 
 /** A short title from the first user message, without the contents of any attached file. */
 export function deriveTitle(content) {
   const text = String(content ?? '')
+  const shot = text.indexOf(SCREENSHOT_MARKER)
+  if (shot !== -1) {
+    // A screenshot is a picture, not text: the title is what the person typed with it, or just "Screenshot".
+    const typed = text.slice(0, shot).replace(/\s+/g, ' ').trim() || 'Screenshot'
+    return typed.length > MAX_TITLE ? `${typed.slice(0, MAX_TITLE - 1).trimEnd()}…` : typed
+  }
   const marker = text.indexOf(ATTACHMENT_MARKER)
   let title = (marker === -1 ? text : text.slice(0, marker)).replace(/\s+/g, ' ').trim()
   if (!title && marker !== -1) {
@@ -81,6 +88,15 @@ function createView(database, { owned, bind, origin = null }) {
     `DELETE FROM assistant_messages WHERE conversation_id IN (SELECT conversation_id FROM assistant_conversations WHERE ${owned})`
   )
   const deleteAllConversations = database.prepare(`DELETE FROM assistant_conversations WHERE ${owned}`)
+  // A screenshot's messages: the user message that carries its marker, and the answer that follows it (see screenshotService.js).
+  const markedUserSeqs = database.prepare(
+    `SELECT m.seq FROM assistant_messages m
+       JOIN assistant_conversations c ON c.conversation_id = m.conversation_id
+      WHERE m.conversation_id = ? AND m.role = 'user' AND instr(m.content, ?) > 0 AND ${owned.replaceAll('owner_user_id', 'c.owner_user_id')}`
+  )
+  const nextSeqIfAnswer = database.prepare(`SELECT seq FROM assistant_messages WHERE conversation_id = ? AND seq = ? AND role = 'assistant'`)
+  const deleteSeq = database.prepare(`DELETE FROM assistant_messages WHERE conversation_id = ? AND seq = ?`)
+  const countMessages = database.prepare(`SELECT COUNT(*) AS n FROM assistant_messages WHERE conversation_id = ?`)
   const b = bind // the owner id, or nothing for the fallback
 
   return {
@@ -124,6 +140,22 @@ function createView(database, { owned, bind, origin = null }) {
     remove(conversationId) {
       deleteMessages.run(conversationId, ...b)
       return deleteConversation.run(conversationId, ...b).changes > 0
+    },
+
+    /**
+     * Deletes the messages of one screenshot (every user message containing `markerPrefix`, and the assistant message right after it)
+     * from this owner's conversation; the conversation itself goes too if that leaves it empty. Returns how many messages went.
+     */
+    removeMarked(conversationId, markerPrefix) {
+      if (typeof markerPrefix !== 'string' || !markerPrefix.startsWith(SCREENSHOT_MARKER)) return 0
+      const userSeqs = markedUserSeqs.all(conversationId, markerPrefix, ...b).map((row) => row.seq)
+      let removed = 0
+      for (const seq of userSeqs) {
+        removed += deleteSeq.run(conversationId, seq).changes
+        if (nextSeqIfAnswer.get(conversationId, seq + 1)) removed += deleteSeq.run(conversationId, seq + 1).changes
+      }
+      if (removed > 0 && countMessages.get(conversationId).n === 0) deleteConversation.run(conversationId, ...b)
+      return removed
     },
 
     /** Deletes this owner's conversations only. */

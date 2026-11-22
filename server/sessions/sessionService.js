@@ -142,6 +142,35 @@ export function createSessionService({ store = null, logger = console } = {}) {
       return session
     }
 
+    /**
+     * Removes a screenshot's messages (every user message that carries `markerPrefix` and the assistant message right after it) from the
+     * session in memory and from the saved conversation. Returns how many messages were removed in all.
+     */
+    function removeScreenshot(sessionId, markerPrefix) {
+      let removed = 0
+      const session = sessions.get(keyOf(owner, sessionId))
+      if (session) {
+        const kept = []
+        for (let i = 0; i < session.messages.length; i++) {
+          const message = session.messages[i]
+          if (message.role === 'user' && typeof message.content === 'string' && message.content.includes(markerPrefix)) {
+            removed++
+            if (session.messages[i + 1]?.role === 'assistant') {
+              removed++
+              i++
+            }
+            continue
+          }
+          kept.push(message)
+        }
+        session.messages = kept
+        session.updatedAt = new Date().toISOString()
+      }
+      const repo = scoped(owner)
+      if (repo && typeof repo.removeMarked === 'function') removed = Math.max(removed, repo.removeMarked(sessionId, markerPrefix))
+      return removed
+    }
+
     /** Forgets a session from memory (its saved copy is removed by the caller through the store). */
     function forget(sessionId) {
       sessions.delete(keyOf(owner, sessionId))
@@ -154,6 +183,7 @@ export function createSessionService({ store = null, logger = console } = {}) {
       getOrCreateSession,
       setState,
       appendMessage,
+      removeScreenshot,
       forget,
       /** This owner's conversation store, or null when history is off. */
       getHistory: () => scoped(owner)
