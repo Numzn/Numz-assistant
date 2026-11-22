@@ -381,6 +381,171 @@ mod tests {
         assert_eq!(flaky.captures.load(Ordering::SeqCst), 0, "if exclusions cannot be checked, no picture is taken");
     }
 
+    // ---- the automatic flow: unchanged screens, edits, stability, the gap ---------------------------------------------------------
+
+    /// A 1280x720 question page whose line 6 reads `answer`.
+    fn question_page(answer: &str) -> RgbaImage {
+        let mut all = crate::testscreen::lines(28);
+        all[6] = answer.to_string();
+        crate::testscreen::page(1280, 720, &all)
+    }
+    fn secs(t0: Instant, s: f32) -> Instant {
+        t0 + Duration::from_secs_f32(s)
+    }
+
+    #[test]
+    fn an_unchanged_screen_is_looked_at_all_session_and_captured_exactly_once() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let mut w = watcher(&fake, t0);
+        fake.show(question_page("x = 12 + 7;"));
+        let mut reported = 0;
+        for i in 0..80 {
+            let now = secs(t0, i as f32 * 2.5);
+            if w.tick(&fake, now) == Tick::Reported {
+                reported += 1;
+            }
+            w.poll(now); // the page keeps asking, so the watcher stays alive
+        }
+        assert_eq!(reported, 1, "the same screen is one capture, not one every ten seconds");
+        assert!(fake.captures.load(Ordering::SeqCst) >= 70, "but it is still being looked at every interval");
+    }
+
+    #[test]
+    fn a_small_edit_is_captured_by_itself_after_the_screen_settles() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let mut w = watcher(&fake, t0);
+        fake.show(question_page("x = 12 + 7;"));
+        assert_eq!(w.tick(&fake, secs(t0, 0.0)), Tick::Settling);
+        assert_eq!(w.tick(&fake, secs(t0, 2.5)), Tick::Reported, "the first screen");
+        assert!(w.poll(secs(t0, 3.0)).pending.is_some());
+        // one digit changes after the minimum gap has passed
+        fake.show(question_page("x = 13 + 7;"));
+        assert_eq!(w.tick(&fake, secs(t0, 15.0)), Tick::Settling, "the screen has changed: wait until it has stopped");
+        assert_eq!(w.tick(&fake, secs(t0, 17.5)), Tick::Reported, "and then it is captured, with nobody asking");
+        let polled = w.poll(secs(t0, 18.0));
+        assert!(polled.pending.is_some_and(|p| p.capture_id.starts_with("cap-")));
+        assert_eq!(polled.stats.reported, 2);
+        assert_eq!(w.tick(&fake, secs(t0, 30.0)), Tick::Unchanged, "and it is not captured again");
+    }
+
+    #[test]
+    fn a_screen_that_is_still_changing_is_never_captured_until_it_stops() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let mut w = watcher(&fake, t0);
+        fake.show(question_page("x = 1"));
+        w.tick(&fake, secs(t0, 0.0));
+        w.tick(&fake, secs(t0, 2.5));
+        w.poll(secs(t0, 3.0));
+        let typing = ["x = 12", "x = 12 +", "x = 12 + 7", "x = 12 + 7;"];
+        for (i, text) in typing.iter().enumerate() {
+            fake.show(question_page(text));
+            let now = secs(t0, 15.0 + i as f32 * 2.5);
+            assert_eq!(w.tick(&fake, now), Tick::Settling, "while characters keep arriving nothing is captured: {text:?}");
+            w.poll(now);
+        }
+        assert_eq!(w.tick(&fake, secs(t0, 25.0)), Tick::Reported, "the first look that matches the one before it: the finished line, once, after the typing stopped");
+        assert_eq!(w.poll(secs(t0, 26.0)).stats.reported, 2, "one capture for the whole edit");
+        assert_eq!(w.tick(&fake, secs(t0, 40.0)), Tick::Unchanged);
+    }
+
+    #[test]
+    fn captures_are_never_closer_together_than_the_minimum_gap_and_a_change_made_inside_it_is_not_lost() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let mut w = watcher(&fake, t0);
+        fake.show(question_page("x = 12 + 7;"));
+        let mut report_times = vec![];
+        let mut t = 0.0f32;
+        while t <= 120.0 {
+            // something different on the page changes every 8 seconds, a new place each time: faster than captures are allowed
+            let n = (t / 8.0) as usize;
+            let mut all = crate::testscreen::lines(28);
+            all[2 + n % 14] = format!("x = {} + 7;", n % 10);
+            fake.show(crate::testscreen::page(1280, 720, &all));
+            if w.tick(&fake, secs(t0, t)) == Tick::Reported {
+                report_times.push(t);
+            }
+            w.poll(secs(t0, t));
+            t += 2.5;
+        }
+        assert!(report_times.len() >= 5, "changes are captured, not dropped: {report_times:?}");
+        assert!(report_times.windows(2).all(|pair| pair[1] - pair[0] >= 10.0), "never two captures within ten seconds: {report_times:?}");
+        // one specific change inside the gap: made 2 s after a capture, taken as soon as the gap is over
+        let fake2 = Fake::new(true);
+        let mut v = watcher(&fake2, t0);
+        fake2.show(question_page("x = 12 + 7;"));
+        v.tick(&fake2, secs(t0, 0.0));
+        assert_eq!(v.tick(&fake2, secs(t0, 2.5)), Tick::Reported);
+        fake2.show(question_page("x = 19 + 7;"));
+        for now in [5.0, 7.5, 10.0, 12.0] {
+            assert_eq!(v.tick(&fake2, secs(t0, now)), Tick::Throttled, "inside the gap at {now}");
+            v.poll(secs(t0, now));
+        }
+        assert_eq!(v.tick(&fake2, secs(t0, 13.0)), Tick::Settling);
+        assert_eq!(v.tick(&fake2, secs(t0, 15.5)), Tick::Reported, "the change made inside the gap is captured right after it");
+    }
+
+    #[test]
+    fn a_change_made_while_something_excluded_is_open_is_never_captured_and_is_read_after_it_closes() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let mut w = watcher(&fake, t0);
+        fake.show(question_page("x = 12 + 7;"));
+        w.tick(&fake, secs(t0, 0.0));
+        assert_eq!(w.tick(&fake, secs(t0, 2.5)), Tick::Reported);
+        w.poll(secs(t0, 3.0));
+        let before = fake.captures.load(Ordering::SeqCst);
+        fake.windows.lock().unwrap().push(win("1Password", "Vault"));
+        fake.show(question_page("x = 13 + 7;"));
+        for i in 0..8 {
+            let now = secs(t0, 15.0 + i as f32 * 2.5);
+            assert_eq!(w.tick(&fake, now), Tick::Skipped(Reason::PasswordManagerOrSignIn));
+            w.poll(now);
+        }
+        assert_eq!(fake.captures.load(Ordering::SeqCst), before, "not one picture while it is open, whatever changed");
+        fake.windows.lock().unwrap().pop();
+        assert_eq!(w.tick(&fake, secs(t0, 40.0)), Tick::Settling);
+        assert_eq!(w.tick(&fake, secs(t0, 42.5)), Tick::Reported, "the screen as it is now");
+    }
+
+    #[test]
+    fn nothing_is_captured_while_paused_even_if_the_screen_changes_and_after_stop_nothing_is_kept() {
+        let fake = Fake::new(true);
+        let t0 = Instant::now();
+        let mut w = watcher(&fake, t0);
+        fake.show(question_page("x = 12 + 7;"));
+        w.tick(&fake, secs(t0, 0.0));
+        w.tick(&fake, secs(t0, 2.5));
+        w.poll(secs(t0, 3.0));
+        w.pause();
+        fake.show(question_page("x = 13 + 7;"));
+        let looks = fake.captures.load(Ordering::SeqCst);
+        for i in 0..6 {
+            assert_eq!(w.tick(&fake, secs(t0, 15.0 + i as f32 * 2.5)), Tick::Paused);
+        }
+        assert_eq!(fake.captures.load(Ordering::SeqCst), looks, "no picture while paused");
+        w.resume(secs(t0, 31.0));
+        assert_eq!(w.tick(&fake, secs(t0, 32.0)), Tick::Settling);
+        assert_eq!(w.tick(&fake, secs(t0, 34.5)), Tick::Reported);
+        w.stop();
+        fake.show(question_page("x = 14 + 7;"));
+        let looks = fake.captures.load(Ordering::SeqCst);
+        assert_eq!(w.tick(&fake, secs(t0, 50.0)), Tick::Stopped);
+        assert_eq!(fake.captures.load(Ordering::SeqCst), looks, "and none after the session ends");
+        assert!(w.poll(secs(t0, 51.0)).pending.is_none());
+    }
+
+    #[test]
+    fn the_defaults_are_the_ones_the_study_session_promises() {
+        let config = WatchConfig::default();
+        assert_eq!(config.interval, Duration::from_millis(2500), "a look every 2.5 seconds");
+        assert_eq!(config.min_gap, Duration::from_secs(10), "captures at least 10 seconds apart");
+        assert_eq!(config.poll_timeout, Duration::from_secs(20), "a page that stops asking for 20 seconds is gone");
+    }
+
     #[test]
     fn the_interval_is_kept_within_bounds() {
         assert_eq!(WatchConfig::default().with_interval_ms(10).interval, Duration::from_millis(1500));

@@ -21,6 +21,9 @@ pub mod exclusion;
 pub mod held;
 pub mod watch;
 
+#[cfg(test)]
+mod testscreen;
+
 mod backend;
 
 pub use backend::native_backend;
