@@ -11,6 +11,11 @@
     "allow-screenshot-windows",
     "allow-screenshot-capture",
     "allow-screenshot-export",
-    "allow-screenshot-discard"
+    "allow-screenshot-discard",
+    "allow-screenshot-watch-start",
+    "allow-screenshot-watch-poll",
+    "allow-screenshot-watch-pause",
+    "allow-screenshot-watch-resume",
+    "allow-screenshot-watch-stop"
   ]
 }

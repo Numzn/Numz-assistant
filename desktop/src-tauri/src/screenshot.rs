@@ -23,18 +23,26 @@ pub struct Trusted(pub String);
 
 pub struct Screens {
     backend: Arc<dyn Backend>,
-    held: Mutex<Held>,
+    held: Arc<Mutex<Held>>,
     busy: AtomicBool,
 }
 
 impl Screens {
     pub fn new() -> Self {
-        Self { backend: Arc::from(native_backend()), held: Mutex::new(Held::default()), busy: AtomicBool::new(false) }
+        Self { backend: Arc::from(native_backend()), held: Arc::new(Mutex::new(Held::default())), busy: AtomicBool::new(false) }
+    }
+
+    pub fn backend(&self) -> Arc<dyn Backend> {
+        self.backend.clone()
+    }
+
+    pub fn held(&self) -> Arc<Mutex<Held>> {
+        self.held.clone()
     }
 }
 
 /// Defence in depth behind the capability: the caller must be the main window, showing a page of the trusted origin.
-fn check(window: &WebviewWindow, trusted: &Trusted) -> Result<(), CaptureError> {
+pub(crate) fn check(window: &WebviewWindow, trusted: &Trusted) -> Result<(), CaptureError> {
     if window.label() != "main" {
         return Err(CaptureError::Unsupported("not the main window".into()));
     }

@@ -7,6 +7,7 @@
 //! sign-in page, which has no access to the commands.
 
 mod screenshot;
+mod study;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -31,12 +32,18 @@ fn allowed_navigation(url: &tauri::Url, site_origin: &str) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .manage(screenshot::Screens::new())
+        .manage(study::StudyWatch::default())
         .invoke_handler(tauri::generate_handler![
             screenshot::screenshot_status,
             screenshot::screenshot_windows,
             screenshot::screenshot_capture,
             screenshot::screenshot_export,
             screenshot::screenshot_discard,
+            study::screenshot_watch_start,
+            study::screenshot_watch_poll,
+            study::screenshot_watch_pause,
+            study::screenshot_watch_resume,
+            study::screenshot_watch_stop,
         ])
         .setup(|app| {
             let url = start_url();

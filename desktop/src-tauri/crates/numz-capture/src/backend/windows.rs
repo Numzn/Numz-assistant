@@ -75,7 +75,7 @@ impl Backend for Native {
         Support {
             platform: "windows".into(),
             session: "windows".into(),
-            modes: Modes { screen: true, window: true, region: true },
+            modes: Modes { screen: true, window: true, region: true, watch: true },
             permission: "granted".into(),
             note: "Windows may outline what is being captured for a moment.".into(),
         }

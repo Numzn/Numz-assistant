@@ -15,8 +15,11 @@
 //! The picture stays in memory ([`held::Held`]), is handed to the page as a small preview, and is exported (cropped, scaled, JPEG)
 //! only when the person asks for it to be analysed.
 
+pub mod detect;
 pub mod encode;
+pub mod exclusion;
 pub mod held;
+pub mod watch;
 
 mod backend;
 
@@ -40,6 +43,9 @@ pub struct Modes {
     pub window: bool,
     /// A region is a crop of a whole-screen capture, chosen on the preview inside the app: always available when `screen` is.
     pub region: bool,
+    /// Automatic capture during a study session is possible: the screen can be looked at on a timer AND the open windows can be listed, so
+    /// excluded ones are respected. Never true where the windows cannot be listed (Wayland).
+    pub watch: bool,
 }
 
 /// What this desktop session can do, and whether the system will allow it.

@@ -27,13 +27,13 @@ impl Backend for Native {
     fn support(&self) -> Support {
         let session = session();
         let (modes, permission, note) = match session {
-            "x11" => (Modes { screen: true, window: true, region: true }, "granted", ""),
+            "x11" => (Modes { screen: true, window: true, region: true, watch: true }, "granted", ""),
             "wayland" => (
-                Modes { screen: true, window: false, region: true },
+                Modes { screen: true, window: false, region: true, watch: false },
                 "prompt",
                 "Your desktop may ask once for permission to take screenshots. Choosing a single window is not possible on Wayland.",
             ),
-            _ => (Modes { screen: false, window: false, region: false }, "unknown", "No graphical desktop session was found."),
+            _ => (Modes { screen: false, window: false, region: false, watch: false }, "unknown", "No graphical desktop session was found."),
         };
         Support { platform: "linux".into(), session: session.into(), modes, permission: permission.into(), note: note.into() }
     }

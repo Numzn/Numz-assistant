@@ -7,6 +7,11 @@ fn main() {
         "screenshot_capture",
         "screenshot_export",
         "screenshot_discard",
+        "screenshot_watch_start",
+        "screenshot_watch_poll",
+        "screenshot_watch_pause",
+        "screenshot_watch_resume",
+        "screenshot_watch_stop",
     ])))
     .expect("failed to run the Tauri build step");
 }

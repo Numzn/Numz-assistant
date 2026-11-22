@@ -149,7 +149,7 @@ impl Backend for Native {
         Support {
             platform: "macos".into(),
             session: "macos".into(),
-            modes: Modes { screen: supported, window: supported, region: supported },
+            modes: Modes { screen: supported, window: supported, region: supported, watch: supported },
             permission: if granted { "granted" } else { "prompt" }.into(),
             note: if !supported {
                 "Screenshots need macOS 14 or later.".into()

@@ -7,7 +7,7 @@ impl Backend for Native {
         Support {
             platform: std::env::consts::OS.to_string(),
             session: "none".into(),
-            modes: Modes { screen: false, window: false, region: false },
+            modes: Modes { screen: false, window: false, region: false, watch: false },
             permission: "unknown".into(),
             note: "Screenshots are not supported on this operating system.".into(),
         }
