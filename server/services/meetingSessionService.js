@@ -224,13 +224,17 @@ export function createMeetingSessionService({
   }
 
   return {
-    createMeeting(metadata = {}) {
-      const meeting = meetingRepository.create({ meetingId: randomUUID(), metadata, now: nowIso() })
+    /** `ownerUserId` (a signed-in person who started it) is recorded outside the meeting record; see migration 9. */
+    createMeeting(metadata = {}, { ownerUserId = null } = {}) {
+      const meeting = meetingRepository.create({ meetingId: randomUUID(), metadata, now: nowIso(), ownerUserId })
       emit('MeetingCreated', { meetingId: meeting.meetingId })
       return meeting
     },
 
     getMeeting: getRequired,
+
+    /** Who owns a meeting, or null. */
+    getMeetingOwner: (meetingId) => meetingRepository.getOwner?.(meetingId) ?? null,
 
     /**
      * The meeting still being captured that was started by this launch attempt, or null. Lets a repeated

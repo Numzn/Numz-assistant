@@ -10,6 +10,9 @@ import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
 import { createCameraRouter } from './routes/camera.js'
 import { createScreenshotRouter } from './routes/screenshots.js'
+import { createAcademicRouter } from './routes/academic.js'
+import { createAcademicRepository } from './persistence/academicRepository.js'
+import { createMemoryLaneManager } from './academic/memoryLanes.js'
 import { createScreenshotService } from './screenshots/screenshotService.js'
 import { createCameraService } from './camera/cameraService.js'
 import { cameraLimitsFromEnv } from './camera/cameraLimits.js'
@@ -145,6 +148,19 @@ const assistantAuth = createAssistantAuth({
   ttlSeconds: Number.parseInt(process.env.ASSISTANT_SESSION_TTL_S ?? '43200', 10) || 43200
 })
 const identityRepo = createIdentityRepository(speechDatabase)
+// Academic Intelligence: a person's courses, study sessions and learning memory (docs/academic-intelligence.md). The memory lanes are one
+// facade over the stores that already exist; nothing here is a second assistant. No live session survives a restart.
+const academicRepo = createAcademicRepository(speechDatabase)
+academicRepo.endAllOpenSessions('server-restart')
+const auditAcademic = (event, { userId = null, detail = null } = {}) => {
+  try {
+    identityRepo.audit({ event, userId, detail })
+  } catch {
+    /* an audit failure must not break the request it describes */
+  }
+}
+const memoryLanes = createMemoryLaneManager({ academic: academicRepo, conversations: sessionService, audit: auditAcademic })
+setInterval(() => academicRepo.maintain({ retentionDays: Number.parseInt(process.env.ACADEMIC_SESSION_RETENTION_DAYS ?? '14', 10) || 14 }), 10 * 60_000).unref()
 const audioKey = String(process.env.AUDIO_SERVICE_KEY ?? '').trim()
 let access
 if (authMode === 'broker') {
@@ -306,6 +322,7 @@ function createApp() {
   app.use('/api/v1/assistant/camera', access.requireSession('camera'), createCameraRouter({ service: cameraService }))
   // Screenshot attachments take a raw picture body too, and belong to a chat conversation: the chat capability gates them.
   app.use('/api/v1/assistant/screenshots', access.requireSession('chat'), createScreenshotRouter({ service: screenshotService }))
+  app.use('/api/v1/assistant/academic', access.requireSession('academic'), createAcademicRouter({ lanes: memoryLanes, audit: auditAcademic }))
   app.use('/api/v1/assistant', access.requireSession('chat'), assistantRouter)
   app.use(
     '/api/v1/admin',

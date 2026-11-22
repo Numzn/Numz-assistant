@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 import { createDatabase } from '../persistence/sqliteDatabase.js'
 import { createConversationRepository } from '../persistence/conversationRepository.js'
 import { createIdentityRepository } from '../persistence/identityRepository.js'
+import { createMeetingRepository } from '../persistence/meetingRepository.js'
 import { createMeter } from '../usage/meter.js'
 
 /**
@@ -20,6 +21,9 @@ import { createMeter } from '../usage/meter.js'
  *   legacy claim <email|id> [--ids a,b]   give them (all, or just those) to one person who has signed in
  *   legacy export <file>           write them to a private file (this one DOES contain the text: keep it safe)
  *   legacy purge --yes             delete them for good
+ *   meetings list                  meetings nobody owns (every meeting before 2026-11-21, and any started with the admin token): lectures only
+ *                                  become course material for their owner, so these are invisible to academic features until claimed
+ *   meetings claim <email|id> [--ids a,b]   give them (all, or just those) to one person who has signed in
  *   mint-session <email|id> [--minutes 15]   a short session for one person, to run the deployment checks (prints the cookie once)
  */
 
@@ -35,6 +39,7 @@ export async function run(argv, { out = console.log, env = process.env, database
   const db = database ?? createDatabase()
   const people = createIdentityRepository(db, { clock })
   const conversations = createConversationRepository(db)
+  const meetings = createMeetingRepository(db)
   const meter = createMeter({ database: db, env, clock, logger: { warn() {}, error() {}, log() {}, info() {} } })
   const audit = (event, detail = null) => people.audit({ event, detail: { by: 'host', ...(detail ?? {}) } })
   const find = (who) => {
@@ -117,6 +122,24 @@ export async function run(argv, { out = console.log, env = process.env, database
         return 0
       }
       throw new Error('legacy list | claim <person> [--ids a,b] | export <file> | purge --yes')
+    }
+    case 'meetings': {
+      const [sub] = positional
+      if (sub === 'list') {
+        const rows = meetings.listUnowned()
+        for (const m of rows) out(`${m.meetingId}  ${m.createdAt}  ${String(m.status).padEnd(10)} ${m.metadata?.title ?? ''}`)
+        out(`${rows.length} meeting(s) with no owner`)
+        return 0
+      }
+      if (sub === 'claim') {
+        const user = find(positional[1])
+        const ids = typeof flag('--ids') === 'string' ? String(flag('--ids')).split(',').map((v) => v.trim()).filter(Boolean) : null
+        const moved = meetings.claim(user.id, ids)
+        audit('meetings.claim', { to: user.id, moved })
+        out(`${moved} meeting(s) now belong to ${user.email}`)
+        return 0
+      }
+      throw new Error('meetings list | claim <person> [--ids a,b]')
     }
     case 'mint-session': {
       const user = find(positional[0])

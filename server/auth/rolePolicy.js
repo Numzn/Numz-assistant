@@ -8,8 +8,8 @@
  * No role may read another person's conversations: there is no capability for it and no route that would honour one.
  */
 
-export const CAPABILITIES = Object.freeze(['chat', 'voice', 'camera', 'history', 'meetings.launch', 'usage.self', 'ai.admin'])
-const EVERYONE = ['chat', 'voice', 'camera', 'history', 'meetings.launch', 'usage.self']
+export const CAPABILITIES = Object.freeze(['chat', 'voice', 'camera', 'history', 'meetings.launch', 'usage.self', 'academic', 'ai.admin'])
+const EVERYONE = ['chat', 'voice', 'camera', 'history', 'meetings.launch', 'usage.self', 'academic']
 
 const CAPABILITIES_BY_ROLE = {
   viewer: EVERYONE,

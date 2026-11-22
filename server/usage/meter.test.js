@@ -117,7 +117,7 @@ test('the day\'s allowance, by kind, per person: questions, camera reads, speech
 
 test('roles have their own allowances and capabilities; only administrators administer; nobody reads anybody else\'s conversations', () => {
   assert.ok(quotasFor('admin').chatPerDay > quotasFor('operator').chatPerDay && quotasFor('operator').chatPerDay > quotasFor('viewer').chatPerDay)
-  for (const role of ['viewer', 'operator', 'admin']) for (const c of ['chat', 'voice', 'camera', 'history', 'meetings.launch', 'usage.self']) assert.ok(capabilitiesFor(role).has(c), `${role} ${c}`)
+  for (const role of ['viewer', 'operator', 'admin']) for (const c of ['chat', 'voice', 'camera', 'history', 'meetings.launch', 'usage.self', 'academic']) assert.ok(capabilitiesFor(role).has(c), `${role} ${c}`)
   assert.ok(capabilitiesFor('admin').has('ai.admin'))
   assert.ok(!capabilitiesFor('operator').has('ai.admin') && !capabilitiesFor('viewer').has('ai.admin'))
   assert.equal(capabilitiesFor('nonsense').size, 0)

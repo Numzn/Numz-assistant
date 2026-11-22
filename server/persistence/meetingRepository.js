@@ -24,6 +24,17 @@ export function createMeetingRepository(database) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const select = database.prepare('SELECT * FROM meetings WHERE meeting_id = ?')
+  // Ownership (migration 9) is kept out of the meeting object on purpose: nothing that compares or serialises a meeting changes. These
+  // statements are prepared on first use, so a repository built over a database that has not been migrated yet still works.
+  const lazy = (sql) => {
+    let statement = null
+    return () => (statement ??= database.prepare(sql))
+  }
+  const setOwner = lazy('UPDATE meetings SET owner_user_id = ? WHERE meeting_id = ? AND owner_user_id IS NULL')
+  const ownerOf = lazy('SELECT owner_user_id AS owner FROM meetings WHERE meeting_id = ?')
+  const ownedBy = lazy('SELECT * FROM meetings WHERE owner_user_id = ? ORDER BY created_at DESC, meeting_id LIMIT ?')
+  const unowned = lazy('SELECT * FROM meetings WHERE owner_user_id IS NULL ORDER BY created_at DESC, meeting_id')
+  const claimOne = lazy('UPDATE meetings SET owner_user_id = ? WHERE meeting_id = ? AND owner_user_id IS NULL')
   const update = database.prepare(`
     UPDATE meetings
     SET status = ?, started_at = ?, paused_at = ?, ended_at = ?, updated_at = ?, metadata_json = ?
@@ -43,7 +54,31 @@ export function createMeetingRepository(database) {
         meeting.updatedAt,
         JSON.stringify(meeting.metadata)
       )
+      if (typeof input.ownerUserId === 'string' && input.ownerUserId) setOwner().run(input.ownerUserId, meeting.meetingId)
       return meeting
+    },
+
+    /** The person a meeting belongs to, or null (an older meeting, or one started with the host's admin token). */
+    getOwner(meetingId) {
+      return ownerOf().get(meetingId)?.owner ?? null
+    },
+
+    /** A person's own meetings, newest first. */
+    listOwnedBy(userId, { limit = 100 } = {}) {
+      return ownedBy().all(userId, Math.min(500, Math.max(1, limit))).map(fromRow)
+    },
+
+    /** Meetings nobody owns yet (host-side administration). */
+    listUnowned() {
+      return unowned().all().map(fromRow)
+    },
+
+    /** Gives unowned meetings to a person (all of them, or just these ids). Never takes a meeting from its owner. */
+    claim(userId, meetingIds = null) {
+      const ids = meetingIds ?? unowned().all().map((row) => row.meeting_id)
+      let moved = 0
+      for (const id of ids) moved += claimOne().run(userId, id).changes
+      return moved
     },
 
     getById(meetingId) {

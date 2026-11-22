@@ -268,6 +268,121 @@ const MIGRATIONS = [
         );
       `)
     }
+  },
+  {
+    version: 8,
+    name: 'academic memory',
+    run(database) {
+      // Academic Intelligence (docs/academic-intelligence.md): courses, study sessions and what the assistant has learned about how a
+      // person learns. Every row belongs to one person and, where it names a course, to one of THAT person's courses (the triggers
+      // check it, so isolation does not depend on every query remembering to). Additive only: an older server image ignores all of it.
+      // No picture, no prompt and no reply is ever stored here: a session is its settings and times, an experience is a short note.
+      database.exec(`
+        CREATE TABLE academic_courses (
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL REFERENCES ai_users(id) ON DELETE CASCADE,
+          code TEXT,
+          title TEXT NOT NULL,
+          institution TEXT,
+          programme TEXT,
+          academic_year TEXT,
+          semester TEXT,
+          verified INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_academic_courses_owner ON academic_courses(owner_user_id, title);
+
+        CREATE TABLE academic_sessions (
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL REFERENCES ai_users(id) ON DELETE CASCADE,
+          course_id TEXT REFERENCES academic_courses(id) ON DELETE SET NULL,
+          session_type TEXT NOT NULL CHECK (session_type IN ('study', 'practice', 'restricted')),
+          status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'ended')),
+          active_topic TEXT,
+          capture_enabled INTEGER NOT NULL DEFAULT 0 CHECK (capture_enabled IN (0, 1)),
+          auto_answer INTEGER NOT NULL DEFAULT 0 CHECK (auto_answer IN (0, 1)),
+          use_research INTEGER NOT NULL DEFAULT 0 CHECK (use_research IN (0, 1)),
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          end_reason TEXT,
+          last_activity_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_academic_sessions_owner ON academic_sessions(owner_user_id, started_at DESC);
+
+        CREATE TABLE learning_experiences (
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT NOT NULL REFERENCES ai_users(id) ON DELETE CASCADE,
+          course_id TEXT NOT NULL REFERENCES academic_courses(id) ON DELETE CASCADE,
+          topic TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('difficulty', 'correction', 'helpful_explanation', 'improvement', 'feedback')),
+          difficulty TEXT CHECK (difficulty IN ('tentative', 'needs_practice', 'improving')),
+          observed_issue TEXT,
+          helpful_explanation TEXT,
+          confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+          evidence_count INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'needs_reassessment')),
+          source TEXT NOT NULL,
+          retention TEXT NOT NULL DEFAULT 'learning',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_confirmed_at TEXT,
+          last_reviewed_at TEXT
+        );
+        CREATE INDEX idx_learning_experiences_course ON learning_experiences(owner_user_id, course_id, topic);
+
+        -- A row may only name a course of its own owner.
+        CREATE TRIGGER trg_session_course_is_own BEFORE INSERT ON academic_sessions
+        WHEN NEW.course_id IS NOT NULL AND (SELECT owner_user_id FROM academic_courses WHERE id = NEW.course_id) IS NOT NEW.owner_user_id
+        BEGIN SELECT RAISE(ABORT, 'course-owner-mismatch'); END;
+
+        CREATE TRIGGER trg_session_course_is_own_update BEFORE UPDATE OF course_id ON academic_sessions
+        WHEN NEW.course_id IS NOT NULL AND (SELECT owner_user_id FROM academic_courses WHERE id = NEW.course_id) IS NOT NEW.owner_user_id
+        BEGIN SELECT RAISE(ABORT, 'course-owner-mismatch'); END;
+
+        CREATE TRIGGER trg_experience_course_is_own BEFORE INSERT ON learning_experiences
+        WHEN (SELECT owner_user_id FROM academic_courses WHERE id = NEW.course_id) IS NOT NEW.owner_user_id
+        BEGIN SELECT RAISE(ABORT, 'course-owner-mismatch'); END;
+
+        -- The declared kind of a session (study, practice, restricted) never changes: to change it the person ends the session and starts
+        -- another, which is an explicit act the server audits. A restricted session never captures the screen and never answers by itself.
+        CREATE TRIGGER trg_session_type_is_permanent BEFORE UPDATE OF session_type ON academic_sessions
+        WHEN NEW.session_type IS NOT OLD.session_type
+        BEGIN SELECT RAISE(ABORT, 'session-type-is-permanent'); END;
+
+        CREATE TRIGGER trg_restricted_session_no_capture BEFORE INSERT ON academic_sessions
+        WHEN NEW.session_type = 'restricted' AND (NEW.capture_enabled <> 0 OR NEW.auto_answer <> 0)
+        BEGIN SELECT RAISE(ABORT, 'restricted-session-no-capture'); END;
+
+        CREATE TRIGGER trg_restricted_session_no_capture_update BEFORE UPDATE ON academic_sessions
+        WHEN NEW.session_type = 'restricted' AND (NEW.capture_enabled <> 0 OR NEW.auto_answer <> 0)
+        BEGIN SELECT RAISE(ABORT, 'restricted-session-no-capture'); END;
+      `)
+    }
+  },
+  {
+    version: 9,
+    name: 'meeting ownership',
+    run(database) {
+      // Meetings (and so lecture transcripts) had no owner: only the host's admin token could read them. A person's lecture can only
+      // feed their own course knowledge if it is theirs, so a meeting now records who started it. Existing meetings that were launched
+      // by a signed-in person (metadata.launchedBy) are attributed to them; every other meeting stays unowned and is invisible to
+      // academic features until the administrator releases it (aiAdmin meetings claim). Additive: nothing else reads this column.
+      database.exec(`
+        ALTER TABLE meetings ADD COLUMN owner_user_id TEXT REFERENCES ai_users(id);
+        CREATE INDEX idx_meetings_owner ON meetings(owner_user_id, created_at DESC);
+
+        UPDATE meetings
+           SET owner_user_id = json_extract(metadata_json, '$.launchedBy')
+         WHERE owner_user_id IS NULL
+           AND json_extract(metadata_json, '$.launchedBy') IN (SELECT id FROM ai_users);
+
+        CREATE TRIGGER trg_meeting_owner_is_permanent BEFORE UPDATE OF owner_user_id ON meetings
+        WHEN OLD.owner_user_id IS NOT NULL AND NEW.owner_user_id IS NOT OLD.owner_user_id
+        BEGIN SELECT RAISE(ABORT, 'meeting-owner-is-permanent'); END;
+      `)
+    }
   }
 ]
 
