@@ -107,8 +107,8 @@ The content ledger (`contentLedger.js`) works from the **content**, never from a
 | Repeated content | text seen again (a misread letter tolerated, a different number not) is the same segment; an identical picture is stopped before any model is asked; a part of a known segment is seen |
 
 Matching is by words and numbers (a segment is "the same" at about 94-96% likeness with identical numbers; a part must be found whole and in one
-piece; a continuation needs 4 shared words at a marked cut, 12 otherwise). When in doubt it chooses **new**: reading something twice costs a little,
-missing it costs the person the content.
+piece; a continuation needs 4 shared words when both screens marked the segment as cut at the join, 8 when only one did, 12 when neither did). When in
+doubt it chooses **new**: reading something twice costs a little, missing it costs the person the content.
 
 How a screen is judged to have **changed** (`detect.rs`):
 
@@ -180,6 +180,18 @@ Refusals carry stable codes the page acts on (`restricted-assessment`, `confirm-
 lasts at most 4 hours. Daily allowances (`academicReadsPerDay`, `academicAnswersPerDay`) are per role (viewer 120/150, operator 300/400,
 admin 600/800) and the emergency pause (`aiAdmin pause academic`) stops both. Spend is metered (`academic_read` priced as vision).
 
+### Limits of the content intelligence
+
+* **Only screens that come to rest are seen.** The watcher captures a screen that has stayed the same for two looks and never closer than 10 s to the
+  last one, so content that is scrolled past quickly, or changes again inside the 10 s gap, is not seen. That is the capture engine's design, kept as it was.
+* **One read per screen, so one reply budget.** A segment's text is capped (about 1500 characters asked of the model, 2500 kept) and a screen lists at
+  most 12 segments; a page denser than that is read in pieces as it scrolls. A reply that does not parse is "unclear" and the screen is read again at its next change.
+* **Content is matched by words.** Two segments with identical text in different places (a repeated table row, boilerplate) are one segment; a
+  segment the model reads differently by more than a few words is new rather than "the same"; a continuation across screens needs shared words (or the same
+  group) to be joined, otherwise it is a new segment linked to the one it continues.
+* **Other material is explained on request.** Questions are answered by themselves; a paragraph, code or table is listed, and "Explain this" asks about it.
+* The model's `region`s are approximate and are not used to decide anything.
+
 ## Privacy
 
 * Everything is owned by the signed-in person: every statement filters on the owner, and database triggers refuse a course/document/session that
@@ -195,11 +207,12 @@ admin 600/800) and the emergency pause (`aiAdmin pause academic`) stops both. Sp
 
 | | |
 |---|---|
-| `npm test` | 1204 passing (server, repositories, identity, routes, page logic, the study controller) |
-| `cargo test --workspace` (Linux) | 46 capture-library tests + 2 source scans passing: change detection on synthetic and **real** anti-aliased text, flicker learning, the app's own window left out, the watcher's gap, exclusions, pause, stop and heartbeat |
+| `npm test` | 1241 passing (server, repositories, identity, routes, page logic, the study controller); 54 of them are new for content intelligence: the ledger (18), the reading parser, the capture service across layouts, the related content in answers, the content route, the page |
+| `cargo test --workspace` (Linux) | 51 capture-library tests + 2 source scans passing (scrolling, paging, tabs and two-panel screens at the detector and the watcher included): change detection on synthetic and **real** anti-aliased text, flicker learning, the app's own window left out, the watcher's gap, exclusions, pause, stop and heartbeat |
 | Real Chromium, real server, real numzlab-auth broker | `node scripts/academic-e2e/run.mjs`: 33/33 — Study panel end to end, restricted behaviour, no leakage between two people, delete-everything, phone width |
-| Real desktop app on X11 (Xvfb + openbox), real server and broker | `node desktop/e2e/study.mjs` (see `desktop/README.md`) (29 checks) — a changed screen is captured, read and answered with nobody pressing anything, down to one changed digit, word or code token; an unchanged screen and the app's own window changing cause no capture; pictures are taken only while reading; none with a password manager or a listed window open; none while paused or after Stop; the watcher stops itself when the page goes away; a restricted session never reads; focus, pointer and stacking untouched |
-| **Not verified** | Windows and macOS capture/watcher (only type-check), Wayland, a real vision/text model, the live OpenAlex/Crossref services, a real phone, a real person's screen |
+| Real desktop app on X11 (Xvfb + openbox), real server and broker | `node desktop/e2e/study.mjs` (see `desktop/README.md`) (41 checks) — one segment, several at once, next and previous, vertical scrolling, a segment cut by the screen edge and completed on the next screen, and content that comes back, each on the picture the watcher really took (the vision model is a stand-in that reads coloured bands, so this proves capture, timing, matching and the panel, not the model); a changed screen is captured, read and answered with nobody pressing anything, down to one changed digit, word or code token; an unchanged screen and the app's own window changing cause no capture; pictures are taken only while reading; none with a password manager or a listed window open; none while paused or after Stop; the watcher stops itself when the page goes away; a restricted session never reads; focus, pointer and stacking untouched |
+| **Live vision model** | 12 real calls to the configured OpenAI vision model on pages rendered by a real browser (one paragraph, notes beside a multiple-choice question, a long page at several scroll positions, the same page again): it returned the segment JSON every time, separated side-by-side panels, kept a question's three options, gave sensible groups and titles, set `cutOff` on a paragraph that the screen edge sliced, and the ledger recognised the same paragraph across different layouts and treated the return visit as seen. A sample this small proves the prompt is followed, not how often it is |
+| **Not verified** | Windows and macOS capture/watcher (only type-check), Wayland, answer quality with a real text model, how often the real vision model mislabels a cut-off edge or merges two panels (code, tables, figures and slides were not in the live sample), a very long page (the reply is capped, see Limits), a real phone, a real person's screen |
 
 The model in every test is a stand-in: answer *quality* is unmeasured. The wording rules (natural student writing, citing only given sources) are
 prompt instructions plus the citation check; they are not a guarantee of tone.
