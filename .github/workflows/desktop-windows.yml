@@ -1,0 +1,79 @@
+# Builds the NUMZ AI desktop app for Windows on GitHub's own Windows machine, tests it there, tries one real capture on that machine's
+# desktop, and keeps the installer as a downloadable file. Nothing is published or signed: the installer is for the person who runs it.
+#
+# Run it: push to the branch below, or Actions -> "Desktop app (Windows)" -> Run workflow. Download from the run's "Artifacts".
+name: Desktop app (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/desktop-windows-build]
+    paths:
+      - .github/workflows/desktop-windows.yml
+      - desktop/**
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # The capture library's own tests, including the scan that fails if anything that could send input or move focus appears.
+      - name: Tests (the whole Rust workspace, on Windows)
+        run: cargo test --workspace
+
+      # The first time the Windows capture code runs anywhere: ask it what it supports, which windows it sees, and for one picture of the
+      # screen. This machine's desktop is a virtual one, so a failure here may be the runner and not the code: the log says which.
+      - name: Capture probe on the Windows desktop
+        continue-on-error: true
+        run: |
+          mkdir -p ../../probe
+          {
+            echo "== support";  cargo run --quiet -p numz-capture --example shot -- support
+            echo "== windows";  cargo run --quiet -p numz-capture --example shot -- windows
+            echo "== screen";   cargo run --quiet -p numz-capture --example shot -- screen ../../probe/screen.png
+          } 2>&1 | tee ../../probe/probe.log
+
+      - name: Build the installer
+        run: npx --yes @tauri-apps/cli@2.12.4 build --bundles nsis
+
+      - name: Collect
+        run: |
+          mkdir -p ../../out
+          cp target/release/bundle/nsis/*.exe ../../out/
+          cp target/release/numz-ai-desktop.exe ../../out/NUMZ-AI-portable.exe
+          ls -la ../../out
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: numz-ai-desktop-windows
+          path: out/
+          retention-days: 30
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: windows-capture-probe
+          path: probe/
+          retention-days: 30
+          if-no-files-found: warn
