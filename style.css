@@ -924,7 +924,9 @@ body[data-has-messages="true"] #thread {
 
 #composer {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* attach | screenshot | the text box | send and the rest (the screenshot button was added without a column for it, which squeezed the
+     text box into a narrow right-hand column and dropped the send controls to a second row) */
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: end;
   column-gap: 8px;
   width: 100%;
@@ -1995,6 +1997,13 @@ a.ghost {
 }
 
 /* ---- Smaller screens and reduced motion ---- */
+
+/* The model's name is the first thing to go when a docked panel leaves the conversation too little room to type in. */
+@media (max-width: 1400px) {
+  body[data-dock-open="true"] #modelPill {
+    display: none;
+  }
+}
 
 /* Medium windows: the sidebar and a dock do not both fit beside the conversation. While a panel is open the sidebar becomes
    the drawer it already is on a phone (the same rules as the narrow block below), and the conversation keeps its width. */
