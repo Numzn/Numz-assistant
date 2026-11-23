@@ -347,6 +347,10 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
   })
   voiceButton.addEventListener('click', () => onVoiceMode?.())
   main.addEventListener('scroll', () => (stickToBottom = nearBottom()), { passive: true })
+  // A panel opening beside the conversation (or the window changing size) narrows it and the text reflows. Whoever was reading the
+  // newest message stays on it, instead of finding it pushed below the fold.
+  const resizeWatch = typeof globalThis.ResizeObserver === 'function' ? new globalThis.ResizeObserver(() => stickToBottom && scrollToBottom()) : null
+  resizeWatch?.observe(main)
 
   const unsubscribe = chat.subscribe(render)
   render(chat.getState())
@@ -366,6 +370,7 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
     },
     destroy() {
       unsubscribe()
+      resizeWatch?.disconnect()
       clearNotice()
     }
   }
