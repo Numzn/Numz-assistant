@@ -371,8 +371,11 @@ test('feedback: what helped is remembered with the approach used, "simpler" asks
 
   const before = t.api.calls.answer.length
   t.controller.getState().questions.at(-1)
-  await t.controller.feedback('simpler')
+  await t.controller.feedback('explain')
+  assert.equal(t.api.calls.answer.at(-1)[1].style, 'explain', '"Explain" asks the same question again, to be explained')
   assert.equal(t.api.calls.answer.length, before + 1)
+  await t.controller.feedback('simpler')
+  assert.equal(t.api.calls.answer.length, before + 2)
   assert.equal(t.api.calls.answer.at(-1)[1].style, 'simpler')
 })
 

@@ -422,11 +422,11 @@ export function createStudyController({ api, native, getConversationId = () => n
 
   // ---- feedback ----------------------------------------------------------------------------------------------------------------
 
-  /** kind: helpful | not_helpful | misunderstanding | correction (with note) | save_concept | simpler | deeper */
+  /** kind: helpful | not_helpful | misunderstanding | correction (with note) | save_concept | explain | simpler | deeper (the last three ask the same question again, explained) */
   async function feedback(kind, { note = null } = {}) {
     const last = state.lastAnswer
     if (!last) return null
-    if (kind === 'simpler' || kind === 'deeper') {
+    if (kind === 'explain' || kind === 'simpler' || kind === 'deeper') {
       const question = state.questions.find((q) => q.id === last.questionId)
       return question ? answerQuestion(question.id, { style: kind }) : null
     }

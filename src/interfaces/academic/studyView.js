@@ -8,9 +8,11 @@
  * puts it in its window title.
  */
 
+import { renderMarkdown } from '../chat/markdownView.js'
+
 const SESSION_TYPES = [
-  ['study', 'Study', 'Learning new material. NUMZ AI can read your screen (if you allow it), explain questions and show working.'],
-  ['practice', 'Practice', 'Practice questions and past papers where help is allowed. Same help, with a check of your understanding at the end.'],
+  ['study', 'Study', 'Learning new material. NUMZ AI can read your screen (if you allow it) and give you the correct answers; ask it to explain whenever you want.'],
+  ['practice', 'Practice', 'Practice questions and past papers where help is allowed. Same help: the correct answers, and the explanation whenever you ask for it.'],
   ['restricted', 'Restricted assessment', 'An assessment that does not allow help. NUMZ AI will not read your screen or answer questions: it can only explain concepts in general terms.']
 ]
 const SOURCE_TYPES = [['lecture_notes', 'Lecture notes'], ['course_outline', 'Course outline'], ['study_guide', 'Study guide'], ['textbook', 'Textbook'], ['notes', 'My notes'], ['research', 'Research'], ['other', 'Other']]
@@ -101,7 +103,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
       h(doc, 'small', { class: 'study-note', text: restricted ? 'Not available in a restricted session.' : watchOk ? 'Looks at the screen every few seconds, and only reads it when it changes. Never while a password manager, a sign-in screen or a window you list below is open.' : state.watch.note || 'Not available here.' }),
       formState.capture && !restricted && watchOk
         ? [
-            h(doc, 'label', { class: 'study-check' }, h(doc, 'input', { type: 'checkbox', checked: formState.autoAnswer, onchange: (e) => (formState.autoAnswer = e.target.checked) }), h(doc, 'span', { text: 'Explain the questions it finds, without me pressing anything' })),
+            h(doc, 'label', { class: 'study-check' }, h(doc, 'input', { type: 'checkbox', checked: formState.autoAnswer, onchange: (e) => (formState.autoAnswer = e.target.checked) }), h(doc, 'span', { text: 'Answer the questions it finds, without me pressing anything' })),
             field('Never read the screen while a window with these words is open', h(doc, 'input', { type: 'text', value: formState.exclusions, placeholder: 'for example: slack, bank, payroll', oninput: (e) => (formState.exclusions = e.target.value) }), 'Password managers and sign-in screens are always left out.')
           ]
         : null,
@@ -115,6 +117,13 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     const kind = SESSION_TYPES.find(([v]) => v === state.session.sessionType)?.[1] ?? state.session.sessionType
     const reading = state.watch.status === 'watching' ? (state.watch.excludedNow ? 'screen reading held: something excluded is open' : 'screen reading ON') : state.watch.status === 'paused' ? 'paused' : 'screen reading off'
     return [`${kind}${state.phase === 'paused' ? ' (paused)' : ''} · ${reading}`, state.watch.status === 'watching' ? 'reading' : state.phase === 'paused' ? 'paused' : 'on']
+  }
+
+  /** An answer, drawn as the Markdown it is (the conversation's own renderer: nothing is parsed as HTML). */
+  function answerBox(markdown) {
+    const box = h(doc, 'div', { class: 'study-answer' })
+    renderMarkdown(box, markdown, doc)
+    return box
   }
 
   function renderQuestion(state, q) {
@@ -133,10 +142,16 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
         ? h(doc, 'div', { class: 'study-warn' }, h(doc, 'p', { text: q.message }), (q.candidates ?? []).map((c) => h(doc, 'button', { type: 'button', text: c.title, onclick: () => controller.answerQuestion(q.id, { courseId: c.courseId }) })))
         : null,
       q.state === 'failed' ? h(doc, 'p', { class: 'study-error', text: q.message }) : null,
-      q.state === 'new' || q.state === 'failed' ? h(doc, 'button', { type: 'button', class: 'study-primary', disabled: state.phase === 'paused', text: q.partial ? 'Explain what is visible' : 'Explain', onclick: () => controller.answerQuestion(q.id) }) : null,
+      q.state === 'new' || q.state === 'failed' ? h(doc, 'button', { type: 'button', class: 'study-primary', disabled: state.phase === 'paused', text: q.partial ? 'Answer what is visible' : 'Answer', onclick: () => controller.answerQuestion(q.id) }) : null,
       q.state === 'answering' ? h(doc, 'p', { class: 'study-working', text: 'Working on it…' }) : null,
+      // The answer itself, right here (it is also in the conversation): the correct answer is what is wanted, so it is not behind a click.
+      answer?.markdown ? answerBox(answer.markdown) : null,
       answer
         ? h(doc, 'p', { class: 'study-answered', text: `Answered in the conversation (${answer.grounding === 'course' ? 'from your course materials' : answer.grounding === 'research' ? 'from research' : answer.grounding === 'both' ? 'from your materials and research' : 'from general knowledge'}).` })
+        : null,
+      // The explanation is given when it is asked for, never before.
+      answer && answer.approach === 'answer'
+        ? h(doc, 'button', { type: 'button', class: 'study-link', disabled: state.phase === 'paused', text: 'Explain', onclick: () => controller.answerQuestion(q.id, { style: 'explain' }) })
         : null,
       // On a narrow window this panel covers the conversation the answer was written in: this takes the person to it.
       answer?.ref && onShowInChat
@@ -206,7 +221,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
       ),
       last
         ? h(doc, 'div', { class: 'study-feedback' },
-            h(doc, 'span', { text: 'That explanation:' }),
+            h(doc, 'span', { text: 'That answer:' }),
             h(doc, 'button', { type: 'button', text: 'Helped', onclick: () => controller.feedback('helpful') }),
             h(doc, 'button', { type: 'button', text: 'Didn’t help', onclick: () => controller.feedback('not_helpful') }),
             h(doc, 'button', { type: 'button', text: 'Simpler', onclick: () => controller.feedback('simpler') }),

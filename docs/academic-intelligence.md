@@ -12,8 +12,10 @@ panel of the same page.
 1. Open **Study** (header). Add a course and some notes under **Materials** (`.md` / `.txt`; a lecture they recorded in NUMZ AI can be added too).
 2. **Session** tab: say what kind of session it is: **Study**, **Practice** or **Restricted assessment**. Optionally choose the course and a topic.
 3. In the desktop app only: tick **Read my screen while I study**, optionally list words (an app or window title) that must never be read.
-4. NUMZ AI finds questions on the screen and lists them in the panel. **Explain** answers one (or turn on "explain questions it finds
-   without asking me"). Or type a question in the box. The answer goes into the conversation with the sources it used.
+4. NUMZ AI finds questions on the screen and **answers them by itself**: the correct answer, and nothing around it (a multiple-choice question gets its
+   letter and text, a calculation its result with the unit, a definition a sentence or two), shown in the question's card in the panel and in the
+   conversation, with the sources it used. Nothing is pressed to get it. **Explain** on a card (or **Simpler / Deeper** below) gives the explanation when
+   you want it. Or type a question in the box: it is answered the same way.
 5. Tell it what helped (**Helped / Didn't help / Simpler / Deeper / Something is wrong / Keep as a note**). That, and only that, is what it
    learns about how they learn.
 6. **Memory** tab: everything it keeps, to change, export or delete.
@@ -36,6 +38,14 @@ explain a *named concept* in general terms (and refuses anything that looks like
 `GET /academic/memory/export` downloads them. Conversations are never touched by "delete everything academic".
 
 ## How an answer is made
+
+**Answer first.** By default a question is *answered*, not explained: the system message says the student wants the answer, gives each kind of task its
+short shape (`ANSWER_ONLY` in `responseEngine.js`), asks for one short sentence of doubt when the model is not sure, and leaves out the learning-approach
+and teaching instructions. The explanation (steps, reasoning, an example, why the other options are wrong) is the **explain** style, used when the person
+presses Explain, Simpler or Deeper, when a note asks for it, and for a named concept (which is explained by its nature). A question that itself asks to explain
+or discuss ("why...", "describe...") gets that, as a short model answer. Every other rule here (citations, sources, the integrity gate) is the same either way.
+Checked with the real model on five made-up questions: `B) 60 km/h`; `F = ma = (12 kg)(3.5 m/s²) = **42 N**`; a two-sentence definition; `Second normal form (2NF).`;
+one sentence for a "why" question; and the explain style gave the full explanations.
 
 `responseEngine.js` writes **one explicit system message per answer** (never the voice persona): the writing profile
 (`natural_student_academic` by default), the kind of task (define, explain, discuss, compare, analyse, evaluate, calculate, multiple choice),
@@ -90,7 +100,7 @@ When a study session has **Read my screen** on (desktop app only), reading is au
    seen). **Questions** among the new or completed segments become cards and are **answered** from the person's course notes (and the related content on
    screen) into the Study panel **and the conversation**, up to three per screen, one at a time. Other material is organised and shown; explaining it is
    one press ("Explain this"), because answering everything on every screen would spend a call per paragraph. A screen that may be an assessment is
-   listed but not answered until the person confirms; "Explain the questions it finds, without me pressing anything" is on by default and can be turned off
+   listed but not answered until the person confirms; "Answer the questions it finds, without me pressing anything" is on by default and can be turned off
    before the session starts.
 10. The watcher keeps looking; the next change starts again at 2.
 

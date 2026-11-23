@@ -3223,6 +3223,22 @@ body[data-page="camera"] [hidden] {
   border-color: var(--danger);
   color: var(--danger);
 }
+/* The answer, in the question's card: a bounded box that scrolls, so a long explanation does not take over the panel. */
+.study-answer {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  line-height: 1.55;
+}
+.study-answer > :first-child {
+  margin-top: 0;
+}
+.study-answer > :last-child {
+  margin-bottom: 0;
+}
 #studyPanel button.study-link {
   align-self: flex-start;
   padding: 0;
