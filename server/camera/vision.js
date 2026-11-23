@@ -43,8 +43,26 @@ function usageOf(body, name) {
   }
 }
 
-function failure(status) {
-  return Object.assign(new Error(`The vision service answered ${status}`), { statusCode: status, name: 'VisionError' })
+function failure(status, reason) {
+  return Object.assign(new Error(`The vision service answered ${status}`), { statusCode: status, name: 'VisionError', ...(reason ? { reason } : {}) })
+}
+
+/**
+ * WHY a call was refused, in one word, so the person can be told something true instead of "try again": 'key' (the key was refused) or
+ * 'billing' (the account has no active billing or no credit left). Only the provider's machine-readable code and type, and for providers
+ * that have none a short phrase, are looked at; none of the provider's own words are passed on (they can echo the request or the key).
+ * A plain rate limit is neither: it passes and is retried.
+ */
+function reasonOf(status, raw) {
+  if (status === 401 || status === 403) return 'key'
+  let said = ''
+  try {
+    const e = JSON.parse(raw)?.error
+    said = [e?.code, e?.type, e?.message].filter((part) => typeof part === 'string').join(' ')
+  } catch {
+    said = ''
+  }
+  return status === 402 || /billing_not_active|insufficient_quota|credit balance|billing/i.test(said) ? 'billing' : undefined
 }
 
 function split(messages) {
@@ -61,7 +79,15 @@ async function post(fetchFn, url, headers, body, signal) {
     if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err
     throw Object.assign(new Error('The vision service could not be reached'), { name: 'VisionError' })
   }
-  if (!res.ok) throw failure(res.status)
+  if (!res.ok) {
+    let raw = ''
+    try {
+      raw = String(await res.text()).slice(0, 2000)
+    } catch {
+      raw = ''
+    }
+    throw failure(res.status, reasonOf(res.status, raw))
+  }
   try {
     return JSON.parse(await res.text())
   } catch {

@@ -170,6 +170,27 @@ test('a failing or slow model is a plain, retryable failure, counted as failed, 
   assert.deepEqual(outcomes, ['failed', 'failed', 'ok'])
 })
 
+test('a model that refused the key or has no billing is "unavailable", said plainly; any other failure stays a retryable read-failed', async () => {
+  const t = setup()
+  const s = start(t)
+  const outcomes = []
+  const meter = { begin: () => ({ usage() {}, finish: () => outcomes.push('ok'), fail: () => outcomes.push('failed') }) }
+  for (const [n, reason] of [[1, 'billing'], [2, 'key']]) {
+    t.vision.state.reply = async () => {
+      throw Object.assign(new Error('The vision service answered 429'), { statusCode: 429, reason })
+    }
+    await assert.rejects(
+      t.alice.read(s.id, { bytes: png(1280, 720, n) }, { ...t.ctx, meter }),
+      (err) => err.code === 'vision-unavailable' && err.statusCode === 503 && /not accepting requests/.test(err.message) && !/429|billing|key/i.test(err.message)
+    )
+  }
+  t.vision.state.reply = async () => {
+    throw Object.assign(new Error('x'), { statusCode: 429 }) // a plain rate limit at the provider
+  }
+  await assert.rejects(t.alice.read(s.id, { bytes: png(1280, 720, 3) }, { ...t.ctx, meter }), (err) => err.code === 'read-failed' && err.statusCode === 502)
+  assert.deepEqual(outcomes, ['failed', 'failed', 'failed'])
+})
+
 test('screens are private to the person and the session: nobody else can read into, list or reach them', async () => {
   const t = setup()
   const s = start(t)

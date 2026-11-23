@@ -20,6 +20,9 @@ const AUTO_ANSWER_LIMIT = 3
 /** A picture the server could not take yet (too soon, busy, a failed read, the network) is sent again after these waits, then dropped. */
 const RETRY_WAITS_MS = [4000, 8000]
 const RETRYABLE = ['capture-rate-limited', 'capture-busy', 'read-failed', 'network']
+// A screen whose read FAILED at the model (not one the server turned away before reading) is sent again at most once: asking a service
+// that just failed the same question again and again is how one unchanged screen ends up sent three times.
+const RETRY_LIMIT = { 'read-failed': 1 }
 
 const initial = () => ({
   phase: 'idle', // 'idle' | 'starting' | 'active' | 'paused' | 'stopping'
@@ -211,6 +214,11 @@ export function createStudyController({ api, native, getConversationId = () => n
 
   /** A screen from the watcher. One is sent at a time; if another arrives meanwhile only the newest is kept. The poll loop never waits for it. */
   function submit(pending) {
+    // A screen that turns up after screen reading was paused (by the person, or because the reading service refused) is let go, not read.
+    if (state.watch.status === 'paused') {
+      if (native?.available) native.discard(pending.captureId).catch(() => {})
+      return
+    }
     retry = null // a newer screen replaces one that was waiting to be sent again
     if (working) {
       const older = queued
@@ -259,12 +267,19 @@ export function createStudyController({ api, native, getConversationId = () => n
       set({ reading: false })
       const d = describe(err)
       if (RETRYABLE.includes(d.code)) {
-        if (tries < RETRY_WAITS_MS.length) retry = { picture, tries: tries + 1, due: now() + Math.max(err?.retryAfterMs ?? 0, RETRY_WAITS_MS[tries]) }
-        else summary('held-back', 0) // it could not be read this time; the next change is read when it comes
+        if (tries < Math.min(RETRY_WAITS_MS.length, RETRY_LIMIT[d.code] ?? Infinity)) retry = { picture, tries: tries + 1, due: now() + Math.max(err?.retryAfterMs ?? 0, RETRY_WAITS_MS[tries]) }
+        else {
+          // It could not be read this time; the next change is read when it comes. Say so once per run of failures, in the message area as
+          // well as the status line: a screen that fails quietly looks exactly like a session that is doing nothing.
+          const already = state.lastRead?.status === 'held-back'
+          summary('held-back', 0)
+          if (!already) say(d.message, 'warn')
+        }
         return
       }
       if (['session-ended', 'session-expired', 'session-required'].includes(d.code)) return void (await stop('The study session has ended.'))
-      if (d.code === 'daily-limit' || err?.status === 429) {
+      if (d.code === 'daily-limit' || d.code === 'vision-unavailable' || err?.status === 429) {
+        await dropWaiting()
         if (native?.available) await native.watchPause().catch(() => {})
         setWatch({ status: 'paused' })
         return say(`${d.message} Screen reading is paused.`, 'warn')
