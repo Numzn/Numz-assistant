@@ -16,13 +16,15 @@ import { createAcademicRouter } from '../routes/academic.js'
 import { addKnowledgeRoutes } from '../routes/academicKnowledge.js'
 import { createKnowledgeService } from '../academic/knowledgeService.js'
 import { createKnowledgeRepository } from '../persistence/knowledgeRepository.js'
+import { DEFAULT_LIMITS } from '../academic/knowledgeLimits.js'
 
 const quiet = { error() {}, warn() {}, info() {}, log() {} }
 
-async function serve() {
+async function serve({ limits: limitOverrides = {}, pause } = {}) {
   const t = rig()
-  const knowledge = createKnowledgeRepository(t.database)
-  const knowledgeService = createKnowledgeService({ knowledge })
+  const limits = { ...DEFAULT_LIMITS, ...limitOverrides }
+  const knowledge = createKnowledgeRepository(t.database, { limits })
+  const knowledgeService = createKnowledgeService({ knowledge, pause })
   const vision = fakeVision()
   vision.state.reply = async () => reading()
   const sessionManager = createSessionManager({ academic: t.academic, clock: () => t.clock.t, audit: t.audit })
@@ -45,7 +47,7 @@ async function serve() {
     next()
   })
   const gate = (req, res, next) => (req.identity ? next() : res.status(401).json({ error: 'sign in', code: 'session-required' }))
-  app.use('/academic', gate, createAcademicRouter({ lanes, audit: t.audit, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge, knowledgeService }), (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService }), (router, helpers) => addAnswerRoutes(router, helpers, { answerService, researchService: research, knowledge })] }))
+  app.use('/academic', gate, createAcademicRouter({ lanes, audit: t.audit, extend: [(router, helpers) => addKnowledgeRoutes(router, helpers, { knowledge, knowledgeService, limits }), (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService }), (router, helpers) => addAnswerRoutes(router, helpers, { answerService, researchService: research, knowledge })] }))
   app.use(errorHandler({ logger: quiet }))
   const server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s))
@@ -66,11 +68,11 @@ async function serve() {
     }
     return { status: res.status, json, text, headers: res.headers }
   }
-  return { t, vision, model, conversations, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
+  return { t, vision, model, conversations, knowledge, knowledgeService, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
 }
 
-async function using(body) {
-  const r = await serve()
+async function using(body, options) {
+  const r = await serve(options)
   try {
     await body(r)
   } finally {
@@ -211,10 +213,13 @@ test('only text and markdown are accepted, with plain reasons for everything els
     assert.equal((await r.alice(url(), { method: 'POST', text: '   \n', type: 'text/plain' })).json.code, 'empty-document')
     assert.equal((await r.alice(`/courses/${course.id}/documents`, { method: 'POST', text: 'no title', type: 'text/plain' })).json.code, 'invalid-input')
     assert.equal((await r.alice(url('&type=poster'), { method: 'POST', text: 'x y z', type: 'text/plain' })).json.code, 'invalid-input')
+    // over the document limit (600 KB in this test; 100 MB by default): refused before it is read in full
+    const over = await r.alice(url(), { method: 'POST', text: 'x'.repeat(700_000), type: 'text/plain' })
+    assert.equal(over.status, 413)
+    assert.equal(over.json.code, 'too-large')
     assert.equal((await r.alice(url(), { method: 'POST', text: 'x'.repeat(3 * 1024 * 1024), type: 'text/plain' })).status, 413)
-    assert.equal((await r.alice(url(), { method: 'POST', text: 'x'.repeat(700_000), type: 'text/plain' })).json.code, 'document-too-large')
     assert.equal((await r.alice('/courses/nope/documents?title=x', { method: 'POST', text: 'abc def', type: 'text/plain' })).status, 404)
-  })
+  }, { limits: { maxDocumentChars: 600_000 } })
 })
 
 test('searching another of your courses needs a stated reason; a lecture that is not yours is "not found"', async () => {
@@ -385,5 +390,223 @@ test('research over HTTP is labelled and counted; a person with no sign-in canno
     assert.equal((await r.nobody('/research?q=x')).status, 401)
     assert.equal((await r.legacy('/research?q=x')).status, 403)
     assert.ok(r.t.audits.some((a) => a.event === 'academic.research' && a.detail.verified === 1))
+  })
+})
+
+// ---- large documents: stored at once, cut and indexed in the background, with a status, a reason and a retry --------------------------
+
+/** A document of about `kb` KB with headings, so that it is cut into many passages and each one can be found by its own words. */
+const bigDocument = (kb, tag = 'alpha') => {
+  const sections = []
+  for (let i = 0; sections.join('\n').length < kb * 1024; i++) sections.push(`## ${tag} section ${i}\n\nThe ${tag} section ${i} explains normalisation number ${i} (${tag}marker${i}z). ${'It keeps data consistent and removes redundancy. '.repeat(8)}`)
+  return `# ${tag} notes\n\n${sections.join('\n\n')}\n`
+}
+const waitUntil = async (fn, ms = 5000) => {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    const value = await fn()
+    if (value) return value
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error('timed out')
+}
+/** A pause the test controls: processing waits at every batch until `release()`. */
+function gate() {
+  let open = false
+  let waiters = []
+  return {
+    pause: () => (open ? Promise.resolve() : new Promise((resolve) => waiters.push(resolve))),
+    release() {
+      open = true
+      waiters.forEach((resolve) => resolve())
+      waiters = []
+    },
+    step() {
+      const next = waiters.shift()
+      next?.()
+    },
+    get waiting() {
+      return waiters.length
+    }
+  }
+}
+
+test('a large document is answered 202 at once and processed in the background: processing, progress, then ready and searchable; a small one is cut on the spot as before', async () => {
+  const g = gate()
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    const url = (title) => `/courses/${course.id}/documents?title=${encodeURIComponent(title)}&type=lecture_notes`
+    const small = await r.alice(url('Small'), { method: 'POST', text: '# Keys\n\nA key identifies a row.', type: 'text/markdown' })
+    assert.equal(small.status, 201)
+    assert.equal(small.json.document.status, 'ready')
+    assert.equal(small.json.processing, undefined)
+
+    const big = await r.alice(url('Big'), { method: 'POST', text: bigDocument(300), type: 'text/markdown' })
+    assert.equal(big.status, 202, 'the answer does not wait for the cutting')
+    assert.equal(big.json.processing, true)
+    assert.equal(big.json.document.status, 'processing')
+    assert.equal(big.json.document.chunkCount, 0)
+    const id = big.json.document.id
+
+    await waitUntil(() => g.waiting > 0) // the first batch is in and the work is paused between batches
+    const during = (await r.alice(`/courses/${course.id}/documents`)).json.documents.find((d) => d.id === id)
+    assert.equal(during.status, 'processing')
+    assert.ok(during.chunkCount > 0, `progress is visible: ${during.chunkCount} parts so far`)
+    assert.equal((await r.alice(`/search?course=${course.id}&q=alphamarker3z`)).json.passages.length, 0, 'a document that is not ready is never searched or cited')
+    assert.equal((await r.alice(`/search?course=${course.id}&q=key+identifies+row`)).json.passages.length, 1, 'the small document, which is ready, still is')
+
+    g.release()
+    await r.knowledgeService.idle()
+    const after = (await r.alice(`/courses/${course.id}/documents`)).json.documents.find((d) => d.id === id)
+    assert.equal(after.status, 'ready')
+    assert.equal(after.error, null)
+    assert.ok(after.chunkCount > 100, `${after.chunkCount} parts`)
+    const found = (await r.alice(`/search?course=${course.id}&q=alphamarker3z`)).json.passages
+    assert.ok(found.length > 0 && found[0].title === 'Big' && /section 3/.test(found[0].headingPath), 'found by its own words, with its heading as the reference')
+    const audit = r.t.audits.filter((a) => a.event.startsWith('academic.document_')).map((a) => a.event)
+    assert.ok(audit.includes('academic.document_add') && audit.includes('academic.document_ready'), audit.join())
+  }, { limits: { asyncThresholdChars: 50_000 }, pause: g.pause })
+})
+
+test('a document that fails to process says why and keeps its text; Retry makes it ready; a document that is not failed cannot be retried; nobody else can retry it', async () => {
+  let failures = 1
+  const pause = async () => {
+    if (failures-- > 0) throw new Error('disk hiccup')
+  }
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    const created = await r.alice(`/courses/${course.id}/documents?title=Notes`, { method: 'POST', text: bigDocument(200), type: 'text/markdown' })
+    assert.equal(created.status, 202)
+    const id = created.json.document.id
+    await r.knowledgeService.idle()
+    const failed = (await r.alice(`/courses/${course.id}/documents`)).json.documents[0]
+    assert.equal(failed.status, 'failed')
+    assert.match(failed.error, /could not be processed/)
+    assert.equal(failed.chunkCount, 0, 'the passages made before the failure are gone: nothing half-cut is left')
+    assert.equal(r.t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks').get().n, 0)
+    assert.equal((await r.alice(`/search?course=${course.id}&q=normalisation`)).json.passages.length, 0)
+
+    assert.equal((await r.bob(`/documents/${id}/retry`, { method: 'POST' })).status, 404, 'another person cannot reach it')
+    assert.equal((await r.nobody(`/documents/${id}/retry`, { method: 'POST' })).status, 401)
+    const retried = await r.alice(`/documents/${id}/retry`, { method: 'POST' })
+    assert.equal(retried.status, 202)
+    assert.equal(retried.json.document.status, 'processing')
+    assert.equal(retried.json.document.error, null)
+    await r.knowledgeService.idle()
+    const done = (await r.alice(`/courses/${course.id}/documents`)).json.documents[0]
+    assert.equal(done.status, 'ready')
+    assert.ok(done.chunkCount > 50)
+    assert.equal((await r.alice(`/documents/${id}/retry`, { method: 'POST' })).status, 409, 'only a failed document can be retried')
+    assert.equal((await r.alice('/documents/nope/retry', { method: 'POST' })).status, 404)
+  }, { limits: { asyncThresholdChars: 50_000 }, pause })
+})
+
+test('a document too long to cut within the limits fails with that reason; uploading the same text again counts as a retry, and a document still processing is left to finish', async () => {
+  const g = gate()
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    const url = `/courses/${course.id}/documents?title=Long`
+    const text = bigDocument(200)
+    const first = await r.alice(url, { method: 'POST', text, type: 'text/markdown' })
+    assert.equal(first.status, 202)
+    g.release()
+    await r.knowledgeService.idle()
+    const failed = (await r.alice(`/courses/${course.id}/documents`)).json.documents[0]
+    assert.equal(failed.status, 'failed')
+    assert.match(failed.error, /too many parts/)
+    // the same text again: not "unchanged" (it never became usable): it is processed again (and fails again for the same reason)
+    const again = await r.alice(url, { method: 'POST', text, type: 'text/markdown' })
+    assert.equal(again.status, 202)
+    assert.equal(again.json.document.version, 2)
+    await r.knowledgeService.idle()
+  }, { limits: { asyncThresholdChars: 50_000, maxChunks: 20 }, pause: g.pause })
+
+  const hold = gate()
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    const url = `/courses/${course.id}/documents?title=Slow`
+    const text = bigDocument(200)
+    assert.equal((await r.alice(url, { method: 'POST', text, type: 'text/markdown' })).status, 202)
+    await waitUntil(() => hold.waiting > 0)
+    const same = await r.alice(url, { method: 'POST', text, type: 'text/markdown' })
+    assert.equal(same.status, 200, 'identical text while it is processing changes nothing')
+    assert.equal(same.json.unchanged, true)
+    assert.equal(same.json.document.status, 'processing')
+    hold.release()
+    await r.knowledgeService.idle()
+    assert.equal((await r.alice(`/courses/${course.id}/documents`)).json.documents[0].status, 'ready')
+  }, { limits: { asyncThresholdChars: 50_000 }, pause: hold.pause })
+})
+
+test('a new version uploaded while the old one is still being cut wins, and a document deleted meanwhile leaves nothing behind', async () => {
+  const g = gate()
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    const url = (title) => `/courses/${course.id}/documents?title=${title}`
+    assert.equal((await r.alice(url('Notes'), { method: 'POST', text: bigDocument(200, 'oldtext'), type: 'text/markdown' })).status, 202)
+    await waitUntil(() => g.waiting > 0)
+    const second = await r.alice(url('Notes'), { method: 'POST', text: bigDocument(200, 'newtext'), type: 'text/markdown' })
+    assert.equal(second.status, 202)
+    assert.equal(second.json.document.version, 2)
+    const doomed = await r.alice(url('Doomed'), { method: 'POST', text: bigDocument(200, 'gone'), type: 'text/markdown' })
+    assert.equal((await r.alice(`/documents/${doomed.json.document.id}`, { method: 'DELETE' })).status, 204)
+    g.release()
+    await r.knowledgeService.idle()
+    const docs = (await r.alice(`/courses/${course.id}/documents`)).json.documents
+    assert.equal(docs.length, 1)
+    assert.deepEqual([docs[0].title, docs[0].version, docs[0].status], ['Notes', 2, 'ready'])
+    assert.equal((await r.alice(`/search?course=${course.id}&q=oldtext`)).json.passages.length, 0, 'nothing of the replaced version is searchable')
+    assert.ok((await r.alice(`/search?course=${course.id}&q=newtext`)).json.passages.length > 0)
+    const orphans = r.t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks WHERE document_id NOT IN (SELECT id FROM academic_documents)').get().n
+    assert.equal(orphans, 0)
+    assert.equal(r.t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks WHERE document_id = ?').get(doomed.json.document.id).n, 0)
+  }, { limits: { asyncThresholdChars: 50_000 }, pause: g.pause })
+})
+
+test('processing the documents of two people one after the other keeps them apart: each finds only its own text', async () => {
+  await using(async (r) => {
+    const a = (await r.alice('/courses', { method: 'POST', body: { title: 'A' } })).json
+    const b = (await r.bob('/courses', { method: 'POST', body: { title: 'B' } })).json
+    await r.alice(`/courses/${a.id}/documents?title=Mine`, { method: 'POST', text: bigDocument(200, 'alicesecret'), type: 'text/markdown' })
+    await r.bob(`/courses/${b.id}/documents?title=Mine`, { method: 'POST', text: bigDocument(200, 'bobsecret'), type: 'text/markdown' })
+    await r.knowledgeService.idle()
+    assert.ok((await r.alice(`/search?course=${a.id}&q=alicesecret`)).json.passages.length > 0)
+    assert.equal((await r.alice(`/search?course=${a.id}&q=bobsecret`)).json.passages.length, 0)
+    assert.equal((await r.bob(`/search?course=${a.id}&q=alicesecret`)).status, 404)
+    assert.ok((await r.bob(`/search?course=${b.id}&q=bobsecret`)).json.passages.length > 0)
+    assert.equal((await r.bob(`/courses/${a.id}/documents`)).status, 404)
+  }, { limits: { asyncThresholdChars: 50_000 } })
+})
+
+test('the limits are the server\'s to set: the page can ask for them, the person\'s total and the documents per course are enforced with plain reasons', async () => {
+  await using(async (r) => {
+    const limits = await r.alice('/limits')
+    assert.equal(limits.status, 200)
+    assert.deepEqual(limits.json, { maxDocumentBytes: 4096, maxBatchFiles: 7 })
+    assert.equal((await r.nobody('/limits')).status, 401)
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    const add = (title, text) => r.alice(`/courses/${course.id}/documents?title=${title}`, { method: 'POST', text, type: 'text/plain' })
+    assert.equal((await add('one', 'word '.repeat(600))).status, 201)
+    const full = await add('two', 'other '.repeat(600))
+    assert.equal(full.status, 413)
+    assert.equal(full.json.code, 'storage-full')
+    assert.match(full.json.error, /more than the 5 KB allowed/)
+    assert.equal((await add('three', 'x')).status, 201)
+    assert.equal((await add('four', 'y')).status, 409, 'two documents per course here')
+    assert.equal((await add('big', 'z '.repeat(3000))).status, 413, 'a document over the limit is refused (4 KB here)')
+  }, { limits: { maxDocumentChars: 4096, maxBatchFiles: 7, charsPerPerson: 5000, documentsPerCourse: 2 } })
+})
+
+test('fifty files one after the other, as the page sends a batch: every one is stored, listed and searchable', async () => {
+  await using(async (r) => {
+    const course = (await r.alice('/courses', { method: 'POST', body: { title: 'Databases' } })).json
+    for (let i = 0; i < 50; i++) {
+      const res = await r.alice(`/courses/${course.id}/documents?title=${encodeURIComponent(`Lecture ${i}`)}&type=lecture_notes`, { method: 'POST', text: `# Lecture ${i}\n\nTopic number ${i} is about uniquetopic${i}.`, type: 'text/markdown' })
+      assert.equal(res.status, 201, `file ${i}`)
+    }
+    const docs = (await r.alice(`/courses/${course.id}/documents`)).json.documents
+    assert.equal(docs.length, 50)
+    assert.ok(docs.every((d) => d.status === 'ready'))
+    assert.equal((await r.alice(`/search?course=${course.id}&q=uniquetopic37`)).json.passages[0].title, 'Lecture 37')
   })
 })
