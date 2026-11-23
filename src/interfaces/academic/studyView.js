@@ -207,6 +207,9 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
         !restricted && state.watch.available && state.watch.status === 'off' ? h(doc, 'button', { type: 'button', text: 'Turn screen reading on', onclick: () => controller.resumeWatching() }) : null,
         h(doc, 'button', { type: 'button', 'data-danger': 'true', text: 'End session', onclick: () => controller.stop() })
       ),
+      !restricted && state.session.captureEnabled
+        ? h(doc, 'label', { class: 'study-check', id: 'studyAutoAnswer' }, h(doc, 'input', { type: 'checkbox', checked: state.session.autoAnswer === true, onchange: (e) => controller.setAutoAnswer(e.target.checked) }), h(doc, 'span', { text: 'Answer the questions it finds, without me pressing anything' }))
+        : null,
       state.watch.status !== 'off' ? h(doc, 'p', { id: 'studyWatchNote', class: 'study-note', 'aria-live': 'off', text: watchNote(state) }) : null,
       restricted ? h(doc, 'p', { class: 'study-warn', text: 'Restricted assessment: NUMZ AI is not reading your screen and will not answer questions. Name a concept below to have it explained in general terms.' }) : null,
       state.questions.length ? h(doc, 'ul', { class: 'study-questions' }, state.questions.map((q) => renderQuestion(state, q))) : !restricted ? h(doc, 'p', { class: 'study-empty', text: state.watch.status === 'watching' ? 'Waiting for something on your screen to read…' : 'Questions NUMZ AI finds on your screen appear here. You can also type one below.' }) : null,
@@ -437,7 +440,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     return state.lastRead ? `${counts} Last read ${clockText(state.lastRead.at)}: ${readText(state.lastRead)}.` : counts
   }
   /** What the session tab shows, apart from the counters: the panel is redrawn only when this changes, so typing is never interrupted. */
-  const signature = (state) => JSON.stringify([tab, state.phase, state.session && [state.session.id, state.session.status, state.session.sessionType], state.message, state.tone, state.busy, state.watch.available, state.watch.status, state.watch.excludedNow, state.watch.note, state.courses.map((c) => c.id), state.questions.map((q) => [q.id, q.state, q.message, q.partial ? 1 : 0, q.text.length]), state.content.map((c) => [c.id, c.status, c.partial ? 1 : 0, c.text.length]), state.lastAnswer?.answerId ?? null])
+  const signature = (state) => JSON.stringify([tab, state.phase, state.session && [state.session.id, state.session.status, state.session.sessionType, state.session.captureEnabled, state.session.autoAnswer], state.message, state.tone, state.busy, state.watch.available, state.watch.status, state.watch.excludedNow, state.watch.note, state.courses.map((c) => c.id), state.questions.map((q) => [q.id, q.state, q.message, q.partial ? 1 : 0, q.text.length]), state.content.map((c) => [c.id, c.status, c.partial ? 1 : 0, c.text.length]), state.lastAnswer?.answerId ?? null])
   let drawn = ''
 
   function render(force = false) {

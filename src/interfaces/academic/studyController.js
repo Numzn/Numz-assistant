@@ -156,6 +156,31 @@ export function createStudyController({ api, native, getConversationId = () => n
     return state
   }
 
+  /**
+   * Switch answering by itself on or off for the open session (the server allows it only while screen reading is on). A session whose
+   * screen reading was turned on after it started has it off: the start form's choice only exists when reading is chosen there. Turning it
+   * on also answers what is already waiting, so the person is not left pressing Answer on what they just asked to have answered; a screen
+   * that looks like an assessment is still left for them (its signals are kept on the question).
+   */
+  async function setAutoAnswer(on) {
+    if (!state.session || state.session.sessionType === 'restricted') return state
+    const wanted = on === true
+    try {
+      set({ session: await api.sessions.update(state.session.id, { autoAnswer: wanted }) })
+    } catch (err) {
+      say(describe(err).message, 'error')
+      return state
+    }
+    if (!wanted) {
+      say('Questions it finds will wait for you to press Answer or Explain.', 'info')
+      return state
+    }
+    const waiting = state.questions.filter((q) => q.state === 'new' && !q.partial && !(q.signals ?? []).length)
+    say(waiting.length ? 'Answering by itself is on: answering what was waiting.' : 'Answering by itself is on: questions it finds will be answered without you pressing anything.', 'ok')
+    for (const q of waiting.slice(0, AUTO_ANSWER_LIMIT)) answering = answering.then(() => answerQuestion(q.id)).catch(() => {})
+    return state
+  }
+
   async function pause() {
     if (state.phase !== 'active' || !state.session) return state
     try {
@@ -472,6 +497,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     resume,
     stop,
     resumeWatching,
+    setAutoAnswer,
     answerQuestion,
     ask,
     explainConcept,
