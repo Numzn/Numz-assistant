@@ -4,7 +4,7 @@ import { FEEDBACK_KINDS } from '../academic/learningMemory.js'
 /**
  * Answering, feedback, progress and research (added to /api/v1/assistant/academic):
  *
- *   POST /sessions/:id/questions/:qid/answer   { conversationId?, courseId?, style?: 'simpler'|'deeper', instruction?, confirmPractice?, useResearch? }
+ *   POST /sessions/:id/questions/:qid/answer   { conversationId?, courseId?, style?: 'explain'|'simpler'|'deeper', instruction?, confirmPractice?, useResearch? }
  *   POST /sessions/:id/ask                     { text, topic?, ...the same }       a typed question
  *   POST /sessions/:id/concept                 { concept, conversationId?, courseId?, style? }   the one thing a restricted session may ask for
  *        -> { status: 'answered', answerId, markdown, grounding, sources, evidence, flags, ... }

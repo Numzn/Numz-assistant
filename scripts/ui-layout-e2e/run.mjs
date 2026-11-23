@@ -277,11 +277,11 @@ try {
   await page.fill('#studyAskInput', 'What is a foreign key?')
   await page.press('#studyAskInput', 'Enter')
   await page.waitForFunction((n) => document.querySelectorAll('li.msg[data-role="assistant"]').length > n, answeredBefore, { timeout: 30000 })
-  await page.waitForFunction(() => document.querySelectorAll('#studyBody button.study-link').length >= 2, null, { timeout: 10000 })
+  await page.waitForFunction(() => [...document.querySelectorAll('#studyBody button.study-link')].filter((b) => b.textContent.trim() === 'Show in chat').length >= 2, null, { timeout: 10000 })
   m = await measure()
   check('800px: the answer was written into the conversation behind the panel, and the panel is still there', m.visiblePanels.join() === 'studyPanel' && m.chatVisibility === 'hidden')
-  check('800px: each answered card offers "Show in chat"', (await page.locator('#studyBody button.study-link').allTextContents()).every((t) => t.trim() === 'Show in chat'))
-  await page.locator('#studyBody button.study-link').last().click()
+  check('800px: each answered card offers "Show in chat"', (await page.locator('#studyBody button.study-link:has-text("Show in chat")').count()) >= 2)
+  await page.locator('#studyBody button.study-link:has-text("Show in chat")').last().click()
   await page.waitForTimeout(250)
   m = await measure()
   const flashed = await page.locator('li.msg[data-flash="true"]').count()
@@ -292,7 +292,7 @@ try {
 
   await size(1280)
   await openStudy()
-  await page.locator('#studyBody button.study-link').first().click() // the OLDER answer
+  await page.locator('#studyBody button.study-link:has-text("Show in chat")').first().click() // the OLDER answer
   await page.waitForTimeout(250)
   const older = await page.evaluate(() => {
     const first = document.querySelector('li.msg[data-flash="true"]')
@@ -419,7 +419,7 @@ try {
   check('800px: put the panel away and the answer is in the middle of the conversation', Math.abs(w.fromMiddle) <= 12, JSON.stringify(w))
   await shot('800-answer-centered')
   await openStudy()
-  await page.locator('#studyBody button.study-link').first().click() // an older answer
+  await page.locator('#studyBody button.study-link:has-text("Show in chat")').first().click() // an older answer
   await page.waitForTimeout(250)
   const older2 = await page.evaluate(() => {
     const flashed = [...document.querySelectorAll('li.msg[data-flash="true"]')].find((li) => li.dataset.role === 'assistant')

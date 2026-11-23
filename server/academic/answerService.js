@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { AcademicError, textField } from './academicError.js'
 import { classifyTask } from './questionUnderstanding.js'
 import { enforce } from './integrity.js'
-import { buildMessages, sourcesBlock, verifyCitations } from './responseEngine.js'
+import { buildMessages, EXPLAINING_STYLES, sourcesBlock, verifyCitations } from './responseEngine.js'
 import { deriveQuery } from './researchService.js'
 
 /**
@@ -114,7 +114,7 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
         }),
         evidence: { course: retrieval.passages.length, research: works.length, crossCourse: retrieval.crossCourse, learningNotes: experiences.length },
         flags: { droppedCitations: checked.dropped, uncitedDespiteEvidence: labels.length > 0 && checked.cited.length === 0, researchUnavailable: researchNote, figureMissing: Boolean(figureNote) },
-        approach: style ?? profile.learningApproach,
+        approach: style ?? 'answer',
         topic
       }
     }
@@ -141,7 +141,7 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
       async answer({ sessionId, questionId = null, text = null, conversationId = null, courseId = null, topic = null, style = null, instruction = null, confirmPractice = false, useResearch = null }, ctx = {}) {
         const session = sessions.requireOpen(sessionId)
         const verdict = enforce({ session, action: 'answer', now: now() })
-        if (style !== null && !['simpler', 'deeper'].includes(style)) throw new AcademicError(400, 'invalid-input', 'style must be simpler or deeper.')
+        if (style !== null && !EXPLAINING_STYLES.includes(style)) throw new AcademicError(400, 'invalid-input', 'style must be explain, simpler or deeper.')
         const runtime = sessions.runtime(sessionId)
         let entry
         if (questionId) {
@@ -186,11 +186,11 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
           note('academic.integrity_refused', { sessionId, why: 'concept-looks-like-a-question' })
           throw new AcademicError(400, 'concept-looks-like-question', 'In a restricted session, name the concept you want explained (for example "second normal form") instead of pasting a question.')
         }
-        if (style !== null && !['simpler', 'deeper'].includes(style)) throw new AcademicError(400, 'invalid-input', 'style must be simpler or deeper.')
+        if (style !== null && !EXPLAINING_STYLES.includes(style)) throw new AcademicError(400, 'invalid-input', 'style must be explain, simpler or deeper.')
         const course = resolveCourse(session, {}, courseId)
         sessions.touch(sessionId)
         const entry = { id: newId(), text: `Explain the concept: ${phrase}`, options: [], marks: null, type: 'other', hasDiagram: false, task: 'explain', subject: '', topic: phrase, contentKind: 'concept', instructions: '', contextSnapshot: null, signals: [], answer: null }
-        const result = await run({ session, entry, mode: session.sessionType === 'restricted' ? 'conceptual' : verdict.mode, courseId: course.courseId, courseTitle: course.title, conversationId, style, instruction: null, useResearch: false, ctx })
+        const result = await run({ session, entry, mode: session.sessionType === 'restricted' ? 'conceptual' : verdict.mode, courseId: course.courseId, courseTitle: course.title, conversationId, style: style ?? 'explain', instruction: null, useResearch: false, ctx }) // a concept is asked for in order to be explained
         const answerId = newId()
         const saved = appendToConversation(conversationId, `Explain the concept: ${phrase}`, result.markdown)
         note('academic.concept', { sessionId, grounding: result.grounding, restricted: session.sessionType === 'restricted' })
