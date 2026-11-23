@@ -198,6 +198,27 @@ try {
   await page.waitForSelector('button:has-text("Start session")')
   check('ending the session returns to the start form and the indicator', (await page.textContent('#studyIndicator')).trim() === 'No session' && (await page.getAttribute('#studyButton', 'data-session')) === 'off')
 
+  // ---- answering by itself can be switched on after a session started (screen reading turned on later leaves it off) ----
+  const academic = '/ai/api/v1/assistant/academic'
+  await page.evaluate(async (b) => {
+    const r = await fetch(`${b}/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'study', captureEnabled: true, autoAnswer: false }) })
+    if (!r.ok) throw new Error(`start ${r.status}`)
+  }, academic)
+  await page.reload({ waitUntil: 'load' })
+  await open()
+  await page.click('[data-study-tab="session"]')
+  await page.waitForSelector('#studyAutoAnswer', { timeout: 10000 })
+  const currentSession = () => page.evaluate(async (b) => (await (await fetch(`${b}/sessions/current`)).json()).session, academic)
+  check('a session with screen reading on and answering by itself off shows the switch, unchecked', (await page.isVisible('#studyAutoAnswer')) && !(await page.isChecked('#studyAutoAnswer input')) && (await currentSession()).autoAnswer === false)
+  await page.check('#studyAutoAnswer input')
+  await page.waitForFunction(async (b) => (await (await fetch(`${b}/sessions/current`)).json()).session?.autoAnswer === true, academic, { timeout: 10000 })
+  check('switching it on is saved on the server and the switch stays on', (await (await currentSession()).autoAnswer) === true && (await page.isChecked('#studyAutoAnswer input')))
+  await page.uncheck('#studyAutoAnswer input')
+  await page.waitForFunction(async (b) => (await (await fetch(`${b}/sessions/current`)).json()).session?.autoAnswer === false, academic, { timeout: 10000 })
+  check('and it can be switched off again', !(await page.isChecked('#studyAutoAnswer input')))
+  await page.click('button:has-text("End session")')
+  await page.waitForSelector('button:has-text("Start session")')
+
   // ---- a restricted session ----
   await page.check('input[value="restricted"]')
   check('restricted turns screen reading off and unavailable', await page.isDisabled('#studyBody input[type=checkbox]'))

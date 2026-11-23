@@ -520,6 +520,64 @@ test('when the reading service refuses the server (a key or an account problem) 
   await t.controller.stop()
 })
 
+test('answering by itself can be switched on in an open session, answers what is waiting (never an assessment-looking screen), and off again', async () => {
+  const t = build()
+  await t.controller.init()
+  // A session started without screen reading has answering by itself off; reading is turned on later, as the person did.
+  t.api.script.start = async (o) => session({ sessionType: o.type, captureEnabled: false, autoAnswer: false })
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: false })
+  assert.equal(t.controller.getState().session.autoAnswer, false)
+  t.api.script.send = async () => recognised({ questions: [
+    { id: 'q1', text: 'Explain third normal form.', options: [], task: 'explain', duplicate: false },
+    { id: 'q2', text: 'Name the three anomalies.', options: [], task: 'explain', duplicate: false }
+  ] })
+  await t.controller.resumeWatching()
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.controller.getState().questions.length === 2)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(t.api.calls.answer.length, 0, 'nothing is answered while answering by itself is off')
+  assert.deepEqual(t.controller.getState().questions.map((q) => q.state), ['new', 'new'])
+
+  await t.controller.setAutoAnswer(true)
+  assert.deepEqual(t.api.calls.update.at(-1), ['s1', { autoAnswer: true }])
+  assert.equal(t.controller.getState().session.autoAnswer, true)
+  await until(() => t.api.calls.answer.length === 2)
+  assert.deepEqual(t.api.calls.answer.map((a) => a[0]).sort(), ['q1', 'q2'], 'what was waiting is answered')
+
+  await t.controller.setAutoAnswer(false)
+  assert.deepEqual(t.api.calls.update.at(-1), ['s1', { autoAnswer: false }])
+  assert.equal(t.controller.getState().session.autoAnswer, false)
+  assert.match(t.controller.getState().message, /wait for you to press/)
+  await t.controller.stop()
+
+  // A screen that looks like an assessment is not answered by switching it on either; and a refusal is shown, not hidden.
+  const gated = build()
+  await gated.controller.init()
+  gated.api.script.start = async (o) => session({ sessionType: o.type, captureEnabled: true, autoAnswer: false })
+  await gated.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  gated.api.script.send = async () => recognised({ signals: ['timed'] })
+  gated.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => gated.controller.getState().questions.length === 1)
+  await gated.controller.setAutoAnswer(true)
+  for (let i = 0; i < 10; i++) await tick()
+  assert.equal(gated.api.calls.answer.length, 0)
+  gated.api.sessions.update = async () => {
+    throw err(400, 'invalid-input', 'Answering by itself needs screen reading to be on.')
+  }
+  await gated.controller.setAutoAnswer(true)
+  assert.equal(gated.controller.getState().tone, 'error')
+  assert.match(gated.controller.getState().message, /needs screen reading/)
+  await gated.controller.stop()
+
+  const restricted = build()
+  await restricted.controller.init()
+  restricted.api.script.start = async (o) => session({ sessionType: 'restricted', captureEnabled: false, autoAnswer: false })
+  await restricted.controller.start({ type: 'restricted' })
+  await restricted.controller.setAutoAnswer(true)
+  assert.equal(restricted.api.calls.update.length, 0, 'a restricted session never answers by itself')
+  await restricted.controller.stop()
+})
+
 test('a screen waiting to be sent again is replaced by a newer one, and let go when the session is paused or ends', async () => {
   const t = build()
   await t.controller.init()
