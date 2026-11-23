@@ -59,8 +59,11 @@ export function createAcademicApi({ fetchFn = (...args) => globalThis.fetch(...a
     documents: {
       list: (courseId) => request(`/courses/${e(courseId)}/documents`),
       /** The text itself is the body (text/markdown or text/plain): nothing is wrapped in JSON. */
-      upload: (courseId, { title, type = 'notes', text, markdown = false }) =>
-        request(`/courses/${e(courseId)}/documents?title=${e(title)}&type=${e(type)}`, { method: 'POST', headers: { 'Content-Type': markdown ? 'text/markdown' : 'text/plain' }, body: text }),
+      // `file` (a File) is sent as it is, so that a very large one is streamed from disk and never held in the page's memory; `text` is for a string.
+      upload: (courseId, { title, type = 'notes', text, file = null, markdown = false }) =>
+        request(`/courses/${e(courseId)}/documents?title=${e(title)}&type=${e(type)}`, { method: 'POST', headers: { 'Content-Type': markdown ? 'text/markdown' : 'text/plain' }, body: file ?? text }),
+      retry: (id) => request(`/documents/${e(id)}/retry`, { method: 'POST' }),
+      limits: () => request('/limits'),
       remove: async (id) => (await request(`/documents/${e(id)}`, { method: 'DELETE' }), true),
       fromMeeting: (courseId, meetingId, title = null) => request(`/courses/${e(courseId)}/documents/from-meeting`, json('POST', { meetingId, ...(title ? { title } : {}) })),
       lectures: () => request('/meetings')

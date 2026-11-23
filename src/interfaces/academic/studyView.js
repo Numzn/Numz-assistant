@@ -61,7 +61,9 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
   const tabs = [...panel.querySelectorAll('[data-study-tab]')]
   let tab = 'session'
   let formState = { type: 'study', courseId: '', topic: '', capture: false, autoAnswer: true, research: false, exclusions: loadExclusions() }
-  let materials = { courseId: '', documents: [], lectures: [], message: '', busy: false }
+  // limits: what the server allows (it says so: GET /limits); these are its defaults until it answers.
+  let materials = { courseId: '', documents: [], lectures: [], message: '', busy: false, uploading: false, limits: { maxDocumentBytes: 100 * 1024 * 1024, maxBatchFiles: 50 } }
+  let pollTimer = null
   let memory = { data: null, message: '', busy: false, failed: false }
   let askText = ''
   let correcting = false
@@ -231,11 +233,31 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     try {
       if (materials.courseId) materials.documents = (await api.documents.list(materials.courseId)).documents ?? []
       materials.lectures = (await api.documents.lectures()).lectures ?? []
+      const limits = await api.documents.limits?.().catch(() => null)
+      if (limits?.maxDocumentBytes > 0 && limits?.maxBatchFiles > 0) materials.limits = limits
     } catch (err) {
       materials.message = err.message
     }
     materials.busy = false
     render(true)
+    watchProcessing()
+  }
+
+  // A large document is cut and indexed in the background: while any is, the list is looked at again every couple of seconds (and not once the
+  // person has gone to another tab or closed the panel).
+  function watchProcessing() {
+    clearTimeout(pollTimer)
+    pollTimer = null
+    if (tab !== 'materials' || panel.hidden || !materials.documents.some((d) => d.status === 'processing')) return
+    pollTimer = setTimeout(() => loadMaterials(controller.getState()), 2000)
+  }
+
+  const sizeWords = (bytes) => (bytes >= 1024 * 1024 ? `${Number((bytes / (1024 * 1024)).toFixed(1))} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`)
+  const describeDocument = (d) => {
+    const base = `${d.title} · ${d.sourceType.replace('_', ' ')} · v${d.version}`
+    if (d.status === 'processing') return `${base} · processing… ${d.chunkCount} parts so far`
+    if (d.status === 'failed') return `${base} · failed: ${d.error || 'it could not be processed'}`
+    return `${base} · ${d.chunkCount} parts`
   }
 
   async function mutate(work, done) {
@@ -249,19 +271,43 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     await loadMaterials(controller.getState())
   }
 
-  async function upload(file, courseId, type) {
-    if (!file) return
-    if (/^(image|audio|video)\//.test(file.type) || file.type === 'application/pdf' || /\.(pdf|png|jpe?g|gif|webp|docx?|pptx?)$/i.test(file.name)) {
-      materials.message = 'Only text and markdown files can be added: PDFs, images and Office files are not accepted.'
-      return render(true)
+  /** One or several files, one after the other (the server cuts a large one in the background); each is accounted for, with the reason when it was not added. */
+  async function upload(files, courseId, type) {
+    const chosen = [...(files ?? [])]
+    if (!chosen.length || materials.uploading) return
+    const { maxDocumentBytes, maxBatchFiles } = materials.limits
+    const batch = chosen.slice(0, maxBatchFiles)
+    const problems = []
+    let added = 0
+    materials.uploading = true
+    for (const [index, file] of batch.entries()) {
+      materials.message = batch.length > 1 ? `Adding ${index + 1} of ${batch.length}: ${file.name}…` : `Adding ${file.name}…`
+      render(true)
+      if (/^(image|audio|video)\//.test(file.type) || file.type === 'application/pdf' || /\.(pdf|png|jpe?g|gif|webp|docx?|pptx?)$/i.test(file.name)) {
+        problems.push(`${file.name}: only text and markdown files can be added (not PDFs, images or Office files)`)
+        continue
+      }
+      if (file.size > maxDocumentBytes) {
+        problems.push(`${file.name}: larger than ${sizeWords(maxDocumentBytes)}, split it into parts`)
+        continue
+      }
+      try {
+        const markdown = /\.(md|markdown)$/i.test(file.name) || file.type === 'text/markdown'
+        await api.documents.upload(courseId, { title: file.name.replace(/\.[^.]+$/, ''), type, file, markdown })
+        added += 1
+      } catch (err) {
+        problems.push(`${file.name}: ${err.message}`)
+      }
     }
-    if (file.size > 2 * 1024 * 1024) {
-      materials.message = 'That file is larger than 2 MB. Split it into parts.'
-      return render(true)
-    }
-    const text = await file.text()
-    const markdown = /\.(md|markdown)$/i.test(file.name) || file.type === 'text/markdown'
-    await mutate(() => api.documents.upload(courseId, { title: file.name.replace(/\.[^.]+$/, ''), type, text, markdown }), `Added ${file.name}.`)
+    materials.uploading = false
+    const parts = []
+    if (batch.length === 1 && !problems.length) parts.push(`Added ${batch[0].name}.`)
+    else parts.push(added ? `Added ${added} of ${batch.length} file${batch.length === 1 ? '' : 's'}.` : 'Nothing was added.')
+    if (problems.length) parts.push(`Not added: ${problems.slice(0, 3).join('; ')}${problems.length > 3 ? `; and ${problems.length - 3} more` : ''}.`)
+    if (chosen.length > batch.length) parts.push(`${chosen.length - batch.length} more were left out: ${maxBatchFiles} files at a time.`)
+    materials.message = parts.join(' ')
+    await controller.refreshCourses().catch(() => {})
+    await loadMaterials(controller.getState())
   }
 
   function renderMaterials(state) {
@@ -282,12 +328,13 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
             h(doc, 'label', { class: 'study-field' }, h(doc, 'span', { text: 'Course' }), h(doc, 'select', { onchange: (e) => { materials.courseId = e.target.value; loadMaterials(state) } }, state.courses.map((c) => h(doc, 'option', { value: c.id, selected: c.id === courseId, text: c.code ? `${c.code} ${c.title}` : c.title })))),
             h(doc, 'div', { class: 'study-upload' },
               h(doc, 'select', { 'aria-label': 'What kind of document', onchange: (e) => (type = e.target.value) }, SOURCE_TYPES.map(([v, t]) => h(doc, 'option', { value: v, text: t }))),
-              h(doc, 'input', { type: 'file', accept: '.md,.markdown,.txt,text/plain,text/markdown', 'aria-label': 'Add a text or markdown file', onchange: (e) => { upload(e.target.files?.[0], courseId, type); e.target.value = '' } })
+              h(doc, 'input', { type: 'file', multiple: true, accept: '.md,.markdown,.txt,text/plain,text/markdown', 'aria-label': 'Add text or markdown files', onchange: (e) => { const files = [...(e.target.files ?? [])]; e.target.value = ''; upload(files, courseId, type) } })
             ),
+            h(doc, 'p', { class: 'study-note', text: `Up to ${sizeWords(materials.limits.maxDocumentBytes)} each and ${materials.limits.maxBatchFiles} files at a time. A large file is prepared in the background.` }),
             materials.lectures.length
               ? h(doc, 'div', { class: 'study-upload' }, h(doc, 'select', { id: 'studyLecture', 'aria-label': 'A finished lecture' }, materials.lectures.map((l) => h(doc, 'option', { value: l.meetingId, text: `${l.title ?? 'Lecture'} · ${String(l.createdAt).slice(0, 10)}` }))), h(doc, 'button', { type: 'button', text: 'Add this lecture to the course', onclick: () => mutate(() => api.documents.fromMeeting(courseId, $('studyLecture').value), 'Lecture added.') }))
               : null,
-            h(doc, 'ul', { class: 'study-docs' }, materials.documents.map((d) => h(doc, 'li', {}, h(doc, 'span', { text: `${d.title} · ${d.sourceType.replace('_', ' ')} · v${d.version} · ${d.chunkCount} parts` }), h(doc, 'button', { type: 'button', 'aria-label': `Delete ${d.title}`, text: 'Delete', onclick: () => mutate(() => api.documents.remove(d.id), `Deleted ${d.title}.`) })))),
+            h(doc, 'ul', { class: 'study-docs' }, materials.documents.map((d) => h(doc, 'li', { 'data-status': d.status }, h(doc, 'span', { text: describeDocument(d) }), d.status === 'failed' ? h(doc, 'button', { type: 'button', 'aria-label': `Retry ${d.title}`, text: 'Retry', onclick: () => mutate(() => api.documents.retry(d.id), `Processing ${d.title} again.`) }) : null, h(doc, 'button', { type: 'button', 'aria-label': `Delete ${d.title}`, text: 'Delete', onclick: () => mutate(() => api.documents.remove(d.id), `Deleted ${d.title}.`) })))),
             !materials.documents.length ? h(doc, 'p', { class: 'study-empty', text: 'No documents in this course yet.' }) : null,
             h(doc, 'button', { type: 'button', 'data-danger': 'true', text: 'Delete this course and everything about it', onclick: () => { if (globalThis.confirm?.('Delete this course, its documents and what NUMZ AI learned about it?') !== false) { materials.courseId = ''; mutate(() => api.courses.remove(courseId), 'Course deleted.') } } })
           ]
