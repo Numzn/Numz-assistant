@@ -12,14 +12,49 @@ import { AcademicError } from './academicError.js'
 
 const MIN_REASON = 8
 
-export function createKnowledgeService({ knowledge, meetingService = null }) {
+export function createKnowledgeService({ knowledge, meetingService = null, pause } = {}) {
   if (!knowledge) throw new Error('the knowledge repository is required')
+
+  // Large documents are cut and indexed one at a time, in the background, so that a batch of them does not compete with itself (or with
+  // the rest of the server) for the one database connection and for memory. The queue holds ids only; the text is in the database.
+  let tail = Promise.resolve()
+  let waiting = 0
+  const enqueue = (work) => {
+    waiting += 1
+    const run = tail.then(work, work).finally(() => (waiting -= 1))
+    tail = run.catch(() => {})
+    return run
+  }
 
   function forOwner(userId) {
     const mine = knowledge.forOwner(userId)
 
     return {
       userId,
+
+      /**
+       * Cuts and indexes a stored document in the background (after the request that stored it has been answered). Documents are processed one
+       * at a time in the order they were queued. `onSettled(document)` is called with the finished document ('ready' or 'failed').
+       * -> a promise that settles when this one is done (callers do not need to wait for it)
+       */
+      process(documentId, { onSettled = null } = {}) {
+        return enqueue(async () => {
+          const document = await mine.processDocument(documentId, pause ? { pause } : {})
+          try {
+            onSettled?.(document)
+          } catch {
+            /* reporting must not stop the queue */
+          }
+          return document
+        })
+      },
+
+      /** A failed document is queued again. -> the document, 'processing' again */
+      retry(documentId, options = {}) {
+        const document = mine.retryDocument(documentId)
+        this.process(document.id, options)
+        return document
+      },
 
       /**
        * @returns {{ passages: object[], crossCourse: boolean, reason: string|null }}
@@ -79,5 +114,11 @@ export function createKnowledgeService({ knowledge, meetingService = null }) {
     }
   }
 
-  return { forOwner }
+  return {
+    forOwner,
+    /** How many documents are waiting for, or in, the background processing (for tests and for the server's own log). */
+    queued: () => waiting,
+    /** Resolves when everything queued so far has been processed. */
+    idle: () => tail.then(() => undefined)
+  }
 }

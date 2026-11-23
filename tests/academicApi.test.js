@@ -35,6 +35,20 @@ test('a document is sent as the text itself, not wrapped: markdown and plain tex
   assert.equal(calls[1].headers['Content-Type'], 'text/plain')
 })
 
+test('a file is sent as the file itself (streamed from disk, never read into the page), a retry and the server\'s limits have their own calls, and a 202 is a success', async () => {
+  const { api, calls } = recorder((url) => (url.endsWith('/retry') || /documents\?/.test(url) ? { status: 202, body: { document: { id: 'd1', status: 'processing' }, processing: true } } : { status: 200, body: { maxDocumentBytes: 104857600, maxBatchFiles: 50 } }))
+  const file = { name: 'big.md', size: 90_000_000 } // stands in for a File: any Blob goes straight to fetch
+  const queued = await api.documents.upload('c1', { title: 'big', type: 'textbook', file, markdown: true })
+  assert.equal(calls[0].body, file, 'the file itself is the body')
+  assert.equal(calls[0].headers['Content-Type'], 'text/markdown')
+  assert.equal(queued.processing, true)
+  assert.equal((await api.documents.retry('d 1')).document.status, 'processing')
+  assert.match(calls[1].url, /documents\/d%201\/retry$/)
+  assert.equal(calls[1].method, 'POST')
+  assert.deepEqual(await api.documents.limits(), { maxDocumentBytes: 104857600, maxBatchFiles: 50 })
+  assert.match(calls[2].url, /academic\/limits$/)
+})
+
 test('a screenshot is sent as the picture itself with its own type, and an answer carries the chosen options', async () => {
   const { api, calls } = recorder()
   const bytes = new Uint8Array([1, 2, 3])

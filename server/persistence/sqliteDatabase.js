@@ -446,6 +446,24 @@ const MIGRATIONS = [
         BEGIN SELECT RAISE(ABORT, 'chunk-scope-mismatch'); END;
       `)
     }
+  },
+  {
+    // Large documents are cut and indexed in the background. A document that is still being cut, or whose cutting failed, has a row here; a
+    // document with none is ready, as every existing one is. It is a table of its own and not columns on academic_documents because a
+    // document's text can be 100 MB: SQLite keeps it in the row, so a column after it can only be read by walking all of it (a search would walk
+    // every candidate's text), and an update of the row rewrites all of it (a progress count would, at every batch). Additive.
+    version: 11,
+    run(database) {
+      database.exec(`
+        CREATE TABLE academic_document_jobs (
+          document_id TEXT PRIMARY KEY REFERENCES academic_documents(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK (status IN ('processing', 'failed')),
+          error TEXT,
+          processed INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );
+      `)
+    }
   }
 ]
 

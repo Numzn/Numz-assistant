@@ -48,7 +48,7 @@ const modelUrl = `http://127.0.0.1:${model.address().port}`
 
 const { check, finish } = reporter()
 const problems = []
-const stack = await startStack({ env: { AI_BASE_URL: `${modelUrl}/v1`, ACADEMIC_RESEARCH: 'off' } })
+const stack = await startStack({ env: { AI_BASE_URL: `${modelUrl}/v1`, ACADEMIC_RESEARCH: 'off', ACADEMIC_ASYNC_THRESHOLD_KB: '1' } })
 const base = stack.app.base
 const nl = (route, body) => stack.numzlab.control(route, body)
 const browser = await chromium.launch()
@@ -115,9 +115,47 @@ try {
   await page.waitForSelector('.study-docs li', { timeout: 10000 })
   check('a markdown file is added and listed with its parts', /normalisation · lecture notes · v1 · \d+ parts/.test(await page.textContent('.study-docs li')))
   await page.setInputFiles('.study-upload input[type=file]', { name: 'slides.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 fake') })
-  await page.waitForFunction(() => /Only text and markdown/.test(document.getElementById('studyBody').textContent))
+  await page.waitForFunction(() => /only text and markdown/i.test(document.getElementById('studyBody').textContent))
   check('a PDF is refused with the reason (text and markdown only)', true)
   check('the refused file added nothing', (await page.locator('.study-docs li').count()) === 1)
+
+  // ---- several files at once, a large one in the background, and a full batch ----
+  const upload = (files) => page.setInputFiles('.study-upload input[type=file]', files)
+  const file = (name, text) => ({ name, mimeType: name.endsWith('.md') ? 'text/markdown' : 'text/plain', buffer: Buffer.from(text) })
+  check('the page says what it accepts: the size and the number of files', /Up to 100 MB each and 50 files at a time/.test(await page.textContent('#studyBody .study-note')))
+  check('the file box takes several files', (await page.getAttribute('.study-upload input[type=file]', 'multiple')) !== null)
+  await upload([file('week2.md', '# Week 2\n\nTransactions are atomic, consistent, isolated and durable.'), file('week3.txt', 'Indexes make lookups fast.'), { name: 'slides.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 fake') }])
+  await page.waitForFunction(() => /Added 2 of 3 files/.test(document.getElementById('studyBody').textContent), null, { timeout: 15000 })
+  const batchMessage = await page.textContent('#studyBody .study-note:last-of-type')
+  check('three files at once: two are added and the one that is not says which and why', /Added 2 of 3 files\. Not added: slides\.pdf: only text and markdown/.test(batchMessage), batchMessage.slice(0, 160))
+  check('and the two are listed with their parts', (await page.locator('.study-docs li').count()) === 3)
+
+  const bigNotes = Array.from({ length: 400 }, (_, i) => `## Topic ${i}\n\nTopic ${i} covers relational design number ${i} and its bigtopicmarker${i}q. Keys, joins and indexes are explained here in some detail.`).join('\n\n')
+  await upload([file('textbook.md', bigNotes)])
+  await page.waitForFunction(() => /Added textbook\.md\./.test(document.getElementById('studyBody').textContent), null, { timeout: 30000 })
+  await page.waitForFunction(() => [...document.querySelectorAll('.study-docs li')].some((li) => /textbook/.test(li.textContent) && /· \d{2,} parts$/.test(li.textContent.replace(/Retry|Delete/g, '').trim())), null, { timeout: 30000 })
+  const bigRow = (await page.locator('.study-docs li', { hasText: 'textbook' }).textContent()).replace(/Delete|Retry/g, '')
+  check('a large file is accepted at once and ends ready in the list, with its parts, with no one waiting on the upload', /textbook · lecture notes · v1 · \d{2,} parts$/.test(bigRow), bigRow)
+  const found = await page.evaluate(async (id) => (await (await fetch(`/ai/api/v1/assistant/academic/search?course=${id}&q=bigtopicmarker321q`, { credentials: 'same-origin' })).json()).passages?.[0]?.title, (await page.evaluate(async () => (await (await fetch('/ai/api/v1/assistant/academic/courses', { credentials: 'same-origin' })).json()).courses[0].id)))
+  check('and it is searchable once ready, found by its own words', found === 'textbook', String(found))
+
+  const many = Array.from({ length: 55 }, (_, i) => file(`lec-${String(i).padStart(2, '0')}.txt`, `Lecture ${i} is about uniquelectureword${i}.`))
+  await upload(many)
+  await page.waitForFunction(() => /Added 50 of 50 files/.test(document.getElementById('studyBody').textContent), null, { timeout: 60000 })
+  const manyMessage = await page.textContent('#studyBody .study-note:last-of-type')
+  check('a batch of 55 files: 50 are added and the 5 left out are said to be, with the reason', /Added 50 of 50 files\. 5 more were left out: 50 files at a time\./.test(manyMessage), manyMessage.slice(0, 200))
+  check('all fifty are listed (with the earlier four)', (await page.locator('.study-docs li').count()) === 54)
+  await page.screenshot({ path: `${dir}/shot-2b-batch.png` })
+  // put the course back as the rest of the run expects it (one document)
+  await page.evaluate(async () => {
+    const api = '/ai/api/v1/assistant/academic'
+    const course = (await (await fetch(`${api}/courses`, { credentials: 'same-origin' })).json()).courses[0]
+    const docs = (await (await fetch(`${api}/courses/${course.id}/documents`, { credentials: 'same-origin' })).json()).documents
+    for (const d of docs.filter((d) => d.title !== 'normalisation')) await fetch(`${api}/documents/${d.id}`, { method: 'DELETE', credentials: 'same-origin' })
+  })
+  await page.click('[data-study-tab="memory"]')
+  await page.click('[data-study-tab="materials"]')
+  await page.waitForFunction(() => document.querySelectorAll('.study-docs li').length === 1, null, { timeout: 15000 })
   await page.screenshot({ path: `${dir}/shot-2-materials.png` })
 
   // ---- a study session ----

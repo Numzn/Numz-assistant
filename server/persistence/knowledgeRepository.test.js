@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { rig } from '../academic/testSupport.js'
 import { createKnowledgeRepository, KNOWLEDGE_LIMITS, toMatchQuery } from './knowledgeRepository.js'
+import { applyMigrations, createDatabase } from './sqliteDatabase.js'
 
 function setup() {
   const t = rig()
@@ -125,4 +126,95 @@ test('a lecture transcript becomes a document keyed by its meeting, and doing it
   assert.equal(again.document.id, first.document.id)
   assert.equal(again.document.version, 2)
   assert.equal(t.alice.listDocuments().length, 1)
+})
+
+// ---- background processing: status, restart recovery, the upgrade --------------------------------------------------------------------
+
+const BIG = Array.from({ length: 300 }, (_, i) => `## Part ${i}\n\nPart ${i} says partmarker${i}x about relational algebra. ${'Joins combine rows. '.repeat(10)}`).join('\n\n')
+const noPause = () => Promise.resolve()
+
+test('a document stored for later is "processing" with no passages and out of every search; processing makes it "ready" a slice at a time and it is found by its own words', async () => {
+  const t = setup()
+  const begun = t.alice.beginDocument({ courseId: t.aCourse.id, title: 'Big', text: BIG, sourceType: 'textbook' })
+  assert.deepEqual([begun.document.status, begun.processing, begun.unchanged, begun.document.chunkCount], ['processing', true, false, 0])
+  assert.equal(t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks').get().n, 0)
+  assert.equal(t.alice.search({ courseIds: [t.aCourse.id], query: 'partmarker7x' }).length, 0)
+
+  const progress = []
+  const done = await t.alice.processDocument(begun.document.id, { batchSize: 25, sliceMs: 0, pause: async () => progress.push(t.alice.getDocument(begun.document.id).chunkCount) })
+  assert.equal(done.status, 'ready')
+  assert.ok(progress.length >= 5 && progress.every((n, i) => i === 0 || n > progress[i - 1]), `progress grew slice by slice: ${progress.join(',')}`)
+  assert.equal(done.chunkCount, t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks WHERE document_id = ?').get(done.id).n)
+  assert.equal(t.alice.search({ courseIds: [t.aCourse.id], query: 'partmarker7x' })[0].headingPath, 'Part 7')
+  assert.equal(t.bob.search({ courseIds: [t.aCourse.id], query: 'partmarker7x' }).length, 0, 'another person finds nothing of it')
+  ftsIntegrity(t.database)
+  // the same passages as a document stored in one go
+  const direct = t.alice.addDocument({ courseId: t.aCourse2.id, title: 'Same', text: BIG, sourceType: 'textbook' })
+  const cut = (id) => t.database.prepare('SELECT seq, heading_path, locator, text FROM academic_chunks WHERE document_id = ? ORDER BY seq').all(id).map((c) => ({ ...c }))
+  assert.deepEqual(cut(done.id), cut(direct.document.id), 'cut in the background it is exactly what cutting it at once gives')
+})
+
+test('processing that fails leaves no passages and a reason; retry processes it again; a document deleted or replaced while processing is left alone', async () => {
+  const t = setup()
+  const begun = t.alice.beginDocument({ courseId: t.aCourse.id, title: 'Big', text: BIG })
+  const failing = await t.alice.processDocument(begun.document.id, { batchSize: 25, pause: async () => { throw new Error('boom') } })
+  assert.deepEqual([failing.status, failing.chunkCount], ['failed', 0])
+  assert.match(failing.error, /could not be processed/)
+  assert.equal(t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks').get().n, 0)
+  assert.equal(t.alice.retryDocument(begun.document.id).status, 'processing')
+  assert.throws(() => t.alice.retryDocument(begun.document.id), (e) => e.code === 'not-failed' && e.statusCode === 409, 'a document that is already processing cannot be retried')
+  const retried = await t.alice.processDocument(begun.document.id, { batchSize: 100, pause: noPause })
+  assert.equal(retried.status, 'ready')
+  assert.throws(() => t.bob.retryDocument(begun.document.id), (e) => e.statusCode === 404, 'another person cannot reach it')
+
+  const gone = t.alice.beginDocument({ courseId: t.aCourse.id, title: 'Gone', text: BIG })
+  let first = true
+  const result = await t.alice.processDocument(gone.document.id, { batchSize: 25, pause: async () => { if (first) { first = false; t.alice.removeDocument(gone.document.id) } } })
+  assert.equal(result, null)
+  assert.equal(t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks WHERE document_id = ?').get(gone.document.id).n, 0)
+
+  const old = t.alice.beginDocument({ courseId: t.aCourse.id, title: 'Swap', text: `${BIG}\n\noldversionword` })
+  let replaced = false
+  const job = t.alice.processDocument(old.document.id, { batchSize: 25, pause: async () => { if (!replaced) { replaced = true; t.alice.beginDocument({ courseId: t.aCourse.id, title: 'Swap', text: `${BIG}\n\nnewversionword` }) } } })
+  await job
+  assert.equal(t.alice.getDocument(old.document.id).status, 'processing', 'the old job did not finish the newer version')
+  const finished = await t.alice.processDocument(old.document.id, { batchSize: 100, pause: noPause })
+  assert.deepEqual([finished.status, finished.version], ['ready', 2])
+  assert.equal(t.alice.search({ courseIds: [t.aCourse.id], query: 'newversionword' }).length, 1)
+  assert.equal(t.alice.search({ courseIds: [t.aCourse.id], query: 'oldversionword' }).length, 0)
+  ftsIntegrity(t.database)
+})
+
+test('after a restart a document left "processing" is marked failed with its partial passages removed, so that it can be retried', async () => {
+  const t = setup()
+  const a = t.alice.beginDocument({ courseId: t.aCourse.id, title: 'Interrupted', text: BIG })
+  // the server stopped half way: some passages were made, the work was lost
+  const part = t.alice.addDocument({ courseId: t.aCourse.id, title: 'Fine', text: NORM })
+  const job = t.alice.processDocument(a.document.id, { batchSize: 25, pause: () => new Promise(() => {}) }) // never resumes: the process "died"
+  void job
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks WHERE document_id = ?').get(a.document.id).n > 0, 'partial passages exist')
+  assert.equal(t.knowledge.recoverInterrupted(), 1)
+  const after = t.alice.getDocument(a.document.id)
+  assert.deepEqual([after.status, after.chunkCount], ['failed', 0])
+  assert.match(after.error, /interrupted when the server restarted/)
+  assert.equal(t.database.prepare('SELECT COUNT(*) AS n FROM academic_chunks WHERE document_id = ?').get(a.document.id).n, 0)
+  assert.equal(t.alice.getDocument(part.document.id).status, 'ready', 'a finished document is untouched')
+  assert.equal(t.knowledge.recoverInterrupted(), 0, 'nothing left to recover')
+  assert.equal(t.alice.retryDocument(a.document.id).status, 'processing')
+  ftsIntegrity(t.database)
+})
+
+test('migration 11 upgrades a database that holds documents: every one is "ready", exactly as it was, and listings do not carry the text', () => {
+  const database = new (createDatabase({ filename: ':memory:' }).constructor)(':memory:')
+  applyMigrations(database, { target: 10 })
+  database.prepare(`INSERT INTO ai_users (id, external_id, email, name, role, status, created_at) VALUES ('u1', 'e1', 'a@example.com', 'A', 'viewer', 'active', 't')`).run()
+  database.prepare(`INSERT INTO academic_courses (id, owner_user_id, title, created_at, updated_at) VALUES ('c1', 'u1', 'DB', 't', 't')`).run()
+  database.prepare(`INSERT INTO academic_documents (id, owner_user_id, course_id, title, source_type, format, version, content_hash, chars, chunk_count, body, created_at, updated_at) VALUES ('d1', 'u1', 'c1', 'Old notes', 'notes', 'text', 1, 'h', 5, 1, 'hello', 't', 't')`).run()
+  database.prepare(`INSERT INTO academic_chunks (document_id, owner_user_id, course_id, seq, text) VALUES ('d1', 'u1', 'c1', 0, 'hello')`).run()
+  applyMigrations(database)
+  const doc = createKnowledgeRepository(database).forOwner('u1').getDocument('d1')
+  assert.deepEqual([doc.status, doc.error, doc.chunkCount, doc.title], ['ready', null, 1, 'Old notes'])
+  assert.equal(createKnowledgeRepository(database).forOwner('u1').search({ courseIds: ['c1'], query: 'hello' }).length, 1, 'and it is still found')
+  assert.ok(!('body' in doc) && !('text' in doc))
 })
