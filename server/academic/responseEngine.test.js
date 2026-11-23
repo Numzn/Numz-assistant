@@ -30,14 +30,41 @@ test('the system message is explicit: priorities in order, evidence rules, and n
 test('every kind of task gets its own structure; none is forced into a template', () => {
   const structures = new Set()
   for (const task of ['define', 'explain', 'discuss', 'compare', 'analyse', 'evaluate', 'calculate', 'multiple_choice']) {
-    const line = buildSystemPrompt({ task }).split('\n').find((l) => l.startsWith('THE TASK'))
+    const line = buildSystemPrompt({ task, style: 'explain' }).split('\n').find((l) => l.startsWith('THE TASK'))
     assert.match(line, new RegExp(`THE TASK \\(${task.replace('_', ' ')}\\)`))
     structures.add(line)
   }
   assert.equal(structures.size, 8)
-  assert.match(buildSystemPrompt({ task: 'calculate' }), /show every step of the working with units/)
-  assert.match(buildSystemPrompt({ task: 'compare' }), /by feature, not by item/)
-  assert.match(buildSystemPrompt({ task: 'nonsense' }), /THE TASK \(nonsense\): Say what the idea is/, 'an unknown task falls back to explaining')
+  assert.match(buildSystemPrompt({ task: 'calculate', style: 'explain' }), /show every step of the working with units/)
+  assert.match(buildSystemPrompt({ task: 'compare', style: 'explain' }), /by feature, not by item/)
+  assert.match(buildSystemPrompt({ task: 'nonsense', style: 'explain' }), /THE TASK \(nonsense\): Say what the idea is/, 'an unknown task falls back to explaining')
+})
+
+test('by default a question is answered, not explained: the answer is what is correct, in the shape the task needs, and nothing around it', () => {
+  const lines = new Set()
+  for (const task of ['define', 'explain', 'discuss', 'compare', 'analyse', 'evaluate', 'calculate', 'multiple_choice']) {
+    const prompt = buildSystemPrompt({ task })
+    assert.match(prompt, /THE STUDENT WANTS THE ANSWER, NOT AN EXPLANATION/, task)
+    assert.doesNotMatch(prompt, /Teach step by step|Where it fits|everyday words first|why each of the others is wrong|show every step/, `${task}: nothing that explains`)
+    lines.add(prompt.split('\n').find((l) => l.startsWith('THE TASK')))
+  }
+  assert.equal(lines.size, 8, 'each kind of task has its own short shape')
+  assert.match(buildSystemPrompt({ task: 'multiple_choice' }), /Give the correct option: its letter and its text, on one line\. Nothing else\./)
+  assert.match(buildSystemPrompt({ task: 'calculate' }), /final result with its unit, in bold, on one line/)
+  assert.match(buildSystemPrompt({ task: 'nonsense' }), /THE TASK \(nonsense\): Give the correct answer in the fewest words/, 'an unknown task is answered briefly')
+  const answer = buildSystemPrompt({})
+  assert.match(answer, /Be accurate above all\. If you are not sure the answer is right, say so in one short sentence/)
+  assert.match(answer, /only where the question itself asks for it .* or a <student_note> asks for it/, 'an explicit request for more is still followed')
+  assert.match(answer, /1\. What the student has just asked or corrected \(in <student_note>\): follow it/, 'and what the student just said still comes first')
+  assert.match(answer, /Cite only the labels you were given/, 'citations are as strict as ever')
+  assert.doesNotMatch(answer, /say that part comes from general knowledge/, 'no remark about where it came from clutters the answer (the panel says it)')
+})
+
+test('an explanation is given when it is asked for: the explain style (and simpler and deeper), and a concept, which is explained by its nature', () => {
+  for (const style of ['explain', 'simpler', 'deeper']) assert.doesNotMatch(buildSystemPrompt({ style }), /WANTS THE ANSWER/, style)
+  assert.match(buildSystemPrompt({ style: 'explain' }), /EXPLANATION of this answer: give the reasoning step by step/)
+  assert.doesNotMatch(buildSystemPrompt({ mode: 'conceptual' }), /WANTS THE ANSWER/)
+  assert.match(buildSystemPrompt({ style: 'explain', profile: { learningApproach: 'example_first' } }), /Start from a concrete example/, 'and then the way they like things explained applies')
 })
 
 test('the student\'s profile shapes the writing, and an "explain it simpler" request is stated', () => {
@@ -51,7 +78,8 @@ test('the student\'s profile shapes the writing, and an "explain it simpler" req
 })
 
 test('the mode decides what may be done: practice teaches the method, a restricted context never answers the question', () => {
-  assert.match(buildSystemPrompt({ mode: 'practice' }), /This is practice\. Show the working/)
+  assert.match(buildSystemPrompt({ mode: 'practice', style: 'explain' }), /This is practice\. Show the working/)
+  assert.doesNotMatch(buildSystemPrompt({ mode: 'practice' }), /This is practice|Show the working/, 'a practice question is answered too, and explained when asked')
   const restricted = buildSystemPrompt({ mode: 'conceptual' })
   assert.match(restricted, /RESTRICTED assessment context/)
   assert.match(restricted, /Do NOT answer, solve or complete any specific question/)

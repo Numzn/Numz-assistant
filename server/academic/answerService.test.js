@@ -170,7 +170,30 @@ test('the learning profile shapes the system message; the default is natural stu
   t.aliceLanes.updateProfile({ learningProfile: { writingStyle: 'concise', learningApproach: 'example_first' } })
   await t.alice.answer({ sessionId: s.id, text: 'Define a primary key.' }, t.ctx)
   assert.match(t.calls.at(-1).messages[0].content, /shortest answer that is complete and correct/)
+  assert.doesNotMatch(t.calls.at(-1).messages[0].content, /Start from a concrete example/, 'the way a student likes things explained matters when it is explained, not when the answer is given')
+  await t.alice.answer({ sessionId: s.id, text: 'Define a primary key.', style: 'explain' }, t.ctx)
   assert.match(t.calls.at(-1).messages[0].content, /Start from a concrete example/)
+})
+
+test('a question is ANSWERED by default (the correct answer, no explanation); the explanation comes when it is asked for; a concept is explained by nature', async () => {
+  const t = setup()
+  const s = startStudy(t)
+  const first = await t.alice.answer({ sessionId: s.id, text: 'Which of these is a primary key? A) a column that may repeat B) a column that identifies a row' }, t.ctx)
+  const system = (n) => t.calls.at(n).messages[0].content
+  assert.match(system(-1), /THE STUDENT WANTS THE ANSWER, NOT AN EXPLANATION/)
+  assert.doesNotMatch(system(-1), /EXPLANATION of this answer|Teach step by step/)
+  assert.equal(first.approach, 'answer')
+
+  const explained = await t.alice.answer({ sessionId: s.id, questionId: first.questionId, style: 'explain' }, t.ctx)
+  assert.doesNotMatch(system(-1), /WANTS THE ANSWER/)
+  assert.match(system(-1), /EXPLANATION of this answer: give the reasoning step by step/)
+  assert.equal(explained.approach, 'explain')
+
+  const concept = await t.alice.explainConcept({ sessionId: s.id, concept: 'second normal form' }, t.ctx)
+  assert.doesNotMatch(system(-1), /WANTS THE ANSWER/, 'a named concept is explained: that is what was asked for')
+  assert.equal(concept.approach, 'explain')
+
+  await assert.rejects(() => t.alice.answer({ sessionId: s.id, text: 'x y z', style: 'verbose' }, t.ctx), (e) => e.code === 'invalid-input' && /explain, simpler or deeper/.test(e.message))
 })
 
 test('research is used only when the session asks for it, is labelled and verified, and its failure never stops the answer', async () => {
