@@ -87,8 +87,9 @@ try {
     await page.click('#sendButton')
     await page.waitForFunction((n) => document.querySelectorAll('li.msg[data-role="assistant"]').length > n, before, { timeout: 30000 })
     await page.waitForFunction(() => !document.querySelector('#sendButton').hidden, null, { timeout: 10000 })
-    // A message sent the instant the last reply lands, before the assistant has gone back to idle, makes the assistant's state machine log
-    // "Invalid assistant transition: PROCESSING -> LISTENING" (seen on main too; not this change's business). A person is slower than that.
+    // A message sent the instant the last reply lands, before the assistant has gone back to idle, made the assistant's state machine log
+    // "Invalid assistant transition: PROCESSING -> LISTENING" in this setup, before any panel was touched. That code is not part of this
+    // change and it was not tried on main; the test just waits for idle, as a person would.
     await page.waitForFunction(() => document.querySelector('#assistantStateBadge')?.dataset.state === 'IDLE', null, { timeout: 10000 })
   }
   await page.click('#studyButton')
