@@ -43,7 +43,7 @@
             <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false"><path d="M3 6h14M3 10h14M3 14h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
           </button>
           <div id="breadcrumb">
-            <span class="crumb-muted">Workspace</span><span class="crumb-muted">/</span><span>NUMZ Assistant</span>
+            <span class="crumb-muted">Workspace</span><span class="crumb-muted">/</span><span class="crumb-title">NUMZ Assistant</span>
             <span id="onlineDot" data-online="true" role="img" aria-label="Online"></span>
           </div>
           <div id="headerActions">
@@ -203,6 +203,9 @@
         </div>
       </div>
 
+      <!-- The dock: the one place for the panels beside the conversation. At most one is shown (see layout/dock.js); style.css decides
+           whether it sits in a column of its own or, on a narrow window, takes the conversation's place under the header. -->
+      <div id="dock" hidden>
       <section id="studyPanel" aria-label="Study" hidden>
         <div id="studyHead">
           <span id="studyHeading">Study</span>
@@ -263,6 +266,7 @@
         <p id="meetingMessage" role="status" aria-live="polite" data-tone="info"></p>
         <div id="meetingActions"></div>
       </section>
+      </div>
     </div>
 
     <!-- Voice mode: the orb (the canvas behind) plus a status and the controls to stop. -->
