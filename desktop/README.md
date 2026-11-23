@@ -102,6 +102,7 @@ cd desktop/src-tauri
 TAURI_CONFIG='{"app":{"security":{"capabilities":["numz-ai-site","numz-ai-dev-local"]}}}' cargo build   # the test build
 cd ../.. && node desktop/e2e/run.mjs                              # 26 checks: screenshots
 node desktop/e2e/study.mjs                                        # the study watcher end to end, signed in through the real broker
+node desktop/e2e/layout.mjs                                       # the Study/Meeting dock and the conversation at 1280/1000/800/720px, in the app's own WebKit (19 checks)
 # and, with an app built WITHOUT that config:
 NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # all ten commands are refused for any other address
 ```

@@ -17,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { chromium, reporter, repo } from '../camera-e2e/lib.mjs'
 import { startStack } from '../../tests/helpers/aiRig.js'
+import { measureLayout } from './measure.mjs'
 
 const dir = process.env.UI_LAYOUT_E2E_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'numz-ui-layout-e2e-'))
 fs.mkdirSync(dir, { recursive: true })
@@ -98,50 +99,7 @@ try {
   await page.waitForSelector('#studyPanel', { state: 'hidden' })
 
   // ---- measuring ------------------------------------------------------------------------------------------------------
-  const measure = () =>
-    page.evaluate(() => {
-      const el = (sel) => document.querySelector(sel)
-      const shown = (e) => e && !e.hidden && getComputedStyle(e).display !== 'none'
-      const rect = (sel) => {
-        const e = el(sel)
-        if (!shown(e)) return null
-        const r = e.getBoundingClientRect()
-        return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), right: Math.round(r.right), bottom: Math.round(r.bottom) }
-      }
-      // Can a person click it? The top element at the centre of the part of it that is on screen must be the element (or inside it).
-      const reachable = (sel, clipTo = null) => {
-        const e = el(sel)
-        if (!shown(e) || getComputedStyle(e).visibility === 'hidden') return false
-        const r = e.getBoundingClientRect()
-        // The part of it that is on screen (and, for a message in the thread, inside the scrolling conversation): its middle.
-        const c = clipTo ? el(clipTo).getBoundingClientRect() : { left: 0, top: 0, right: innerWidth, bottom: innerHeight }
-        const left = Math.max(r.left, c.left, 0)
-        const right = Math.min(r.right, c.right, innerWidth)
-        const top = Math.max(r.top, c.top, 0)
-        const bottom = Math.min(r.bottom, c.bottom, innerHeight)
-        if (right - left < 4 || bottom - top < 4) return false
-        const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2)
-        return Boolean(hit && (hit === e || e.contains(hit)))
-      }
-      const visible = [...document.querySelectorAll('#dock > section')].filter((s) => !s.hidden && getComputedStyle(s).display !== 'none').map((s) => s.id)
-      return {
-        w: innerWidth,
-        h: innerHeight,
-        hScroll: document.documentElement.scrollWidth > innerWidth,
-        dockAttr: document.body.dataset.dock,
-        visiblePanels: visible,
-        dock: rect('#dock'),
-        chatMain: rect('#chatMain'),
-        composer: rect('#composer'),
-        composerInput: rect('#composerInput'),
-        header: rect('#appHeader'),
-        sidebar: rect('#sidebar'),
-        sidebarVisible: shown(el('#sidebar')) && getComputedStyle(el('#sidebar')).visibility !== 'hidden',
-        chatVisibility: getComputedStyle(el('#chatMain')).visibility,
-        chatScrollTop: el('#chatMain').scrollTop,
-        reach: Object.fromEntries(['#composerInput', '#sendButton', '#meetingButton', '#studyButton', '#studyAskInput', '#studyClose', '#meetingStart', '#meetingClose', '#sidebarToggle', '#thread > li:last-child'].map((s) => [s, reachable(s, s.startsWith('#thread') ? '#chatMain' : null)]))
-      }
-    })
+  const measure = () => page.evaluate(measureLayout)
   const shot = (name) => page.screenshot({ path: `${dir}/${name}.png` })
   const openStudy = async () => {
     if (await page.isHidden('#studyPanel')) await page.click('#studyButton')
