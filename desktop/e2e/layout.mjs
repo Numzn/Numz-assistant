@@ -253,6 +253,19 @@ try {
   const flashed = await run('return document.querySelectorAll("li.msg[data-flash=true]").length')
   check('800px: "Show in chat" puts the panel away and shows the answer, outlined', m.dock === null && m.chatVisibility === 'visible' && m.reach['#thread > li:last-child'] && flashed === 2, `dock ${JSON.stringify(m.dock)}, flashed ${flashed}`)
   await shot('800-show-in-chat')
+
+  // ==== a study answer is brought to the middle of the conversation, wherever the person was reading ====
+  await size(1280)
+  await openStudy()
+  await run('document.querySelector("#chatMain").scrollTop = 0; return true') // reading the start of the conversation
+  await sleep(150)
+  const n0 = await answers()
+  await run('const i=document.getElementById("studyAskInput"); i.value="What is a primary key?"; i.dispatchEvent(new Event("input",{bubbles:true})); document.querySelector("form.study-ask button[type=submit]").click(); return true')
+  await waitFor(async () => (await answers()) > n0, 30000, 'the answer')
+  await sleep(500)
+  const w = await run('const main=document.querySelector("#chatMain"); const li=[...document.querySelectorAll("#thread > li[data-role=assistant]")].pop(); const m=main.getBoundingClientRect(), r=li.getBoundingClientRect(); return { fromMiddle: Math.round(r.top + r.height/2 - (m.top + main.clientHeight/2)), scrollTop: Math.round(main.scrollTop), h: Math.round(r.height), view: main.clientHeight }')
+  check('1280px: an answer that arrives while the person is reading at the top is brought to the middle of the conversation', Math.abs(w.fromMiddle) <= 12 && w.scrollTop > 300, JSON.stringify(w))
+  await shot('1280-answer-centered')
 } catch (err) {
   console.error(err)
   check('the run completed', false, String(err?.message ?? err).slice(0, 300))

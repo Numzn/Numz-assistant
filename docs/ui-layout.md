@@ -31,8 +31,20 @@ Also: the header button of the open panel reads as pressed; the model's name lab
 "Workspace /" is dropped from the breadcrumb while a panel is docked; the dock is not drawn in voice mode (like the rest of the page chrome); the
 conversation stays on the newest message when it is narrowed by a panel (if it was there).
 
+**Study answers are brought to the middle.** Whenever a study answer arrives, the conversation scrolls to put it in the middle of what is visible,
+wherever the person was reading (and even while the panel covers the conversation, so it is there when the panel is put away). One taller than the
+view starts at the top, to be read from its first line. The newest message has nothing below it, so some blank room is added under the conversation to let
+it reach the middle; the next ordinary message gives the room back and the conversation follows replies as before. A resize keeps the answer in the
+middle, but a person who scrolled away is left where they are. The arithmetic is `src/interfaces/chat/scrollPlan.js`.
+
+**Long answers use width before height.** A study answer taller than the visible conversation is made to take less height, only as far as it needs: first
+wider (up to 1180px instead of the 760px reading column, when the window has the room), then in smaller type (14.5px, then 13px, the floor). One that
+already fits is left alone. If even the smallest does not fit it starts at the top, to be read from its first line. (`FIT_TIERS`/`pickFit` in
+`scrollPlan.js`, `fitToView` in `chatView.js`, `.msg[data-fit]` in `style.css`.) This is for study answers, which arrive whole; ordinary replies stream in
+and are not resized as they go.
+
 **Show in chat.** A study answer is written into the conversation. Each answered card in the Study panel has a "Show in chat" button: where the
-dock covers the conversation it is put away first, then the exchange is scrolled to and outlined for 1.8s (an outline, not an animation, so it
+dock covers the conversation it is put away first, then the answer is brought to the middle and the exchange outlined for 1.8s (an outline, not an animation, so it
 also shows with reduced motion). On a wide window the panel stays open beside it.
 
 ## What was checked

@@ -1,5 +1,6 @@
 import { ACCEPT, checkRoom, formatSize, readTextFile } from './attachments.js'
 import { renderMarkdown } from './markdownView.js'
+import { pickFit, planCenter } from './scrollPlan.js'
 
 /**
  * Draws the Home conversation and runs the composer. All behaviour lives in chatController.js; this file only
@@ -7,6 +8,7 @@ import { renderMarkdown } from './markdownView.js'
  */
 
 const NEAR_BOTTOM_PX = 96
+const FIT_MARGIN = 16 // the same breathing room planCenter keeps
 const NOTICE_MS = 9000
 
 /** "Good evening." or, when the app knows who is signed in, "Good evening, Amina." */
@@ -45,6 +47,10 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
   let composing = false
   let noticeTimer = null
   let stickToBottom = true
+  // A study answer that has just arrived is brought to the middle of the conversation (see centerOn). While it is, this is it, so that a
+  // resize keeps it there; a person who then scrolls by hand lets go of it and is left where they are.
+  let centered = null
+  const centeredIds = new Set() // study answers already brought to the middle, once each
   let files = [] // attached, read and checked: { name, size, text }
 
   function chip(file, removable) {
@@ -116,7 +122,42 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
   }
 
   function scrollToBottom() {
+    main.style.paddingBottom = '' // the room that centring the newest answer made is given back
+    centered = null
     main.scrollTop = main.scrollHeight
+  }
+
+  /**
+   * Makes a long study answer take less height: wider first (more of the width, which a wide window has to spare), then smaller text,
+   * only as far as it needs to fit in what is visible. One that already fits is left as it is. (CSS: .msg[data-fit].)
+   */
+  function fitToView(li) {
+    const room = main.clientHeight - 2 * FIT_MARGIN
+    if (!li || room <= 0) return
+    const tier = pickFit((t) => {
+      if (t) li.dataset.fit = t
+      else delete li.dataset.fit
+      return li.getBoundingClientRect().height
+    }, room)
+    if (tier) li.dataset.fit = tier
+    else delete li.dataset.fit
+  }
+
+  /**
+   * Puts one message in the middle of what is visible (or, if it is taller than that, at the top, to be read from its first line).
+   * The newest message has nothing below it to scroll past, so room is added under the conversation to let it reach the middle; the
+   * next ordinary message (or any scroll to the bottom) takes that room away again.
+   */
+  function centerOn(li) {
+    if (!li || main.clientHeight <= 0) return false
+    main.style.paddingBottom = ''
+    const box = main.getBoundingClientRect()
+    const rect = li.getBoundingClientRect()
+    const plan = planCenter({ itemTop: rect.top - box.top + main.scrollTop, itemHeight: rect.height, view: main.clientHeight, scrollHeight: main.scrollHeight })
+    if (plan.extra > 0) main.style.paddingBottom = `${plan.extra}px`
+    main.scrollTop = plan.scrollTop
+    centered = li
+    return true
   }
 
   function createItem(message) {
@@ -248,6 +289,12 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
     body.dataset.hasMessages = state.messages.length > 0 ? 'true' : 'false'
     renderThread(state)
     renderControls(state)
+    // A study answer is always brought to the middle when it arrives, wherever the person was reading: it is the thing they are waiting
+    // for, and it would otherwise land out of sight below them (or behind the panel that asked for it).
+    const arrived = state.messages.filter((message) => message.role === 'assistant' && message.ref && !centeredIds.has(message.id))
+    for (const message of arrived) centeredIds.add(message.id)
+    for (const message of arrived) fitToView(items.get(message.id))
+    if (arrived.length && centerOn(items.get(arrived.at(-1).id))) return
     if (wasNearBottom) scrollToBottom()
   }
 
@@ -356,7 +403,7 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
   function reveal(ref) {
     const found = [...thread.children].filter((li) => li.dataset.ref === String(ref))
     if (!found.length) return false
-    found[0].scrollIntoView({ block: 'start' })
+    centerOn(found.find((li) => li.dataset.role === 'assistant') ?? found[0])
     clearTimeout(flashTimer)
     for (const li of thread.children) delete li.dataset.flash
     for (const li of found) li.dataset.flash = 'true'
@@ -364,9 +411,25 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
     return true
   }
   main.addEventListener('scroll', () => (stickToBottom = nearBottom()), { passive: true })
+  // The person scrolling by hand lets go of a centred answer (a resize then leaves them where they are). Only their own input counts: the browser
+  // also moves the scroll position by itself when text above reflows, and that must not look like the person scrolling away.
+  const letGo = () => (centered = null)
+  main.addEventListener('wheel', letGo, { passive: true })
+  main.addEventListener('touchmove', letGo, { passive: true })
+  main.addEventListener('keydown', (event) => ['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' '].includes(event.key) && letGo())
+  main.addEventListener('pointerdown', (event) => event.clientX >= main.getBoundingClientRect().left + main.clientWidth && letGo()) // the scrollbar
   // A panel opening beside the conversation (or the window changing size) narrows it and the text reflows. Whoever was reading the
-  // newest message stays on it, instead of finding it pushed below the fold.
-  const resizeWatch = typeof globalThis.ResizeObserver === 'function' ? new globalThis.ResizeObserver(() => stickToBottom && scrollToBottom()) : null
+  // newest message stays on it, instead of finding it pushed below the fold; a study answer that was brought to the middle stays there.
+  const resizeWatch =
+    typeof globalThis.ResizeObserver === 'function'
+      ? new globalThis.ResizeObserver(() => {
+          if (centered?.isConnected) {
+            if (centered.dataset.ref) fitToView(centered) // the room it has changed: a smaller window may need smaller text, a bigger one less
+            centerOn(centered)
+          }
+          else if (stickToBottom) scrollToBottom()
+        })
+      : null
   resizeWatch?.observe(main)
 
   const unsubscribe = chat.subscribe(render)

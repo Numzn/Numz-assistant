@@ -30,6 +30,8 @@ if (!process.argv.includes('--skip-build')) {
 
 // ---- the pretend model: a long-ish answer, streamed, so the thread really scrolls -----------------------------------------
 const ANSWER = 'Second normal form means every non-key column depends on the **whole** key.\n\n- the first point, about the key\n- the second point, about partial dependencies\n- the third point, with an example from an order line\n\nSo the product name belongs in its own table, keyed by the product number.'
+// Paragraphs of running text, for an answer whose height depends on the width and the size of the type it is drawn in.
+const PARAGRAPH = 'A primary key identifies one row of a table, and no other, so its values must be unique and can never be empty. A foreign key is a column whose values must match the primary key of another table, and that match is how two tables are linked together. Together they let a database refuse a row that points at nothing, and keep what the tables say about each other consistent.'
 const model = http.createServer((req, res) => {
   let raw = ''
   req.on('data', (c) => (raw += c))
@@ -41,14 +43,16 @@ const model = http.createServer((req, res) => {
       /* none */
     }
     const usage = { prompt_tokens: 100, completion_tokens: 50 }
+    const asked = JSON.stringify(body.messages ?? [])
+    const answer = asked.includes('LONGANSWER') ? Array(7).fill(ANSWER).join('\n\n') : asked.includes('WIDEANSWER') ? Array(Number(process.env.WIDE_PARAGRAPHS || 9)).fill(PARAGRAPH).join('\n\n') : ANSWER
     if (body.stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      for (const word of ANSWER.split(/(?<= )/)) res.write(`data: ${JSON.stringify({ model: 'fake-model', choices: [{ delta: { content: word } }] })}\n\n`)
+      for (const word of answer.split(/(?<= )/)) res.write(`data: ${JSON.stringify({ model: 'fake-model', choices: [{ delta: { content: word } }] })}\n\n`)
       res.write(`data: ${JSON.stringify({ model: 'fake-model', choices: [], usage })}\n\n`)
       return res.end('data: [DONE]\n\n')
     }
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ model: 'fake-model', choices: [{ message: { role: 'assistant', content: ANSWER } }], usage }))
+    res.end(JSON.stringify({ model: 'fake-model', choices: [{ message: { role: 'assistant', content: answer } }], usage }))
   })
 })
 await new Promise((r) => model.listen(0, '127.0.0.1', r))
@@ -299,6 +303,132 @@ try {
   check('1280px: "Show in chat" on an older answer scrolls to it and leaves the panel open beside it', older.open && older.inView && older.flashed === 2, JSON.stringify(older))
   await shot('1280-show-in-chat-older')
   await page.click('#studyClose')
+
+  // ==== J. a study answer is always brought to the middle of the conversation when it arrives ===================================
+  const where = () =>
+    page.evaluate(() => {
+      const main = document.querySelector('#chatMain')
+      const li = [...document.querySelectorAll('#thread > li[data-role="assistant"]')].pop()
+      const m = main.getBoundingClientRect()
+      const r = li.getBoundingClientRect()
+      return { fromMiddle: Math.round(r.top + r.height / 2 - (m.top + main.clientHeight / 2)), fromTop: Math.round(r.top - m.top), h: Math.round(r.height), view: main.clientHeight, scrollTop: Math.round(main.scrollTop), room: main.style.paddingBottom }
+    })
+  const askInStudy = async (text) => {
+    const n = await page.locator('li.msg[data-role="assistant"]').count()
+    await page.fill('#studyAskInput', text)
+    await page.press('#studyAskInput', 'Enter')
+    await page.waitForFunction((k) => document.querySelectorAll('li.msg[data-role="assistant"]').length > k, n, { timeout: 30000 })
+    await page.waitForTimeout(400)
+  }
+  await size(1280)
+  await openStudy()
+  await page.evaluate(() => { document.querySelector('#chatMain').scrollTop = 0 }) // reading the start of an old conversation
+  await page.waitForTimeout(150)
+  await askInStudy('What is a primary key?')
+  let w = await where()
+  check('1280px: an answer that arrives while the person is reading far above is brought to the middle of the conversation', Math.abs(w.fromMiddle) <= 12, JSON.stringify(w))
+  const sh = await page.evaluate(() => ({ top: document.querySelector('#chatMain').scrollTop }))
+  check('1280px: it was a real jump (the person had been at the very top)', sh.top > 300, JSON.stringify(sh))
+  await shot('1280-answer-centered')
+  await askInStudy('What is a candidate key?')
+  w = await where()
+  check('1280px: the next answer is brought to the middle too', Math.abs(w.fromMiddle) <= 12, JSON.stringify(w))
+  await askInStudy('Please give a LONGANSWER about keys')
+  w = await where()
+  check('1280px: an answer taller than the conversation starts at the top of it, to be read from its first line', w.h > w.view && w.fromTop >= 0 && w.fromTop <= 40, JSON.stringify(w))
+  await shot('1280-answer-tall')
+  await askInStudy('What is a foreign key again?')
+  // a resize keeps the answer in the middle
+  await size(1200)
+  await page.waitForTimeout(300)
+  w = await where()
+  check('1200px: narrowing the window keeps the answer in the middle', Math.abs(w.fromMiddle) <= 12, JSON.stringify(w))
+  // ...but a person who scrolled away is left where they are
+  await page.mouse.move(500, 400) // over the conversation, and a real turn of the wheel (a script setting scrollTop is not the person)
+  await page.mouse.wheel(0, -50000)
+  await page.waitForTimeout(300)
+  await size(1280)
+  await page.waitForTimeout(300)
+  w = await where()
+  check('1280px: after the person scrolls away, resizing does not drag them back to the answer', w.scrollTop < 100, JSON.stringify(w))
+  // an ordinary message gives the room back and follows the reply as before
+  await askInStudy('Explain normal forms briefly') // centred, with room made under it
+  await page.click('#studyClose')
+  await page.waitForSelector('#studyPanel', { state: 'hidden' })
+  await page.waitForFunction(() => !document.querySelector('#sendButton').hidden && document.querySelector('#assistantStateBadge')?.dataset.state === 'IDLE', null, { timeout: 15000 })
+  const afterStudy = await page.locator('li.msg[data-role="assistant"]').count()
+  await page.fill('#composerInput', 'And a short summary?')
+  await page.click('#sendButton')
+  await page.waitForFunction((n) => document.querySelectorAll('li.msg[data-role="assistant"]').length > n, afterStudy, { timeout: 30000 })
+  await page.waitForTimeout(500)
+  const follow = await page.evaluate(() => { const m = document.querySelector('#chatMain'); return { fromBottom: Math.round(m.scrollHeight - m.scrollTop - m.clientHeight), room: m.style.paddingBottom } })
+  check('an ordinary message after a centred answer is followed to the bottom, and the extra room is gone', follow.fromBottom <= 4 && follow.room === '', JSON.stringify(follow))
+
+  // ==== K. a long answer is made wider and smaller so that it takes less height ============================================
+  const fitInfo = () =>
+    page.evaluate(() => {
+      const li = [...document.querySelectorAll('#thread > li[data-role="assistant"]')].pop()
+      const main = document.querySelector('#chatMain')
+      const body = li.querySelector('.body')
+      const fit = li.dataset.fit ?? ''
+      const heightNow = li.getBoundingClientRect().height
+      // what it would be as drawn without any fitting
+      delete li.dataset.fit
+      const heightNormal = li.getBoundingClientRect().height
+      const widthNormal = li.getBoundingClientRect().width
+      if (fit) li.dataset.fit = fit
+      const m = main.getBoundingClientRect()
+      const r = li.getBoundingClientRect()
+      return { fit, fontPx: parseFloat(getComputedStyle(body).fontSize), width: Math.round(r.width), widthNormal: Math.round(widthNormal), height: Math.round(heightNow), heightNormal: Math.round(heightNormal), view: main.clientHeight, fromMiddle: Math.round(r.top + r.height / 2 - (m.top + main.clientHeight / 2)), fromTop: Math.round(r.top - m.top) }
+    })
+  await size(1600, 800)
+  await openStudy()
+  await askInStudy('What is a short answer?')
+  let f = await fitInfo()
+  check('1600px: a short answer is left as it is (normal text, the reading column)', f.fit === '' && f.fontPx === 16 && f.width <= 760, JSON.stringify(f))
+  await askInStudy('Please give a WIDEANSWER about keys')
+  f = await fitInfo()
+  console.log('  (long answer, measured:', JSON.stringify(f), ')')
+  check('1600px: a long answer uses more of the width than the reading column', f.fit !== '' && f.width > 760, JSON.stringify(f))
+  check('1600px: and is shorter than it would have been as drawn', f.height < f.heightNormal, `${f.heightNormal}px -> ${f.height}px`)
+  check('1600px: smaller type only when widening was not enough', f.fit === 'wide' ? f.fontPx === 16 : f.fontPx < 16 && f.fontPx >= 13, `${f.fit}, ${f.fontPx}px`)
+  check('1600px: and then, if it fits the view, it is in the middle; if not, it starts at the top', f.height <= f.view - 32 ? Math.abs(f.fromMiddle) <= 12 : f.fromTop >= 0 && f.fromTop <= 40, JSON.stringify(f))
+  await shot('1600-long-answer')
+  await askInStudy('What is a candidate key?')
+  f = await fitInfo()
+  check('1600px: the next, short answer is back to normal text', f.fit === '' && f.fontPx === 16, JSON.stringify(f))
+  await size(1200)
+  await openStudy()
+  await askInStudy('Please give a WIDEANSWER about keys')
+  f = await fitInfo()
+  check('1200px: a long answer is shortened here too, in the room the window has', f.fit !== '' && f.height <= f.heightNormal && f.fontPx >= 13, JSON.stringify(f))
+  await size(1280)
+  await page.waitForTimeout(250)
+
+  // narrow: the answer is written behind the panel, and is in the middle when the panel is put away
+  await size(800)
+  await openStudy()
+  await page.evaluate(() => { document.querySelector('#chatMain').scrollTop = 0 })
+  await askInStudy('What is a surrogate key?')
+  m = await measure()
+  check('800px: the answer arrived behind the panel, which is still open', m.visiblePanels.join() === 'studyPanel' && m.chatVisibility === 'hidden')
+  await page.click('#studyButton')
+  await page.waitForSelector('#studyPanel', { state: 'hidden' })
+  await page.waitForTimeout(300)
+  w = await where()
+  check('800px: put the panel away and the answer is in the middle of the conversation', Math.abs(w.fromMiddle) <= 12, JSON.stringify(w))
+  await shot('800-answer-centered')
+  await openStudy()
+  await page.locator('#studyBody button.study-link').first().click() // an older answer
+  await page.waitForTimeout(250)
+  const older2 = await page.evaluate(() => {
+    const flashed = [...document.querySelectorAll('li.msg[data-flash="true"]')].find((li) => li.dataset.role === 'assistant')
+    const main = document.querySelector('#chatMain')
+    const m = main.getBoundingClientRect()
+    const r = flashed.getBoundingClientRect()
+    return Math.round(r.top + r.height / 2 - (m.top + main.clientHeight / 2))
+  })
+  check('800px: "Show in chat" on an older answer also brings it to the middle', Math.abs(older2) <= 12, `${older2}px from the middle`)
 
   check('no errors on the page the whole time', problems.length === 0, problems.slice(0, 4).join(' | '))
   await context.close()
