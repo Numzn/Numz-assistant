@@ -64,7 +64,8 @@ test('the same text always gives the same cut and hash; line endings and a BOM d
 
 test('empty, huge and structureless inputs are refused or handled with a plain code', () => {
   for (const empty of ['', '   \n\n  ', '# Only a heading\n']) assert.throws(() => chunkDocument(empty), (err) => err.code === 'empty-document' && err.statusCode === 400, JSON.stringify(empty))
-  assert.throws(() => chunkDocument('x'.repeat(MAX_DOCUMENT_CHARS + 1)), (err) => err.code === 'document-too-large' && err.statusCode === 413)
+  assert.throws(() => chunkDocument('x'.repeat(1001), { maxDocumentChars: 1000 }), (err) => err.code === 'document-too-large' && err.statusCode === 413)
+  assert.ok(MAX_DOCUMENT_CHARS >= 100 * 1024 * 1024, 'the default limit is 100 MB of text')
   assert.equal(chunkDocument('# Title\n\nbody', { format: 'text' }).format, 'text', 'the caller can say it is text')
   assert.equal(chunkDocument('no markers at all, just words').chunks.length, 1)
 })
