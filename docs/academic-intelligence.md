@@ -140,6 +140,31 @@ windows can be listed (X11, Windows, macOS), **not on Wayland**, where the deskt
 
 A reload turns screen reading **off**: the person has to turn it on again.
 
+## Large course materials (up to 100 MB each, 50 files at a time)
+
+Added 2026-11-23, in the existing pipeline (no new store, no new dependency). The limits are the server's to set (`.env.example` lists them) and the
+page asks for them (`GET /limits`): a document up to **100 MB** of text, **50 files** per batch (the page sends them one after the other, each streamed from
+disk, and says for each file that was not added why), **500 MB** of text per person in all, 100 documents per course, 300 per person.
+
+* **Small documents behave as before**: up to 1 MB (`ACADEMIC_ASYNC_THRESHOLD_KB`) a document is cut and searchable when the request is answered (201).
+* **A larger one is answered at once (202)** and cut and indexed in the background, one document at a time, in short slices (about 150 ms of work, then a
+  rest) so the server keeps answering. The Study panel lists it as *processing… N parts so far*, then ready; it is not searchable, and never cited, until it
+  is ready. If it fails (too many parts, a disk error) it says why and offers **Retry** (`POST /documents/:id/retry`); its text is kept. A restart while one
+  is processing marks it failed ("interrupted when the server restarted"), for the same Retry. Uploading the same text again counts as a retry; a new
+  version uploaded while the old one is processing wins; a document deleted meanwhile leaves nothing behind.
+* **The cut is the same as before** (passages of at most 1,200 characters, a heading never crossed, the lines each came from), read in one pass without
+  holding the document in memory (`chunkBatches`; a test cuts 300 random documents both ways and compares). A document with no blank line at all is closed
+  into paragraphs of about 20,000 characters as it is read. One fix on the way: a line without a full stop inside a paragraph longer than a passage (a list
+  item, a line of code) was silently dropped from the passages; it is kept now.
+* **Context window:** unchanged and bounded: an answer is given at most 6 passages of at most 1,200 characters each, however large the library.
+* **Storage:** a document's status and progress live in a small table (`academic_document_jobs`; no row = ready), not on the document's row, because SQLite
+  keeps the 100 MB text in that row: reading a column after it, or updating the row, touches all of it. The search runs the full-text index first and then
+  narrows to the person's courses (it took 35 s over 35,000 passages written the other way, and now takes about 200 ms over 117,000).
+
+Measured (`node scripts/knowledge-scale/run.mjs`; busy host, a disk sync takes about 0.3 s): a 99 MB document was answered in 2.1 s, ready in 104 s as
+117,106 passages, found in a search in 176 ms; ordinary requests made meanwhile had a median of 202 ms, p95 974 ms and a worst case of 2.2 s (the worst is
+the upload itself being stored); peak memory 507 MB; the database file grew by 372 MB.
+
 ## Research (optional per session)
 
 OpenAlex search and Crossref DOI verification, fixed hosts only, with a minimal derived query (never the whole question or any of the person's
