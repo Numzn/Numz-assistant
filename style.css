@@ -53,6 +53,7 @@
   --radius-md: 10px;
   --radius-sm: 7px;
   --column: 760px;
+  --column-wide: 1180px; /* what a long answer may use (see .msg[data-fit]) */
   --sidebar-w: 272px;
   --dock-w: clamp(340px, 30vw, 420px); /* the dock: one column beside the conversation for Study or Meeting */
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.46);
@@ -641,7 +642,8 @@ body[data-has-messages="true"] #welcomeBlock {
 
 #thread {
   width: 100%;
-  max-width: var(--column);
+  /* The column's width is each message's own (.msg, below), so that a long answer can be given more of it (data-fit="wide"). */
+  max-width: none;
   margin: 0 auto;
   padding: 22px 0 24px;
   list-style: none;
@@ -656,8 +658,29 @@ body[data-has-messages="true"] #thread {
 .msg {
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: var(--column);
   min-width: 0;
+  margin-inline: auto;
   animation: message-in 240ms ease-out;
+}
+
+/* A long study answer is made to take less height, wider first (it may use far more than the reading column when the window has the
+   room), then in smaller type, only as far as it needs to fit in the visible conversation (chatView.fitToView picks the step). */
+.msg[data-fit] {
+  max-width: var(--column-wide);
+}
+
+.msg[data-fit="compact"] .body {
+  padding: 12px 16px;
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+
+.msg[data-fit="dense"] .body {
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 @keyframes message-in {
