@@ -1,3 +1,4 @@
+import { createAnthropicProvider } from './anthropicProvider.js'
 import { createOpenAiCompatibleProvider } from './openAiCompatibleProvider.js'
 import { createPlaceholderProvider } from './placeholderProvider.js'
 import { createDeepSeekProvider } from '../../providers/deepseek/client.js'
@@ -31,6 +32,19 @@ export function createAiProvider(env = process.env) {
         baseUrl: env.AI_BASE_URL ?? 'https://api.openai.com/v1',
         model: env.AI_MODEL ?? 'gpt-4o-mini',
         streamUsage
+      })
+    )
+  }
+
+  if (provider === 'anthropic') {
+    return withNumzPersona(
+      createAnthropicProvider({
+        apiKey: env.AI_API_KEY,
+        baseUrl: env.AI_BASE_URL,
+        model: env.AI_MODEL || undefined,
+        effort: env.AI_EFFORT,
+        maxTokens: env.AI_MAX_TOKENS,
+        fallbacks: env.AI_FALLBACKS
       })
     )
   }
