@@ -1,3 +1,6 @@
+import { DEFAULT_ANTHROPIC_MODEL } from './ai/providers/anthropicProvider.js'
+import { createAiProvider } from './ai/providers/providerFactory.js'
+
 export function getAiConfig(env = process.env) {
   const provider = (env.AI_PROVIDER ?? 'placeholder').toLowerCase()
   const model = env.AI_MODEL ?? ''
@@ -9,7 +12,8 @@ export function getAiConfig(env = process.env) {
     model,
     baseUrl,
     hasApiKey,
-    configured: provider !== 'placeholder' && hasApiKey && Boolean(model) && Boolean(baseUrl)
+    // Claude has its own default address and model, so only the key is needed there.
+    configured: provider === 'anthropic' ? hasApiKey : provider !== 'placeholder' && hasApiKey && Boolean(model) && Boolean(baseUrl)
   }
 }
 
@@ -25,11 +29,23 @@ export function logAiConfig(env = process.env) {
   return cfg
 }
 
+/** The same one-word check for Claude, through the provider itself (the call below is OpenAI-shaped and would not reach it). */
+async function probeThroughProvider(cfg, env) {
+  const started = Date.now()
+  try {
+    const reply = await createAiProvider(env).generate({ messages: [{ role: 'user', content: 'Reply with exactly: pong' }] })
+    return { ok: true, configured: true, status: 200, latencyMs: Date.now() - started, model: cfg.model || DEFAULT_ANTHROPIC_MODEL, reply }
+  } catch (err) {
+    return { ok: false, configured: true, status: err?.statusCode, latencyMs: Date.now() - started, error: err?.message ?? String(err) }
+  }
+}
+
 export async function probeDeepSeek(env = process.env) {
   const cfg = getAiConfig(env)
   if (!cfg.hasApiKey) {
     return { ok: false, error: 'AI_API_KEY missing in .env.secrets', configured: false }
   }
+  if (cfg.provider === 'anthropic') return probeThroughProvider(cfg, env)
 
   const base = String(cfg.baseUrl).replace(/\/$/, '')
   const url = `${base.endsWith('/v1') ? base : `${base}/v1`}/chat/completions`
