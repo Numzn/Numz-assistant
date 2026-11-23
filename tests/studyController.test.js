@@ -221,7 +221,8 @@ test('a question can be answered by itself when the person asked for that, but n
   await until(() => auto.api.calls.answer.length === 1)
   await until(() => auto.controller.getState().questions[0]?.state === 'answered')
   assert.equal(auto.exchanges.length, 1)
-  assert.deepEqual(auto.exchanges[0], { question: 'Explain third normal form.', answer: 'It means… [S1]' })
+  assert.deepEqual(auto.exchanges[0], { question: 'Explain third normal form.', answer: 'It means… [S1]', ref: 'a1' }, 'the exchange says which answer it is, so the panel can point back at it')
+  assert.equal(auto.controller.getState().questions[0].answer.ref, 'a1')
   await auto.controller.stop()
 
   const flagged = build()

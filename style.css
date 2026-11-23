@@ -54,7 +54,7 @@
   --radius-sm: 7px;
   --column: 760px;
   --sidebar-w: 272px;
-  --panel-w: 360px;
+  --dock-w: clamp(340px, 30vw, 420px); /* the dock: one column beside the conversation for Study or Meeting */
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.46);
   --ease: 220ms cubic-bezier(0.4, 0, 0.2, 1);
   /* System fonts first, so the page paints and its script arrives without sharing the connection with a font.
@@ -134,7 +134,7 @@ button {
   height: 100%;
 }
 
-/* ---- Layout: sidebar | workspace | meeting panel ---- */
+/* ---- Layout: sidebar | workspace | dock (the Study or Meeting panel) ---- */
 
 #app {
   position: fixed;
@@ -148,6 +148,9 @@ button {
 #workspace {
   grid-column: 2;
   display: grid;
+  /* One column that may shrink to nothing: without it the column grows to its widest content (the header's), and the
+     conversation spills past its space (under the dock, or past the edge of a phone). */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
@@ -176,6 +179,10 @@ body[data-mode="voice"] #appHeader {
 /* With the sidebar hidden the workspace uses the full width, so the header starts at the screen's edge. */
 body[data-mode="voice"] #workspace {
   grid-column: 1 / -1;
+}
+
+body[data-mode="voice"] #dock {
+  display: none;
 }
 
 body[data-mode="voice"] #sidebar,
@@ -337,7 +344,9 @@ a.nav-btn:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -374,8 +383,20 @@ a.nav-btn:hover {
 
 #headerActions {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 4px;
+}
+
+/* The title gives way first when the header is short of room; "Workspace /" is decoration and goes while a panel is docked. */
+.crumb-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body[data-dock-open="true"] .crumb-muted {
+  display: none;
 }
 
 .ghost {
@@ -650,6 +671,19 @@ body[data-has-messages="true"] #thread {
   }
 }
 
+/* An exchange the Study panel pointed at ("Show in chat"): outlined for a moment (an outline, not an animation, so it also shows with
+   reduced motion). */
+.msg {
+  scroll-margin-top: 12px;
+}
+
+.msg[data-flash="true"] > .body,
+.msg[data-flash="true"] > .bubble {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-md);
+}
+
 /* Who is speaking: the assistant is named; your own messages are plainly yours by position and colour. */
 .msg .who {
   display: flex;
@@ -903,7 +937,9 @@ body[data-has-messages="true"] #thread {
 
 #composer {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* attach | screenshot | the text box | send and the rest (the screenshot button was added without a column for it, which squeezed the
+     text box into a narrow right-hand column and dropped the send controls to a second row) */
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: end;
   column-gap: 8px;
   width: 100%;
@@ -1385,21 +1421,48 @@ a.ghost {
   color: var(--text);
 }
 
-/* ---- Meeting panel: docked on the right; over the page on smaller screens ---- */
+/* ---- The dock: one column beside the conversation, for the Study panel or the Meeting panel (never both) ----
+   The panels do not place themselves: this is the only rule that says where they go. Wide window: a column of its
+   own, the conversation keeps the rest. Medium: the sidebar steps aside as a drawer to make the room. Narrow: the dock
+   takes the conversation's place under the header, so the header (and the way back) is never covered. See the media
+   queries below. */
 
-#meetingPanel {
+#dock {
   grid-column: 3;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  width: var(--panel-w);
+  width: var(--dock-w);
+  min-width: 0;
   min-height: 0;
-  padding: 0 0 16px;
-  overflow-y: auto;
   border-left: 1px solid var(--border);
   background: var(--surface);
-  box-shadow: -10px 0 32px rgba(0, 0, 0, 0.24);
   color: var(--text);
+}
+
+#dock[hidden] {
+  display: none;
+}
+
+/* A panel fills the dock and scrolls inside it. */
+#dock > section {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The header button of the panel that is open reads as pressed. */
+#headerActions .ghost[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ---- Meeting panel (inside the dock) ---- */
+
+#meetingPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 0 16px;
+  overflow-y: auto;
   font-size: 14px;
   line-height: 1.4;
   user-select: text;
@@ -1948,21 +2011,56 @@ a.ghost {
 
 /* ---- Smaller screens and reduced motion ---- */
 
-@media (max-width: 1100px) {
-  :root {
-    --panel-w: 340px;
+/* The model's name is the first thing to go when a docked panel leaves the conversation too little room to type in. */
+@media (max-width: 1400px) {
+  body[data-dock-open="true"] #modelPill {
+    display: none;
+  }
+}
+
+/* Medium windows: the sidebar and a dock do not both fit beside the conversation. While a panel is open the sidebar becomes
+   the drawer it already is on a phone (the same rules as the narrow block below), and the conversation keeps its width. */
+@media (min-width: 901px) and (max-width: 1100px) {
+  body[data-dock-open="true"] #app {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  /* Not enough room to dock the panel beside the conversation: it lies over the right edge instead.
-     (A positioned grid item is placed against its grid area, so it is given the whole grid.) */
-  #meetingPanel {
-    grid-column: 1 / -1;
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 12;
-    width: min(var(--panel-w), 100%);
+  body[data-dock-open="true"] #workspace {
+    grid-column: 1;
+  }
+
+  body[data-dock-open="true"] #dock {
+    grid-column: 2;
+  }
+
+  body[data-dock-open="true"] #sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 25;
+    width: min(300px, 86vw);
+    transform: translateX(-102%);
+    transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 300ms;
+    visibility: hidden;
+    box-shadow: var(--shadow-lg);
+  }
+
+  body[data-dock-open="true"][data-sidebar="open"] #sidebar {
+    transform: none;
+    transition-delay: 0s;
+    visibility: visible;
+  }
+
+  body[data-dock-open="true"][data-sidebar="open"] #sidebarScrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 24;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  body[data-dock-open="true"] #sidebarToggle,
+  body[data-dock-open="true"] #sidebarClose {
+    display: inline-flex;
   }
 }
 
@@ -2014,8 +2112,39 @@ a.ghost {
     display: none;
   }
 
-  #meetingPanel {
-    width: 100%;
+  /* There is no room for the dock beside the conversation: it takes the conversation's place, under the header, so the header
+     (the sidebar button, the Meeting and Study buttons) is never covered. The conversation stays in the page, only hidden, so
+     it is exactly where it was when the dock is closed. The workspace's three parts are placed in #app's own grid for this. */
+  body[data-dock-open="true"] #app {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  body[data-dock-open="true"] #workspace {
+    display: contents;
+  }
+
+  body[data-dock-open="true"] #appHeader {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  body[data-dock-open="true"] #chatMain {
+    grid-column: 1;
+    grid-row: 2;
+    visibility: hidden;
+  }
+
+  body[data-dock-open="true"] #composerWrap {
+    grid-column: 1;
+    grid-row: 3;
+    visibility: hidden;
+  }
+
+  body[data-dock-open="true"] #dock {
+    grid-column: 1;
+    grid-row: 2 / 4;
+    width: auto;
+    border-left: 0;
   }
 }
 
@@ -2849,20 +2978,10 @@ body[data-page="camera"] [hidden] {
   margin-left: 4px;
 }
 
-/* ---- Academic Intelligence: the Study panel (a panel over the right edge, like Meeting, so it needs no extra column) ---- */
+/* ---- Academic Intelligence: the Study panel (inside the dock, like Meeting; where it sits is the dock's business) ---- */
 #studyPanel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 13;
   display: flex;
   flex-direction: column;
-  width: min(430px, 100%);
-  border-left: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: -10px 0 32px rgba(0, 0, 0, 0.32);
-  color: var(--text);
   font-size: 14px;
   line-height: 1.45;
   user-select: text;
@@ -3081,6 +3200,23 @@ body[data-page="camera"] [hidden] {
   border-color: var(--danger);
   color: var(--danger);
 }
+#studyPanel button.study-link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+#studyPanel button.study-link:hover:not(:disabled) {
+  background: none;
+  color: var(--accent-hover);
+}
+#studyPanel button.study-link:disabled {
+  color: var(--text-faint);
+  text-decoration: none;
+}
 #studyPanel a {
   color: var(--accent);
 }
@@ -3172,12 +3308,6 @@ body[data-page="camera"] [hidden] {
 .study-lane > * + * {
   margin-top: 8px;
 }
-@media (max-width: 900px) {
-  #studyPanel {
-    width: 100%;
-  }
-}
-
 /* Study panel: the content seen in a session (segments of any kind), and chips that warn or confirm. */
 .study-content {
   border: 1px solid var(--border);

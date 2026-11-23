@@ -29,6 +29,7 @@ import { createStudyView, storedExclusions } from './interfaces/academic/studyVi
 import { createCommandRouter } from './interfaces/commands/meetingCommands.js'
 import { createHistoryApi } from './interfaces/history/historyApi.js'
 import { createRecentConversations, createSidebar, enableWebFonts, loadModelLabel, watchOnline } from './interfaces/layout/workspace.js'
+import { createDock } from './interfaces/layout/dock.js'
 import { createAccessApi, createAccessController, installCsrfHeader, watchForUnauthorized } from './interfaces/auth/access.js'
 import { createAccessGateView } from './interfaces/auth/accessGateView.js'
 
@@ -274,6 +275,22 @@ const saveMeetingAudio =
   settings.voice?.saveMeetingAudio === true ||
   new URLSearchParams(globalThis.location?.search ?? '').get('saveAudio') === '1'
 
+// The Study and Meeting panels share one place beside the conversation (the dock): at most one is shown. Made before either panel
+// can open, so a meeting that reopens itself on load is already in it. It only reads and writes attributes, so it is not expected to
+// fail; if it did, the dock is left open (an empty column) so that the panels inside it can still be opened.
+let dock = null
+try {
+  dock = createDock({
+    panels: [
+      { name: 'study', panel: 'studyPanel', button: 'studyButton' },
+      { name: 'meeting', panel: 'meetingPanel', button: 'meetingButton' }
+    ]
+  })
+} catch (err) {
+  console.error('[dock] could not start', err)
+  document.getElementById('dock')?.removeAttribute('hidden')
+}
+
 let meetingController = null
 try {
   const meetingApi = createMeetingApi()
@@ -399,9 +416,18 @@ try {
     native: createNativeCapture(),
     getConversationId: () => assistantClient.getSessionId?.() ?? null,
     getExclusions: storedExclusions,
-    onExchange: ({ question, answer }) => chat.addAcademicExchange({ question, answer })
+    onExchange: ({ question, answer, ref }) => chat.addAcademicExchange({ question, answer, ref })
   })
-  const studyView = createStudyView({ controller: studyController, api: academicApi, onOpen: () => studyController.refreshCourses() })
+  const studyView = createStudyView({
+    controller: studyController,
+    api: academicApi,
+    onOpen: () => studyController.refreshCourses(),
+    // Where the dock covers the conversation (a narrow window) it is put away first, so the answer is on screen when it is found.
+    onShowInChat: (ref) => {
+      if (globalThis.matchMedia?.('(max-width: 900px)')?.matches) dock?.close()
+      return chatView?.reveal(ref) ?? false
+    }
+  })
   if (studyView) studyController.init().catch(() => {})
 } catch (err) {
   // The study panel must never take the main screen down with it.

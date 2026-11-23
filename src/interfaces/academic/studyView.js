@@ -51,7 +51,7 @@ export function storedExclusions() {
   return { apps: words, titles: words }
 }
 
-export function createStudyView({ controller, api, doc = document, onOpen = () => {} } = {}) {
+export function createStudyView({ controller, api, doc = document, onOpen = () => {}, onShowInChat = null } = {}) {
   const $ = (id) => doc.getElementById(id)
   const button = $('studyButton')
   const panel = $('studyPanel')
@@ -135,6 +135,19 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
       q.state === 'answering' ? h(doc, 'p', { class: 'study-working', text: 'Working on it…' }) : null,
       answer
         ? h(doc, 'p', { class: 'study-answered', text: `Answered in the conversation (${answer.grounding === 'course' ? 'from your course materials' : answer.grounding === 'research' ? 'from research' : answer.grounding === 'both' ? 'from your materials and research' : 'from general knowledge'}).` })
+        : null,
+      // On a narrow window this panel covers the conversation the answer was written in: this takes the person to it.
+      answer?.ref && onShowInChat
+        ? h(doc, 'button', {
+            type: 'button',
+            class: 'study-link',
+            text: 'Show in chat',
+            onclick: (e) => {
+              if (onShowInChat(answer.ref) !== false) return
+              e.currentTarget.textContent = 'No longer in this conversation'
+              e.currentTarget.disabled = true
+            }
+          })
         : null
     )
   }
