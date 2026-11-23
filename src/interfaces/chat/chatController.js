@@ -276,10 +276,14 @@ export function createChatController({
     emit()
   }
 
-  /** A question explained in a study session: shown as an ordinary exchange (the server saved it in this conversation too). */
-  function addAcademicExchange({ question = '', answer = '' } = {}) {
-    push({ role: 'user', text: question })
-    push({ role: 'assistant', text: answer })
+  /**
+   * A question explained in a study session: shown as an ordinary exchange (the server saved it in this conversation too).
+   * `ref` names the exchange for whoever wants to point back at it (the Study panel's "Show in chat"); it is not shown.
+   */
+  function addAcademicExchange({ question = '', answer = '', ref = null } = {}) {
+    const mark = ref === null || ref === undefined ? {} : { ref: String(ref) }
+    push({ role: 'user', text: question, ...mark })
+    push({ role: 'assistant', text: answer, ...mark })
     emit()
   }
 

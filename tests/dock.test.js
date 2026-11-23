@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createEventBus } from '../src/core/events/eventBus.js'
+import { createChatController } from '../src/interfaces/chat/chatController.js'
 import { createDock, resolveDock } from '../src/interfaces/layout/dock.js'
 
 test('nothing shown means no dock', () => {
@@ -109,4 +111,15 @@ test('a panel that is already open when the dock starts is shown in it', () => {
   createDock({ doc, panels: PANELS })
   assert.equal(els.dock.hidden, false)
   assert.equal(doc.body.dataset.dock, 'meeting')
+})
+
+// ---- the exchange the Study panel can point back at ----
+
+test('a study exchange carries the reference it was added with, on both of its messages, and an ordinary one carries none', () => {
+  const c = createChatController({ assistantController: { async submitText() {}, async interrupt() {} }, assistantClient: { useSession() {} }, eventBus: createEventBus() })
+  c.addAcademicExchange({ question: 'Explain 3NF.', answer: 'It means…', ref: 'a1' })
+  c.addAcademicExchange({ question: 'And 2NF?', answer: 'It means…' })
+  const messages = c.getState().messages
+  assert.deepEqual(messages.map((m) => m.ref), ['a1', 'a1', undefined, undefined])
+  assert.deepEqual(messages.map((m) => m.role), ['user', 'assistant', 'user', 'assistant'])
 })

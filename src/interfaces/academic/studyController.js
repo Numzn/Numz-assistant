@@ -347,9 +347,12 @@ export function createStudyController({ api, native, getConversationId = () => n
     if (outcome.status === 'confirm-required') return patchQuestion(question.id, { state: 'confirm', signals: outcome.signals, message: outcome.message })
     if (outcome.status === 'needs-course') return patchQuestion(question.id, { state: 'needs-course', candidates: outcome.candidates, message: outcome.message })
     const answer = { answerId: outcome.answerId, questionId: outcome.questionId, courseId: outcome.courseId, topic: outcome.topic || state.session?.activeTopic || '', approach: outcome.approach, markdown: outcome.markdown, sources: outcome.sources, grounding: outcome.grounding, evidence: outcome.evidence, flags: outcome.flags, task: outcome.task }
+    // Only an answer that really went into the conversation can be pointed at there: `ref` names it for the conversation and the panel.
+    const delivered = Boolean(getConversationId() && outcome.savedToConversation)
+    if (delivered) answer.ref = answer.answerId ?? question.id
     patchQuestion(question.id, { state: 'answered', answer, message: '' })
     set({ lastAnswer: answer })
-    if (getConversationId() && outcome.savedToConversation) onExchange({ question: question.text, answer: outcome.markdown })
+    if (delivered) onExchange({ question: question.text, answer: outcome.markdown, ref: answer.ref })
   }
 
   async function answerQuestion(id, { style = null, instruction = null, confirmPractice = false, courseId = null } = {}) {

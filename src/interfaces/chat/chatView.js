@@ -124,6 +124,7 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
     li.className = 'msg'
     li.dataset.id = message.id
     li.dataset.role = message.role
+    if (message.ref) li.dataset.ref = message.ref
     if (message.role === 'assistant') {
       const who = doc.createElement('div')
       who.className = 'who'
@@ -346,6 +347,22 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
     }
   })
   voiceButton.addEventListener('click', () => onVoiceMode?.())
+
+  let flashTimer = null
+  /**
+   * Brings an exchange into view, by the `ref` it was added with, and outlines it for a moment so the eye finds it.
+   * -> whether it is in the thread (a conversation that was left, or a new chat, no longer holds it)
+   */
+  function reveal(ref) {
+    const found = [...thread.children].filter((li) => li.dataset.ref === String(ref))
+    if (!found.length) return false
+    found[0].scrollIntoView({ block: 'start' })
+    clearTimeout(flashTimer)
+    for (const li of thread.children) delete li.dataset.flash
+    for (const li of found) li.dataset.flash = 'true'
+    flashTimer = setTimeout(() => found.forEach((li) => delete li.dataset.flash), 1800)
+    return true
+  }
   main.addEventListener('scroll', () => (stickToBottom = nearBottom()), { passive: true })
   // A panel opening beside the conversation (or the window changing size) narrows it and the text reflows. Whoever was reading the
   // newest message stays on it, instead of finding it pushed below the fold.
@@ -361,6 +378,7 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
     notify,
     clearNotice,
     focusInput: () => input.focus({ preventScroll: true }),
+    reveal,
     /** Shows or hides the voice button; `title` says why it is unavailable. */
     setVoiceButton({ available, disabled = false, title = 'Start voice mode' }) {
       voiceButton.hidden = !available
@@ -371,6 +389,7 @@ export function createChatView({ chat, doc = document, onVoiceMode = null, onDel
     destroy() {
       unsubscribe()
       resizeWatch?.disconnect()
+      clearTimeout(flashTimer)
       clearNotice()
     }
   }

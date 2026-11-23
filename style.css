@@ -671,6 +671,19 @@ body[data-has-messages="true"] #thread {
   }
 }
 
+/* An exchange the Study panel pointed at ("Show in chat"): outlined for a moment (an outline, not an animation, so it also shows with
+   reduced motion). */
+.msg {
+  scroll-margin-top: 12px;
+}
+
+.msg[data-flash="true"] > .body,
+.msg[data-flash="true"] > .bubble {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-md);
+}
+
 /* Who is speaking: the assistant is named; your own messages are plainly yours by position and colour. */
 .msg .who {
   display: flex;
@@ -3186,6 +3199,23 @@ body[data-page="camera"] [hidden] {
 #studyPanel button[data-danger="true"] {
   border-color: var(--danger);
   color: var(--danger);
+}
+#studyPanel button.study-link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+#studyPanel button.study-link:hover:not(:disabled) {
+  background: none;
+  color: var(--accent-hover);
+}
+#studyPanel button.study-link:disabled {
+  color: var(--text-faint);
+  text-decoration: none;
 }
 #studyPanel a {
   color: var(--accent);

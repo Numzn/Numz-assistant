@@ -416,9 +416,18 @@ try {
     native: createNativeCapture(),
     getConversationId: () => assistantClient.getSessionId?.() ?? null,
     getExclusions: storedExclusions,
-    onExchange: ({ question, answer }) => chat.addAcademicExchange({ question, answer })
+    onExchange: ({ question, answer, ref }) => chat.addAcademicExchange({ question, answer, ref })
   })
-  const studyView = createStudyView({ controller: studyController, api: academicApi, onOpen: () => studyController.refreshCourses() })
+  const studyView = createStudyView({
+    controller: studyController,
+    api: academicApi,
+    onOpen: () => studyController.refreshCourses(),
+    // Where the dock covers the conversation (a narrow window) it is put away first, so the answer is on screen when it is found.
+    onShowInChat: (ref) => {
+      if (globalThis.matchMedia?.('(max-width: 900px)')?.matches) dock?.close()
+      return chatView?.reveal(ref) ?? false
+    }
+  })
   if (studyView) studyController.init().catch(() => {})
 } catch (err) {
   // The study panel must never take the main screen down with it.

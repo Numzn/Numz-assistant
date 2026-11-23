@@ -133,6 +133,7 @@ try {
         dock: rect('#dock'),
         chatMain: rect('#chatMain'),
         composer: rect('#composer'),
+        composerInput: rect('#composerInput'),
         header: rect('#appHeader'),
         sidebar: rect('#sidebar'),
         sidebarVisible: shown(el('#sidebar')) && getComputedStyle(el('#sidebar')).visibility !== 'hidden',
@@ -159,6 +160,7 @@ try {
   for (const w of [1600, 1280, 1000, 390]) {
     await size(w)
     const m = await measure()
+    check(`${w}px, nothing open: the composer is one row, with a text box wide enough to type in`, m.composerInput.w >= 150 && m.composer.h <= 90, `box ${m.composerInput.w}px wide, composer ${m.composer.h}px tall`)
     check(`${w}px, nothing open: there is no dock and nothing is lost to it`, m.dock === null && m.dockAttr === 'none' && m.visiblePanels.length === 0)
     check(`${w}px, nothing open: the conversation reaches the right edge`, m.chatMain.right === m.w, `right ${m.chatMain.right} of ${m.w}`)
     check(`${w}px, nothing open: no sideways scrolling`, !m.hScroll)
@@ -174,6 +176,7 @@ try {
     check(`${label}: the conversation ends where the dock begins (no overlap)`, m.chatMain.right <= m.dock.x, `chat right ${m.chatMain.right}, dock x ${m.dock?.x}`)
     check(`${label}: the conversation keeps at least 480 px`, m.chatMain.w >= 480, `chat ${m.chatMain.w}`)
     check(`${label}: the sidebar is still beside it`, m.sidebarVisible && m.sidebar.x === 0)
+    check(`${label}: the composer is one row: a text box wide enough to type in, its controls beside it`, m.composerInput.w >= 180 && m.composer.h <= 90, `box ${m.composerInput.w}px wide, composer ${m.composer.h}px tall`)
     check(`${label}: the composer, its Send button and the last answer can be clicked`, m.reach['#composerInput'] && m.reach['#sendButton'] && m.reach['#thread > li:last-child'], JSON.stringify(m.reach))
     check(`${label}: the header's Meeting and Study buttons can still be clicked`, m.reach['#meetingButton'] && m.reach['#studyButton'])
     check(`${label}: the panel's own box and close button can be clicked`, m.reach['#studyAskInput'] && m.reach['#studyClose'])
@@ -302,6 +305,40 @@ try {
   })
   check('1280px: the new answer appears in the conversation beside the open panel, in full view', m.reach['#thread > li:last-child'] && m.chatMain.right <= m.dock.x, JSON.stringify(tail))
   await shot('1280-study-answered')
+  await page.click('#studyClose')
+
+  // ==== I. "Show in chat": the way from an answered card to its answer, whichever way the panel is placed ==================
+  await size(800)
+  await openStudy()
+  const answeredBefore = await page.locator('li.msg[data-role="assistant"]').count()
+  await page.fill('#studyAskInput', 'What is a foreign key?')
+  await page.press('#studyAskInput', 'Enter')
+  await page.waitForFunction((n) => document.querySelectorAll('li.msg[data-role="assistant"]').length > n, answeredBefore, { timeout: 30000 })
+  await page.waitForFunction(() => document.querySelectorAll('#studyBody button.study-link').length >= 2, null, { timeout: 10000 })
+  m = await measure()
+  check('800px: the answer was written into the conversation behind the panel, and the panel is still there', m.visiblePanels.join() === 'studyPanel' && m.chatVisibility === 'hidden')
+  check('800px: each answered card offers "Show in chat"', (await page.locator('#studyBody button.study-link').allTextContents()).every((t) => t.trim() === 'Show in chat'))
+  await page.locator('#studyBody button.study-link').last().click()
+  await page.waitForTimeout(250)
+  m = await measure()
+  const flashed = await page.locator('li.msg[data-flash="true"]').count()
+  check('800px: "Show in chat" puts the panel away, shows the answer and outlines the exchange', m.dock === null && m.chatVisibility === 'visible' && m.reach['#thread > li:last-child'] && flashed === 2, `dock ${JSON.stringify(m.dock)}, flashed ${flashed}`)
+  await shot('800-show-in-chat')
+  await page.waitForTimeout(2000)
+  check('the outline fades after a moment', (await page.locator('li.msg[data-flash="true"]').count()) === 0)
+
+  await size(1280)
+  await openStudy()
+  await page.locator('#studyBody button.study-link').first().click() // the OLDER answer
+  await page.waitForTimeout(250)
+  const older = await page.evaluate(() => {
+    const first = document.querySelector('li.msg[data-flash="true"]')
+    const main = document.querySelector('#chatMain').getBoundingClientRect()
+    const r = first?.getBoundingClientRect()
+    return { open: !document.getElementById('studyPanel').hidden, inView: Boolean(r && r.top >= main.top - 2 && r.top < main.bottom), flashed: document.querySelectorAll('li.msg[data-flash="true"]').length }
+  })
+  check('1280px: "Show in chat" on an older answer scrolls to it and leaves the panel open beside it', older.open && older.inView && older.flashed === 2, JSON.stringify(older))
+  await shot('1280-show-in-chat-older')
   await page.click('#studyClose')
 
   check('no errors on the page the whole time', problems.length === 0, problems.slice(0, 4).join(' | '))
