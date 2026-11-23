@@ -102,6 +102,10 @@ export function createCaptureService({ vision, sessionManager, courses, now = Da
         } catch (err) {
           call?.fail(err)
           log(`session ${sessionId} read failed (${err?.statusCode ?? err?.status ?? err?.name ?? 'error'})`)
+          // A refused key or an account with no billing will not mend itself in a few seconds: say so, and let the page pause instead of asking again.
+          if (err?.reason === 'billing' || err?.reason === 'key') {
+            throw new AcademicError(503, 'vision-unavailable', 'Screen reading is not available right now: the AI service behind it is not accepting requests. Nothing was read.')
+          }
           throw new AcademicError(502, 'read-failed', 'The screen could not be read just now. It will be tried again when it changes.')
         } finally {
           runtime.busy = false

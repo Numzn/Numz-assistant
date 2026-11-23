@@ -494,10 +494,30 @@ test('a screen the server could not take yet is sent again after a wait, then gi
   }
   failing.native.script.polls = [polled({ pending: pending() }), polled()]
   await until(() => failing.controller.getState().lastRead?.status === 'held-back')
-  assert.equal(failing.api.calls.send.length, 3, 'once, and twice again')
+  assert.equal(failing.api.calls.send.length, 2, 'a read that failed at the model is sent again once, not again and again')
   for (let i = 0; i < 20; i++) await tick()
-  assert.equal(failing.api.calls.send.length, 3, 'and then it is let go')
+  assert.equal(failing.api.calls.send.length, 2, 'and then it is let go')
+  assert.equal(failing.controller.getState().tone, 'warn')
+  assert.match(failing.controller.getState().message, /could not be read just now/, 'and the person is told, not left looking at a session that seems to do nothing')
   await failing.controller.stop()
+})
+
+test('when the reading service refuses the server (a key or an account problem) the person is told, screen reading pauses, and nothing is sent again', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  t.api.script.send = async () => {
+    throw err(503, 'vision-unavailable', 'Screen reading is not available right now: the AI service behind it is not accepting requests. Nothing was read.')
+  }
+  t.native.script.polls = [polled({ pending: pending('cap-1') }), polled({ pending: pending('cap-2') }), polled()]
+  await until(() => t.controller.getState().watch.status === 'paused')
+  assert.equal(t.native.calls.pause, 1)
+  assert.match(t.controller.getState().message, /not accepting requests/)
+  assert.match(t.controller.getState().message, /Screen reading is paused/)
+  assert.equal(t.controller.getState().tone, 'warn')
+  for (let i = 0; i < 20; i++) await tick()
+  assert.equal(t.api.calls.send.length, 1, 'no retry of the same screen, and the screen that came next was not sent either')
+  await t.controller.stop()
 })
 
 test('a screen waiting to be sent again is replaced by a newer one, and let go when the session is paused or ends', async () => {
