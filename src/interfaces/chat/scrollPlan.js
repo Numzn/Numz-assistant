@@ -1,3 +1,17 @@
+/** How a long answer is made to take less height, in order: as drawn; wider (more of the width); wider and smaller; wider and smallest. */
+export const FIT_TIERS = ['', 'wide', 'compact', 'dense']
+
+/**
+ * The first of FIT_TIERS in which an answer fits the visible conversation (height at most `room`), or the last one (the most compact) when
+ * none does: then it is simply the most it can be shrunk, and starts at the top (planCenter).
+ * @param {(tier: string) => number} measure applies a tier to the answer and returns how tall it is then
+ * @param {number} room the height it has to fit in
+ */
+export function pickFit(measure, room) {
+  for (const tier of FIT_TIERS) if (measure(tier) <= room) return tier
+  return FIT_TIERS.at(-1)
+}
+
 /**
  * Where to scroll the conversation so that one message is in the middle of what the person sees.
  * Pure arithmetic (no DOM, tested); chatView.js measures the page and applies the answer.

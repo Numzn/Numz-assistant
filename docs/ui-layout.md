@@ -37,6 +37,12 @@ view starts at the top, to be read from its first line. The newest message has n
 it reach the middle; the next ordinary message gives the room back and the conversation follows replies as before. A resize keeps the answer in the
 middle, but a person who scrolled away is left where they are. The arithmetic is `src/interfaces/chat/scrollPlan.js`.
 
+**Long answers use width before height.** A study answer taller than the visible conversation is made to take less height, only as far as it needs: first
+wider (up to 1180px instead of the 760px reading column, when the window has the room), then in smaller type (14.5px, then 13px, the floor). One that
+already fits is left alone. If even the smallest does not fit it starts at the top, to be read from its first line. (`FIT_TIERS`/`pickFit` in
+`scrollPlan.js`, `fitToView` in `chatView.js`, `.msg[data-fit]` in `style.css`.) This is for study answers, which arrive whole; ordinary replies stream in
+and are not resized as they go.
+
 **Show in chat.** A study answer is written into the conversation. Each answered card in the Study panel has a "Show in chat" button: where the
 dock covers the conversation it is put away first, then the answer is brought to the middle and the exchange outlined for 1.8s (an outline, not an animation, so it
 also shows with reduced motion). On a wide window the panel stays open beside it.

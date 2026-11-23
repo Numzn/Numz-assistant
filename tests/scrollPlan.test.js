@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { planCenter } from '../src/interfaces/chat/scrollPlan.js'
+import { FIT_TIERS, pickFit, planCenter } from '../src/interfaces/chat/scrollPlan.js'
 
 test('a message that fits goes to the middle of the view', () => {
   // content 2000 tall, view 600, the message is 200 tall and starts at 900: its middle (1000) goes to the view's middle (300 down)
@@ -33,4 +33,19 @@ test('near the top of the thread it cannot go above the start', () => {
 test('a message exactly as tall as the view minus its margins counts as fitting', () => {
   assert.equal(planCenter({ itemTop: 500, itemHeight: 568, view: 600, scrollHeight: 3000 }).tall, false)
   assert.equal(planCenter({ itemTop: 500, itemHeight: 569, view: 600, scrollHeight: 3000 }).tall, true)
+})
+
+test('a long answer is made wider first, then smaller, and no more than it needs', () => {
+  const heights = { '': 900, wide: 700, compact: 560, dense: 480 }
+  const tried = []
+  const measure = (tier) => (tried.push(tier), heights[tier])
+  assert.equal(pickFit(measure, 600), 'compact')
+  assert.deepEqual(tried, ['', 'wide', 'compact'], 'it stops at the first that fits; it never goes smaller than it must')
+  assert.equal(pickFit((tier) => heights[tier], 950), '', 'an answer that already fits is left as it is')
+  assert.equal(pickFit((tier) => heights[tier], 700), 'wide', 'widening alone can be enough')
+})
+
+test('an answer that fits in no tier ends in the smallest, to be read from its top', () => {
+  assert.equal(pickFit(() => 5000, 600), FIT_TIERS.at(-1))
+  assert.deepEqual(FIT_TIERS, ['', 'wide', 'compact', 'dense'])
 })
