@@ -1,0 +1,845 @@
+{
+  "label": "before",
+  "root": "/srv/projects/Numz-assistant",
+  "at": "2026-11-23T23:36:00.748Z",
+  "model": "claude-sonnet-5-5",
+  "vision": "claude-sonnet-5-5",
+  "runs": 3,
+  "summary": [
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "n": 3,
+      "read": 3582.285179999999,
+      "classify": 0.021614000001136446,
+      "first": 1056.7471339999993,
+      "answer": 1056.7455109999992,
+      "total": 4538.356801999998,
+      "words": 34,
+      "correct": 3
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "n": 3,
+      "read": 3163.053332000003,
+      "classify": 0.004042999997182051,
+      "first": 2682.7583430000013,
+      "answer": 2682.7540450000015,
+      "total": 5845.807377000005,
+      "words": 3,
+      "correct": 3
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "n": 3,
+      "read": 2203.188537000002,
+      "classify": 0.008153000002494082,
+      "first": 989.7292640000014,
+      "answer": 989.7279710000003,
+      "total": 3173.6051429999934,
+      "words": 15,
+      "correct": 3
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "n": 3,
+      "read": 3072.0839320000014,
+      "classify": 0.007036999995762017,
+      "first": 1629.696928999998,
+      "answer": 1629.6939519999942,
+      "total": 4728.015741000003,
+      "words": 20,
+      "correct": 3
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "n": 3,
+      "read": 2799.8809580000016,
+      "classify": 0.003922999996575527,
+      "first": 5890.201228999998,
+      "answer": 5890.19960800001,
+      "total": 8820.183734000006,
+      "words": 126,
+      "correct": 3
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "n": 3,
+      "read": 2975.4463019999966,
+      "classify": 0.0056570000015199184,
+      "first": 6451.103145000001,
+      "answer": 6451.101888999998,
+      "total": 9495.545171000005,
+      "words": 322,
+      "correct": 3
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "n": 3,
+      "read": 3064.952250000002,
+      "classify": 0.015469999998458661,
+      "first": 3543.406262999997,
+      "answer": 3543.405421999996,
+      "total": 6522.167012000005,
+      "words": 125,
+      "correct": 3
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "n": 3,
+      "read": 3143.4297369999986,
+      "classify": 0.007574999995995313,
+      "first": 2029.1000120000099,
+      "answer": 2029.099160999991,
+      "total": 5172.52889799999,
+      "words": 74,
+      "correct": 3
+    }
+  ],
+  "overall": {
+    "read": 3064.952250000002,
+    "first": 2029.1000120000099,
+    "answer": 2029.099160999991,
+    "total": 5270.115231,
+    "words": 34,
+    "correct": 24,
+    "runs": 24,
+    "failed": 0,
+    "modelCalls": 30
+  },
+  "results": [
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "run": 1,
+      "ok": true,
+      "read": 3601.098392,
+      "questions": 1,
+      "classify": 0.17077500000004875,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 1669.0168389999994,
+      "first": 1669.0278560000002,
+      "words": 23,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 5270.115231,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 320,
+        "answerIn": 979,
+        "answerOut": 38
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Opportunity cost is the value of the next best alternative that is given up when a choice is made, because resources are scarce."
+    },
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "run": 2,
+      "ok": true,
+      "read": 3459.383847000001,
+      "questions": 1,
+      "classify": 0.021614000001136446,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 1056.7455109999992,
+      "first": 1056.7471339999993,
+      "words": 34,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 4516.129358,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 343,
+        "answerIn": 1086,
+        "answerOut": 58
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Opportunity cost is the value of the next best alternative given up when a choice is made. Because resources are scarce, choosing one option means losing the benefit of the best option not chosen."
+    },
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "run": 3,
+      "ok": true,
+      "read": 3582.285179999999,
+      "questions": 1,
+      "classify": 0.008879000000888482,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 956.0716219999995,
+      "first": 956.073241,
+      "words": 34,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 4538.356801999998,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 343,
+        "answerIn": 1086,
+        "answerOut": 56
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Opportunity cost is the value of the next best alternative that is given up when a choice is made. It is what you sacrifice by choosing one option over another, because resources are scarce."
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "run": 1,
+      "ok": true,
+      "read": 3100.5033170000006,
+      "questions": 1,
+      "classify": 0.003903000000718748,
+      "tasks": [
+        "multiple_choice"
+      ],
+      "answer": 5320.399297,
+      "first": 5320.401206999999,
+      "words": 3,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 8420.902614,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 329,
+        "answerIn": 960,
+        "answerOut": 12
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**B) 60 km/h**"
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "run": 2,
+      "ok": true,
+      "read": 3163.053332000003,
+      "questions": 1,
+      "classify": 0.004042999997182051,
+      "tasks": [
+        "multiple_choice"
+      ],
+      "answer": 2682.7540450000015,
+      "first": 2682.7583430000013,
+      "words": 3,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 5845.807377000005,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 329,
+        "answerIn": 960,
+        "answerOut": 12
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**B) 60 km/h**"
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "run": 3,
+      "ok": true,
+      "read": 3349.609907000002,
+      "questions": 1,
+      "classify": 0.008480000000417931,
+      "tasks": [
+        "multiple_choice"
+      ],
+      "answer": 1680.959895,
+      "first": 1680.9613150000005,
+      "words": 3,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 5030.569802000002,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 344,
+        "answerIn": 960,
+        "answerOut": 12
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**B) 60 km/h**"
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "run": 1,
+      "ok": true,
+      "read": 2276.3400580000016,
+      "questions": 1,
+      "classify": 0.008153000002494082,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 989.7279710000003,
+      "first": 989.7292640000014,
+      "words": 15,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 3266.068029000002,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 275,
+        "answerIn": 987,
+        "answerOut": 36
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**Total interest = $300**\n\nI = Prt = 2,000 × 0.05 × 3 = $300"
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "run": 2,
+      "ok": true,
+      "read": 2159.586089999997,
+      "questions": 1,
+      "classify": 0.006951999996090308,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 1014.0190529999963,
+      "first": 1014.0229899999977,
+      "words": 15,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 3173.6051429999934,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 275,
+        "answerIn": 987,
+        "answerOut": 35
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**Total interest = $300**\n\nI = Prt = 2000 × 0.05 × 3 = $300"
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "run": 3,
+      "ok": true,
+      "read": 2203.188537000002,
+      "questions": 1,
+      "classify": 0.03327999999601161,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 955.1088369999998,
+      "first": 955.1103739999962,
+      "words": 15,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 3158.2973740000016,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 275,
+        "answerIn": 987,
+        "answerOut": 36
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**Total interest = $300**\n\nI = Prt = 2,000 × 0.05 × 3 = $300"
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "run": 1,
+      "ok": true,
+      "read": 3110.6589620000013,
+      "questions": 1,
+      "classify": 0.007036999995762017,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 1624.7323870000037,
+      "first": 1624.7354320000013,
+      "words": 20,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 4735.391349000005,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 250,
+        "answerIn": 946,
+        "answerOut": 44
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "1. Medium of exchange\n2. Unit of account (measure of value)\n3. Store of value\n4. Standard of deferred payment"
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "run": 2,
+      "ok": true,
+      "read": 3060.4028679999974,
+      "questions": 1,
+      "classify": 0.0048529999985476024,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 1629.6939519999942,
+      "first": 1629.696928999998,
+      "words": 20,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 4690.096819999992,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 250,
+        "answerIn": 946,
+        "answerOut": 44
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "1. Medium of exchange\n2. Unit of account (measure of value)\n3. Store of value\n4. Standard of deferred payment"
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "run": 3,
+      "ok": true,
+      "read": 3072.0839320000014,
+      "questions": 1,
+      "classify": 0.016580000003159512,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 1655.9318090000015,
+      "first": 1655.932722999998,
+      "words": 20,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 4728.015741000003,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 247,
+        "answerIn": 946,
+        "answerOut": 44
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "1. Medium of exchange\n2. Unit of account (measure of value)\n3. Store of value\n4. Standard of deferred payment"
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "run": 1,
+      "ok": true,
+      "read": 2799.8809580000016,
+      "questions": 1,
+      "classify": 0.0036689999978989363,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 3502.931669999998,
+      "first": 3502.934441999998,
+      "words": 126,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 6302.812628,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 248,
+        "answerIn": 963,
+        "answerOut": 297
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "| | TCP | UDP |\n|---|---|---|\n| Connection | Connection-oriented: a handshake sets up the connection before data is sent | Connectionless: data is sent with no setup |\n| Reliability | Reliable: acknowledgements and retransmission of lost packets | Unreliable: no acknowledgements, lost packets are not resent |\n| Ordering | Data arrives in order (sequence numbers) | No ordering guarantee |\n| Control | Flow control and congestion control | None |\n| Speed and overhead | Slower, larger header (20+ bytes) | Faster, small header (8 bytes) |\n| Typical uses | Web (HTTP/HTTPS), email, file transfer | St"
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "run": 2,
+      "ok": true,
+      "read": 2929.9841259999957,
+      "questions": 1,
+      "classify": 0.016577000002143905,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 5890.19960800001,
+      "first": 5890.201228999998,
+      "words": 143,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 8820.183734000006,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 248,
+        "answerIn": 963,
+        "answerOut": 340
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**TCP (Transmission Control Protocol)**\n- Connection-oriented: a connection is set up first with a three-way handshake.\n- Reliable: it uses acknowledgements, retransmission of lost packets, sequencing and error checking, so data arrives complete and in order.\n- Has flow control and congestion control.\n- Slower, with a larger header (20 bytes or more) and more overhead.\n- Used where accuracy matters, such as web browsing (HTTP/HTTPS), email and file transfer.\n\n**UDP (User Datagram Protocol)**\n- Connectionless: it sends datagrams with no handshake.\n- Unreliable: there is no guarantee of delivery"
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "run": 3,
+      "ok": true,
+      "read": 2797.0642810000136,
+      "questions": 1,
+      "classify": 0.003922999996575527,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 6472.459971999997,
+      "first": 6472.460684000005,
+      "words": 122,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 9269.52425300001,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 248,
+        "answerIn": 963,
+        "answerOut": 288
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "| | TCP | UDP |\n|---|---|---|\n| Connection | Connection-oriented: a handshake sets up the connection first | Connectionless: data is sent with no setup |\n| Reliability | Reliable: acknowledgements, retransmission of lost packets | Unreliable: no acknowledgements or retransmission |\n| Ordering | Delivers data in order, using sequence numbers | No ordering guarantee |\n| Control | Flow control and congestion control | None |\n| Speed and overhead | Slower, larger header (20 bytes minimum) | Faster, small header (8 bytes) |\n| Typical uses | Web (HTTP/HTTPS), email, file transfer | Streaming, VoIP, "
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "run": 1,
+      "ok": true,
+      "read": 2975.4463019999966,
+      "questions": 1,
+      "classify": 0.0035510000016074628,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 5727.076973000003,
+      "first": 5727.078043999994,
+      "words": 259,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 8702.523275,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 262,
+        "answerIn": 981,
+        "answerOut": 544
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**Evaluation of rent control (6 marks)**\n\nRent control sets a legal maximum on rents, so it helps some tenants but does not solve the affordability problem overall.\n\n**Strengths**\n- Sitting tenants pay lower rents straight away, which helps low-income households.\n- It gives security of tenure and protects tenants from sudden rent rises and displacement.\n\n**Weaknesses**\n- A price ceiling below the market rent creates excess demand. Landlords supply fewer homes, so there is a shortage and often waiting lists.\n- Landlords have less incentive to maintain properties, so quality falls. Some convert "
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "run": 2,
+      "ok": true,
+      "read": 2911.557633999997,
+      "questions": 1,
+      "classify": 0.0056570000015199184,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 7145.879942999993,
+      "first": 7145.880823999993,
+      "words": 335,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 10057.43757699999,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 262,
+        "answerIn": 981,
+        "answerOut": 648
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Rent control is a price ceiling set below the market rent. It works in the short run for some people, but it is a poor way to make housing affordable overall.\n\n**Strengths**\n- Sitting tenants pay lower rents and have more security, so they are less likely to be forced out by rises.\n- Low-income households in controlled units gain, and stable tenancies help communities and reduce moving costs.\n\n**Weaknesses**\n- At a price below equilibrium, quantity demanded exceeds quantity supplied, so there is a shortage of rental housing.\n- Landlords earn less, so they have less incentive to build new renta"
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "run": 3,
+      "ok": true,
+      "read": 3044.4432820000075,
+      "questions": 1,
+      "classify": 0.016703999994206242,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 6451.101888999998,
+      "first": 6451.103145000001,
+      "words": 322,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 9495.545171000005,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 262,
+        "answerIn": 981,
+        "answerOut": 646
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Rent control caps rents below the market level. It is effective in the short run for current tenants but poor as a long-run way to make housing affordable.\n\n**Strengths**\n- Tenants in controlled units pay lower rents, so they spend less of their income on housing.\n- It gives security of tenure and stops sudden rent rises, which reduces displacement and helps low-income and vulnerable households.\n\n**Weaknesses**\n- A price ceiling below equilibrium causes excess demand, so there is a shortage of rental housing.\n- Landlords earn less, so they supply fewer rental units. They may convert to owner-o"
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "run": 1,
+      "ok": true,
+      "read": 3285.0495809999993,
+      "questions": 1,
+      "classify": 0.015469999998458661,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 3543.405421999996,
+      "first": 3543.406262999997,
+      "words": 129,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 6828.4550029999955,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 457,
+        "answerIn": 1170,
+        "answerOut": 271
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**Action 1: Raise prices on cakes and specialist products.** Ana has not changed her prices in three years, while flour and energy costs have risen 20%. A modest rise, mainly on cakes, which compete less directly with the supermarket's cheap bread, would increase revenue per sale and cover the higher costs. Customers who value freshness and quality are less likely to switch.\n\n**Action 2: Differentiate the bakery and cut energy waste.** Ana should stress what the supermarket cannot match, such as freshly baked, local, artisan bread and made-to-order celebration cakes. This supports the higher p"
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "run": 2,
+      "ok": true,
+      "read": 3064.952250000002,
+      "questions": 1,
+      "classify": 0.0036379999946802855,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 3323.6972649999952,
+      "first": 3323.698053,
+      "words": 125,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 6388.649514999997,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 444,
+        "answerIn": 1168,
+        "answerOut": 236
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**Action 1: Raise prices on cakes and specialty items.** Ana has not changed her prices in three years while flour and energy costs have risen 20%. A modest increase on cakes, where she competes less directly with the supermarket, would raise revenue per sale and cover the higher costs. Sales have held steady, so she can expect to keep most of her customers.\n\n**Action 2: Cut energy and ingredient costs.** She could switch to a cheaper energy tariff, run the ovens only when they are full, and buy flour in bulk or from a cheaper supplier. This lowers the unit cost of each loaf and cake and so wi"
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "run": 3,
+      "ok": true,
+      "read": 2954.082785000006,
+      "questions": 1,
+      "classify": 0.01660499999707099,
+      "tasks": [
+        "explain"
+      ],
+      "answer": 3568.0842269999994,
+      "first": 3568.0848950000072,
+      "words": 110,
+      "parts": 1,
+      "checked": "-",
+      "calls": 1,
+      "total": 6522.167012000005,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 446,
+        "answerIn": 1166,
+        "answerOut": 213
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "**Action 1: Raise prices on cakes and specialty items (not on basic bread).** Prices have not changed in three years while flour and energy costs rose 20%, so margins have shrunk. Cakes face less direct competition from the supermarket, so customers are less likely to leave. This raises revenue per sale and restores the gross margin.\n\n**Action 2: Cut or control costs.** Ana could reduce energy use by baking in full batches and using the ovens only when needed. She could also buy flour in bulk or find a cheaper supplier, and reduce waste by baking to demand. Lower costs per loaf or cake reduce "
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "run": 1,
+      "ok": true,
+      "read": 3180.468038999985,
+      "questions": 3,
+      "classify": 0.0072410000138916075,
+      "tasks": [
+        "explain",
+        "explain",
+        "explain"
+      ],
+      "answer": 1556.560765000002,
+      "first": 1556.5618339999928,
+      "words": 74,
+      "parts": 3,
+      "checked": "-,-,-",
+      "calls": 3,
+      "total": 4737.028803999987,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 482,
+        "answerIn": 2883,
+        "answerOut": 142
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Inflation is a sustained rise in the general price level in an economy over time, which reduces the purchasing power of money.\n**Rate of inflation = 5%**\n\n(210 − 200) ÷ 200 × 100 = 5%\nInflation reduces the purchasing power of savings: if the interest rate paid is lower than the inflation rate, the money saved buys fewer goods and services in the future than it does now, so its real value falls."
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "run": 2,
+      "ok": true,
+      "read": 3107.7725609999907,
+      "questions": 3,
+      "classify": 0.007574999995995313,
+      "tasks": [
+        "explain",
+        "explain",
+        "explain"
+      ],
+      "answer": 3953.353516000003,
+      "first": 3953.3551870000083,
+      "words": 75,
+      "parts": 3,
+      "checked": "-,-,-",
+      "calls": 3,
+      "total": 7061.1260769999935,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 479,
+        "answerIn": 2883,
+        "answerOut": 138
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Inflation is a sustained rise in the general price level of goods and services in an economy over time, which reduces the purchasing power of money.\nRate of inflation = (210 − 200) ÷ 200 × 100 = **5%**\nInflation reduces the purchasing power of savings: if the interest rate on the savings is lower than the inflation rate, the money saved can buy fewer goods and services in the future than it can now."
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "run": 3,
+      "ok": true,
+      "read": 3143.4297369999986,
+      "questions": 3,
+      "classify": 0.0101859999995213,
+      "tasks": [
+        "explain",
+        "explain",
+        "explain"
+      ],
+      "answer": 2029.099160999991,
+      "first": 2029.1000120000099,
+      "words": 73,
+      "parts": 3,
+      "checked": "-,-,-",
+      "calls": 3,
+      "total": 5172.52889799999,
+      "tokens": {
+        "visionIn": 3275,
+        "visionOut": 493,
+        "answerIn": 2883,
+        "answerOut": 138
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "Inflation is a sustained rise in the general price level of goods and services in an economy over time, which reduces the purchasing power of money.\nInflation rate = (210 − 200) ÷ 200 × 100 = **5%**\nInflation reduces the purchasing power of savings: if the interest rate paid is lower than the inflation rate, the money saved buys fewer goods and services later than it would today (its real value falls)."
+    }
+  ]
+}

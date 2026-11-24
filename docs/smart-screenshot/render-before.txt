@@ -1,0 +1,6 @@
+render time per answer, median of 200 (ms)  — /srv/projects/Numz-assistant
+one line (multiple choice)        0.00 ms   blocks 0   copy icons 0
+short paragraph (definition)      0.00 ms   blocks 0   copy icons 0
+list and table (comparison)       0.20 ms   blocks 0   copy icons 0
+three parts (a)(b)(c)             0.10 ms   blocks 0   copy icons 0
+long essay (evaluation)           0.40 ms   blocks 0   copy icons 0
