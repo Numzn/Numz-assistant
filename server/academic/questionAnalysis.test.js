@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { analyseQuestion, classifyTask, instructionsOf, marksOf, requiredCount, splitParts } from './questionAnalysis.js'
+import { analyseQuestion, classifyTask, extractOptions, instructionsOf, marksOf, requiredCount, splitParts } from './questionAnalysis.js'
 
 const task = (text, extra = {}) => classifyTask({ text, options: [], ...extra })
 
@@ -115,4 +115,21 @@ test('the analysis of a multi-part question carries each part\'s own task and co
   const a = analyseQuestion({ text: '(a) Define inflation.\n(b) Calculate the rate of inflation if prices rose from 200 to 210.\n(c) List two effects on savers.', options: [] })
   assert.deepEqual(a.parts.map((p) => [p.key, p.task, p.count]), [['a', 'define', null], ['b', 'calculate', null], ['c', 'list', 2]])
   assert.equal(a.review, true)
+})
+
+test('options typed into the text of a question are options, never parts: capital letters are not part labels', () => {
+  const typed = 'A car travels 150 km in 2.5 hours. What is its average speed? A) 40 km/h B) 60 km/h C) 75 km/h D) 100 km/h'
+  assert.deepEqual(splitParts(typed).parts, [], 'A) B) C) D) are not parts')
+  const found = extractOptions(typed)
+  assert.equal(found.stem, 'A car travels 150 km in 2.5 hours. What is its average speed?')
+  assert.deepEqual(found.options, [{ label: 'A', text: '40 km/h' }, { label: 'B', text: '60 km/h' }, { label: 'C', text: '75 km/h' }, { label: 'D', text: '100 km/h' }])
+  const a = analyseQuestion({ text: typed })
+  assert.deepEqual([a.task, a.complexity, a.parts.length, a.options.length], ['multiple_choice', 'simple', 0, 4])
+  assert.equal(extractOptions('Which is a noun?\n(A) run\n(B) dog').options.length, 2, 'on their own lines, with brackets')
+  assert.equal(extractOptions('What is 2+2? A) 3 C) 5'), null, 'the letters must follow each other from A')
+  assert.equal(extractOptions('Vitamin A) is fat soluble'), null, 'one marker is not a list of options')
+  assert.equal(extractOptions('A) one B) two'), null, 'without a question before them it is not told apart from a list')
+  // lowercase labels are still parts
+  assert.deepEqual(splitParts('(a) Define x. (b) Define y.').parts.map((p) => p.key), ['a', 'b'])
+  assert.equal(analyseQuestion({ text: '(a) Define x. (b) Define y. (c) Define z.' }).parts.length, 3)
 })

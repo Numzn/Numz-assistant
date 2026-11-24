@@ -77,12 +77,12 @@ function schemeOf(label) {
 /**
  * The labelled parts of a multi-part question. Markers are (a) (b), a) b), (i) (ii), (1) (2), or 1. 2. / a. b. at the start of a line;
  * they count only when there are at least two and they follow each other from the start of their scheme, so "e.g." and "No. 3" are not
- * parts. Capital letters are the options of a multiple-choice question, never parts.
+ * parts. Only lowercase letters are parts: capital letters (A) B) C)) are the options of a multiple-choice question, see `extractOptions`.
  */
 export function splitParts(text) {
   const source = String(text ?? '')
   const markers = []
-  const pattern = /(?:^|(?<=\s))(?:\(([a-hivx]{1,4}|\d{1,2})\)|([a-h]|[ivx]{1,4}|\d{1,2})\)|^([a-h1-9])\.)(?=\s)/gim
+  const pattern = /(?:^|(?<=\s))(?:\(([a-hivx]{1,4}|\d{1,2})\)|([a-h]|[ivx]{1,4}|\d{1,2})\)|^([a-h1-9])\.)(?=\s)/gm
   for (const m of source.matchAll(pattern)) {
     const label = (m[1] ?? m[2] ?? m[3]).toLowerCase()
     if (!schemeOf(label)) continue
@@ -106,6 +106,23 @@ export function splitParts(text) {
     }
   }
   return { stem: source.trim(), parts: [] }
+}
+
+/**
+ * The options of a multiple-choice question typed (or copied) into its text: "What is 2+2? A) 3 B) 4 C) 5". Capital letters in order from A,
+ * at least two, after a stem. Returns `{ stem, options }` or null. A question that already comes with its options never needs this.
+ */
+export function extractOptions(text) {
+  const source = String(text ?? '')
+  const found = []
+  for (const m of source.matchAll(/(?:^|(?<=\s))\(?([A-H])[.)]\s+(?=\S)/g)) {
+    if (m[1].charCodeAt(0) - 65 === found.length) found.push({ label: m[1], index: m.index, end: m.index + m[0].length })
+  }
+  if (found.length < 2) return null
+  const stem = source.slice(0, found[0].index).trim()
+  if (!stem) return null
+  const options = found.map((f, i) => ({ label: f.label, text: source.slice(f.end, found[i + 1]?.index ?? source.length).trim().replace(/[;,]$/, '') })).filter((o) => o.text)
+  return options.length >= 2 ? { stem, options } : null
 }
 
 /** The kind of task a question sets, from how it begins (and what it carries). Decides the shape of the answer: never one template for everything. */
@@ -167,12 +184,16 @@ const FORMAT = { multiple_choice: 'multiple-choice', calculate: 'calculation', d
  * @returns {{ task: string, format: string, complexity: 'simple'|'moderate'|'complex', parts: object[], stem: string, instructions: string[], count: number|null, marks: number|null, caseStudy: boolean, ownLabel: string|null, review: boolean }}
  */
 export function analyseQuestion(question, { related = [] } = {}) {
-  const text = String(question?.text ?? question ?? '')
-  const isChoice = (question?.options?.length ?? 0) >= 2 || question?.type === 'multiple-choice' || question?.type === 'true-false'
+  const given = String(question?.text ?? question ?? '')
+  // Options written into the text of a typed question are found here; a question that comes with its options is used as it is.
+  const inline = (question?.options?.length ?? 0) >= 2 ? null : extractOptions(given)
+  const text = inline ? inline.stem : given
+  const options = inline ? inline.options : question?.options ?? []
+  const isChoice = options.length >= 2 || question?.type === 'multiple-choice' || question?.type === 'true-false'
   const { stem, parts } = isChoice ? { stem: text.trim(), parts: [] } : splitParts(text)
   const found = isChoice ? { scenario: false, ask: null } : scenarioOf({ text, related })
   const caseStudy = found.scenario
-  const baseTask = classifyTask(found.ask ?? (parts.length ? stem || parts[0].text : question))
+  const baseTask = isChoice ? 'multiple_choice' : classifyTask(found.ask ?? (parts.length ? stem || parts[0].text : question))
   const scenarioTask = caseStudy && !['calculate', 'define', 'multiple_choice'].includes(baseTask) ? 'case_study' : baseTask
   const marks = marksOf(question?.marks, text)
   const instructions = instructionsOf(parts.length ? `${stem}\n${parts.map((p) => p.text).join('\n')}` : text)
@@ -193,6 +214,7 @@ export function analyseQuestion(question, { related = [] } = {}) {
     count: parts.length ? null : requiredCount(text),
     marks,
     caseStudy,
+    options,
     ownLabel: own && !parts.length ? own[1].toLowerCase() : null,
     review: complexity === 'complex'
   }

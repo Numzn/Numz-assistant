@@ -517,3 +517,24 @@ test('a question that is itself part (b) of a bigger one keeps that label on its
   assert.deepEqual(result.parts.map((p) => p.label), ['ANSWER (b)'])
   assert.match(result.markdown, /^#### ANSWER \(b\)\n\n\*\*5%\*\*/)
 })
+
+test('a multiple-choice question typed with its options in the text is one question with options, answered with one option', async () => {
+  const t = setup()
+  const s = startStudy(t)
+  t.model.reply = '**B) 60 km/h**'
+  const result = await t.alice.answer({ sessionId: s.id, text: 'A car travels 150 km in 2.5 hours. What is its average speed? A) 40 km/h B) 60 km/h C) 75 km/h D) 100 km/h' }, t.ctx)
+  assert.equal(result.task, 'multiple_choice')
+  assert.deepEqual(result.parts.map((p) => p.label), ['ANSWER'], 'one answer, not one per option')
+  assert.equal(result.validation.verdict, 'ok')
+  assert.equal(t.calls.length, 1)
+  const asked = t.calls[0].messages[1].content
+  assert.match(asked, /What is its average speed\?\nA\) 40 km\/h\nB\) 60 km\/h\nC\) 75 km\/h\nD\) 100 km\/h/, 'the options are listed once, as options')
+  assert.equal((asked.match(/60 km\/h/g) ?? []).length, 1)
+  // an answer that is not one of the options is sent back
+  const t2 = setup()
+  const s2 = startStudy(t2)
+  const replies = ['It is 60.', '**B) 60 km/h**']
+  t2.model.reply = () => replies.shift()
+  const fixed = await t2.alice.answer({ sessionId: s2.id, text: 'What is its average speed after 150 km in 2.5 hours? A) 40 km/h B) 60 km/h C) 75 km/h' }, t2.ctx)
+  assert.deepEqual([fixed.validation.verdict, fixed.validation.calls], ['repaired', 2])
+})

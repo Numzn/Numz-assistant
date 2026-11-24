@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { AcademicError, textField } from './academicError.js'
-import { analyseQuestion } from './questionAnalysis.js'
+import { analyseQuestion, extractOptions } from './questionAnalysis.js'
 import { checkAnswer, reviewVerdict } from './answerCheck.js'
 import { answerLabel, formatAnswers, normalizeAnswer } from './answerFormat.js'
 import { enforce } from './integrity.js'
@@ -282,7 +282,9 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
           if (!entry) throw new AcademicError(404, 'question-not-found', 'That question is no longer in this session. Read the screen again.')
         } else {
           const typed = textField(text, 'text', { max: MAX_QUESTION, required: true })
-          entry = { id: newId(), text: typed, options: [], marks: null, type: 'other', hasDiagram: false, task: analyseQuestion({ text: typed }).task, subject: '', topic: textField(topic, 'topic', { max: 120 }) ?? '', contentKind: 'typed', instructions: '', contextSnapshot: null, signals: [], confirmedPractice: false, answer: null, createdAt: now() }
+          // A multiple-choice question typed with its options in the text ("… A) 3 B) 4") is a question with options, not one in four parts.
+          const inline = extractOptions(typed)
+          entry = { id: newId(), text: inline ? inline.stem : typed, options: inline ? inline.options : [], marks: null, type: inline ? 'multiple-choice' : 'other', hasDiagram: false, task: analyseQuestion({ text: typed }).task, subject: '', topic: textField(topic, 'topic', { max: 120 }) ?? '', contentKind: 'typed', instructions: '', contextSnapshot: null, signals: [], confirmedPractice: false, answer: null, createdAt: now() }
           runtime.questions.set(entry.id, entry)
         }
         const course = resolveCourse(session, entry, courseId)
