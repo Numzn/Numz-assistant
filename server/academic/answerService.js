@@ -5,7 +5,7 @@ import { checkAnswer, reviewVerdict } from './answerCheck.js'
 import { answerLabel, formatAnswers, normalizeAnswer } from './answerFormat.js'
 import { detectSourceOnly } from './answerStyle.js'
 import { enforce } from './integrity.js'
-import { buildMessages, buildRepairMessages, buildReviewMessages, EXPLAINING_STYLES, sourcesBlock, verifyCitations } from './responseEngine.js'
+import { buildMessages, buildRepairMessages, buildReviewMessages, EXPLAINING_STYLES, sourcesBlock, stripCitations, verifyCitations } from './responseEngine.js'
 import { deriveQuery } from './researchService.js'
 
 /**
@@ -229,7 +229,8 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
         for (const l of checked.dropped) if (!dropped.includes(l)) dropped.push(l)
         // A question that is itself one part of a bigger one on the screen ("(b) Calculate ...") keeps that part's label on its answer.
         const own = normalized.parts.length === 1 && analysis.ownLabel ? analysis.ownLabel : p.key
-        return { key: own, label: answerLabel(own), markdown: checked.text }
+        // The answer holds the plain answer only: the labels the model cited are taken out, and the sources they stood for are listed apart from it.
+        return { key: own, label: answerLabel(own), markdown: stripCitations(checked.text) }
       })
       const sources = sourcesBlock(cited, retrieval.passages, works)
       const markdown = formatAnswers(parts, sources)

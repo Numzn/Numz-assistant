@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildMessages, buildSystemPrompt, buildUserMessage, neutralize, sourcesBlock, verifyCitations } from './responseEngine.js'
+import { buildMessages, buildSystemPrompt, buildUserMessage, neutralize, sourcesBlock, stripCitations, verifyCitations } from './responseEngine.js'
 
 const passages = [
   { label: 'S1', title: 'Lecture 3', version: 2, headingPath: 'Normalisation > Third normal form', locator: 'lines 7-14', text: 'Every attribute depends on the key.', crossCourse: false },
@@ -131,10 +131,18 @@ test('citations are verified: a label the model was not given is removed, groups
 
   const block = sourcesBlock(['S1', 'R1', 'R2', 'S2'], passages, works)
   assert.match(block, /^\*\*Sources\*\*/)
-  assert.match(block, /- \[S1\] Lecture 3 \(v2\) — Normalisation > Third normal form \(lines 7-14\)/)
-  assert.match(block, /- \[R1\] E\. Codd, A, B et al\. \(1970\)\. A Relational Model\. CACM\. https:\/\/doi\.org\/10\.1145\/362384\.362685/)
-  assert.match(block, /\[R2\].*\(not verified\)/)
-  assert.match(block, /\[S2\].*from another of your courses/)
+  assert.match(block, /- Lecture 3 \(v2\) — Normalisation > Third normal form \(lines 7-14\)/)
+  assert.match(block, /- E\. Codd, A, B et al\. \(1970\)\. A Relational Model\. CACM\. https:\/\/doi\.org\/10\.1145\/362384\.362685/)
+  assert.match(block, /Unverified thing.*\(not verified\)/)
+  assert.match(block, /Net notes.*from another of your courses/)
+  assert.doesNotMatch(block, /\[[SR]\d+\]/, 'the list has no labels: the answer has none either')
   assert.equal(sourcesBlock([], passages, works), '')
   assert.equal(sourcesBlock(['S9'], passages, works), '', 'a label with no record produces nothing')
+})
+
+test('the answer is plain: the labels the model cited are taken out and nothing else is touched', () => {
+  assert.equal(stripCitations('3NF removes transitive dependencies [S1]. Codd said so [R1, S2]. Done [S1][R2].'), '3NF removes transitive dependencies. Codd said so. Done.')
+  assert.equal(stripCitations('A list:\n- first [S1]\n- second [S2, S3]\n'), 'A list:\n- first\n- second')
+  assert.equal(stripCitations('See [Smith 2020] and [1] and array[2].'), 'See [Smith 2020] and [1] and array[2].', 'ordinary brackets stay')
+  assert.equal(stripCitations('No labels here.'), 'No labels here.')
 })
