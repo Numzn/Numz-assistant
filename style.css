@@ -3476,3 +3476,59 @@ body[data-page="camera"] [hidden] {
   border-color: var(--warn);
   color: var(--warn);
 }
+
+/* The update line (desktop app only): one thin line above everything, the app moves down to make room for it. */
+#updateLine {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 4px 12px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--text);
+  font-size: 13px;
+}
+#updateLine[hidden] {
+  display: none;
+}
+#updateLine .update-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#updateLine button {
+  padding: 2px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+#updateLine button.update-now {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+#updateLine button:hover {
+  filter: brightness(1.1);
+}
+body[data-update="true"] #app {
+  top: 34px;
+}
+@media (max-width: 600px) {
+  #updateLine {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  body[data-update="true"] #app {
+    top: 62px;
+  }
+}

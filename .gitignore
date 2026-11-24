@@ -31,3 +31,6 @@ __pycache__/
 # Local backups of infrastructure configuration
 *.bak*
 docker/*.bak*
+
+# Update releases prepared on this machine (the signed installer and its list of versions): published by hand, never committed
+release-*/

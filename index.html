@@ -12,6 +12,9 @@
     <!-- The orb. Drawn only in voice mode; the Home screen covers it. -->
     <canvas id="canvas" aria-hidden="true"></canvas>
 
+    <!-- The update line: only the desktop app ever shows it (src/interfaces/desktop/updateLine.js). -->
+    <div id="updateLine" role="status" aria-live="polite" hidden></div>
+
     <div id="app">
       <aside id="sidebar" aria-label="Navigation">
         <div id="sidebarHead">
