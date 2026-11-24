@@ -408,6 +408,17 @@ try {
   console.error('[screenshot] panel failed to start', err)
 }
 
+// ---- The desktop app's update line: a newer version is offered, and installed when the person says so (nothing in a browser) ----
+// Loaded only inside the desktop app (a browser never downloads it).
+if (typeof globalThis.__TAURI_INTERNALS__?.invoke === 'function') {
+  import('./interfaces/desktop/updateLine.js')
+    .then(({ createUpdateController, createUpdateView }) => {
+      const updates = createUpdateController()
+      if (createUpdateView({ controller: updates })) updates.start()
+    })
+    .catch((err) => console.error('[update] the update line failed to start', err))
+}
+
 // ---- Academic Intelligence: the Study panel (session, materials, memory). Screen reading is the desktop app's watcher; the browser has none ----
 try {
   const academicApi = createAcademicApi()
