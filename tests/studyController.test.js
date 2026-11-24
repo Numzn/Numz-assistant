@@ -76,8 +76,8 @@ function fakeApi() {
       stop: async () => (calls.stop++, session({ status: 'ended' }))
     },
     sendCapture: async (id, image) => (calls.send.push([id, image]), script.send()),
-    answer: async (id, q, o) => (calls.answer.push([q, o]), script.answer()),
-    ask: async (id, text, o) => (calls.ask.push([text, o]), script.ask()),
+    answer: async (id, q, o, live) => (calls.answer.push([q, o]), (script.events ?? []).forEach((e) => live?.onEvent?.(e)), script.answer(live)),
+    ask: async (id, text, o, live) => (calls.ask.push([text, o]), (script.events ?? []).forEach((e) => live?.onEvent?.(e)), script.ask(live)),
     concept: async (id, c, o) => (calls.concept.push([c, o]), script.concept()),
     feedback: async (b) => (calls.feedback.push(b), script.feedback())
   }
@@ -122,7 +122,7 @@ test('starting a study session with screen reading starts the watcher with the p
   await t.controller.init()
   await t.controller.start({ type: 'study', courseId: 'c1', topic: 'normal forms', captureEnabled: true, autoAnswer: false })
   assert.deepEqual(t.api.calls.start[0], { type: 'study', courseId: 'c1', topic: 'normal forms', captureEnabled: true, autoAnswer: false })
-  assert.deepEqual(t.native.calls.start, [{ excludeApps: ['slack'], excludeTitles: ['payroll'] }])
+  assert.deepEqual(t.native.calls.start, [{ intervalMs: 1500, excludeApps: ['slack'], excludeTitles: ['payroll'] }], 'a look every 1.5 s: a changed screen is read sooner')
   assert.equal(t.controller.getState().phase, 'active')
   assert.equal(t.controller.getState().watch.status, 'watching')
   await t.controller.stop()
@@ -383,26 +383,27 @@ test('feedback: what helped is remembered with the approach used, "simpler" asks
 
 const questions = (n) => Array.from({ length: n }, (_, i) => ({ id: `q${i + 1}`, text: `Question ${i + 1}. Explain a normal form.`, options: [], task: 'explain', duplicate: false }))
 
-test('reading the screen answers by itself unless the person turned that off: every new question of a screen (up to three), one at a time, each into the conversation', async () => {
+test('reading the screen answers by itself unless the person turned that off: every new question of a screen (up to three), two at a time at most, each into the conversation', async () => {
   const t = build()
   await t.controller.init()
   await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true }) // no autoAnswer option: the default is on
   assert.equal(t.api.calls.start[0].autoAnswer, true)
   assert.equal(t.controller.getState().session.autoAnswer, true)
   let running = 0
-  let overlapped = false
+  let most = 0
   t.api.script.send = async () => recognised({ questions: questions(4) })
   t.api.script.answer = async () => {
-    overlapped ||= ++running > 1
+    most = Math.max(most, ++running)
+    const n = t.api.calls.answer.length // which call this is, as it began
     await tick()
     await tick()
     running--
-    return answered({ questionId: `q${t.api.calls.answer.length}`, markdown: `Answer ${t.api.calls.answer.length}` })
+    return answered({ questionId: `q${n}`, markdown: `Answer ${n}` })
   }
   t.native.script.polls = [polled({ pending: pending() }), polled()]
   await until(() => t.exchanges.length === 3)
-  assert.equal(overlapped, false, 'one answer at a time')
-  assert.deepEqual(t.exchanges.map((e) => e.answer), ['Answer 1', 'Answer 2', 'Answer 3'], 'in the order found, into the conversation')
+  assert.equal(most, 2, 'two answers are worked on together (a person may have two model calls at once), never three')
+  assert.deepEqual(t.exchanges.map((e) => e.answer).sort(), ['Answer 1', 'Answer 2', 'Answer 3'], 'every one of them, into the conversation')
   assert.deepEqual(t.controller.getState().questions.map((q) => q.state), ['answered', 'answered', 'answered', 'new'], 'the fourth waits for an Explain press')
   assert.match(t.controller.getState().message, /first 3 of 4/)
   assert.equal(t.controller.getState().lastAnswer.markdown, 'Answer 3')
@@ -758,4 +759,147 @@ test('after a reload the session\'s content comes back, and a restricted session
   await t.controller.init()
   await until(() => t.controller.getState().content.length === 1)
   assert.equal(t.controller.getState().content[0].seenCount, 3)
+})
+
+// ---- answers as they are written, asked once, and a couple at a time -----------------------------------------------------------------
+
+async function withOneQuestion(over = {}) {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false, ...over })
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.controller.getState().questions.length === 1)
+  return t
+}
+const later = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('an answer is shown as it is written, says when it is being checked, and is replaced by the checked whole', async () => {
+  const t = await withOneQuestion()
+  let release
+  t.api.script.events = [{ type: 'start', task: 'define', complexity: 'simple', parts: [{ key: null, label: 'ANSWER' }] }, { type: 'delta', text: 'The next ' }, { type: 'delta', text: 'best thing.' }]
+  t.api.script.answer = () => new Promise((resolve) => (release = resolve))
+  const done = t.controller.answerQuestion('q1')
+  await until(() => t.controller.getState().questions[0].state === 'answering')
+  await later(90)
+  let q = t.controller.getState().questions[0]
+  assert.equal(q.live.text, 'The next best thing.', 'the words so far are on the card')
+  assert.equal(q.live.pending, 'writing')
+  assert.equal(q.task, 'define', 'the card learns what kind of question it is as the answer starts')
+  t.api.script.events = []
+  t.api.script.answer = async () => answered()
+  // the server says the words are done and the answer is being checked
+  const live = t.api.calls.answer.length
+  assert.equal(live, 1)
+  release(answered({ markdown: '#### ANSWER\n\nThe next best thing you give up.', parts: [{ key: null, label: 'ANSWER', markdown: 'The next best thing you give up.' }], validation: { verdict: 'ok' } }))
+  await done
+  q = t.controller.getState().questions[0]
+  assert.equal(q.state, 'answered')
+  assert.equal(q.live, null, 'the draft is gone once the checked answer is in')
+  assert.equal(q.answer.markdown, '#### ANSWER\n\nThe next best thing you give up.')
+  assert.deepEqual(q.answer.parts.map((p) => p.label), ['ANSWER'])
+  await t.controller.stop()
+})
+
+test('a "checking" event is shown at once', async () => {
+  const t = await withOneQuestion()
+  let release
+  t.api.script.events = [{ type: 'start', parts: null }, { type: 'delta', text: 'Draft.' }, { type: 'checking', stage: 'review' }]
+  t.api.script.answer = () => new Promise((resolve) => (release = resolve))
+  const done = t.controller.answerQuestion('q1')
+  await until(() => t.controller.getState().questions[0].live?.pending === 'checking')
+  assert.equal(t.controller.getState().questions[0].live.text, 'Draft.', 'the draft is complete by then')
+  release(answered())
+  await done
+  await t.controller.stop()
+})
+
+test('the same question asked twice while it is being answered is one answer, not two', async () => {
+  const t = await withOneQuestion()
+  const releases = []
+  t.api.script.answer = () => new Promise((resolve) => releases.push(resolve))
+  const first = t.controller.answerQuestion('q1')
+  const second = t.controller.answerQuestion('q1')
+  const explained = t.controller.answerQuestion('q1', { style: 'explain' })
+  for (const release of releases) release(answered())
+  await Promise.all([first, second, explained])
+  assert.equal(first, second, 'the second ask is handed the first')
+  assert.equal(t.api.calls.answer.filter(([, o]) => o.style === null).length, 1)
+  assert.equal(t.api.calls.answer.length, 2, 'only a different way of asking (Explain) is a second request')
+  await t.controller.stop()
+})
+
+test('when the person already has the most answers going the answer waits and asks once more; an answer handed back is not added to the conversation twice', async () => {
+  const t = await withOneQuestion()
+  let tries = 0
+  t.api.script.answer = async () => {
+    if (++tries === 1) throw err(429, 'too-many-at-once', 'Wait for the answer in progress first.', { retryAfterMs: 2000 })
+    return answered({ cached: true })
+  }
+  await t.controller.answerQuestion('q1')
+  assert.equal(tries, 2, 'one more try, no more')
+  assert.equal(t.controller.getState().questions[0].state, 'answered')
+  assert.equal(t.exchanges.length, 0, 'it was already in the conversation')
+  await t.controller.stop()
+
+  const t2 = await withOneQuestion()
+  t2.api.script.answer = async () => {
+    throw err(429, 'too-many-at-once', 'Wait for the answer in progress first.')
+  }
+  await t2.controller.answerQuestion('q1')
+  assert.equal(t2.api.calls.answer.length, 2)
+  assert.equal(t2.controller.getState().questions[0].state, 'failed')
+  assert.match(t2.controller.getState().questions[0].message, /Wait for the answer in progress/)
+  await t2.controller.stop()
+})
+
+test('ending the session stops an answer that is still being written', async () => {
+  const t = await withOneQuestion()
+  let signal
+  t.api.script.answer = (live) => new Promise((_, reject) => {
+    signal = live.signal
+    live.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+  })
+  const pendingAnswer = t.controller.answerQuestion('q1')
+  await until(() => signal)
+  await t.controller.stop()
+  assert.equal(signal.aborted, true)
+  assert.equal(await pendingAnswer, null)
+})
+
+test('a typed question appears at once and fills in as it is answered; one that fails leaves nothing behind', async () => {
+  const t = build()
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: false })
+  let release
+  t.api.script.events = [{ type: 'start', parts: null }, { type: 'delta', text: 'Working…' }]
+  t.api.script.ask = () => new Promise((resolve) => (release = resolve))
+  const asking = t.controller.ask('What is a primary key?')
+  await until(() => t.controller.getState().questions.length === 1)
+  assert.equal(t.controller.getState().questions[0].state, 'answering')
+  assert.equal(t.controller.getState().questions[0].text, 'What is a primary key?')
+  release(answered({ questionId: 'server-q', markdown: '#### ANSWER\n\nIt identifies a row.' }))
+  await asking
+  const [q] = t.controller.getState().questions
+  assert.deepEqual([q.id, q.state], ['server-q', 'answered'], 'the card takes the server\'s id')
+
+  t.api.script.events = []
+  t.api.script.ask = async () => {
+    throw err(502, 'answer-failed', 'An answer could not be worked out just now. Try again.')
+  }
+  await t.controller.ask('And a foreign key?')
+  assert.equal(t.controller.getState().questions.length, 1, 'the failed one is not left as a card')
+  assert.match(t.controller.getState().message, /could not be worked out/)
+  await t.controller.stop()
+})
+
+test('the picture goes up without waiting for the desktop app to let go of its copy', async () => {
+  const native = fakeNative()
+  native.discard = () => new Promise(() => {}) // never answers
+  const t = build({ native })
+  await t.controller.init()
+  await t.controller.start({ type: 'study', courseId: 'c1', captureEnabled: true, autoAnswer: false })
+  t.native.script.polls = [polled({ pending: pending() }), polled()]
+  await until(() => t.api.calls.send.length === 1)
+  await until(() => t.controller.getState().questions.length === 1)
+  await t.controller.stop()
 })

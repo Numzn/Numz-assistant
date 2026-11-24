@@ -16,7 +16,7 @@ import { firstLoad, lazyScripts, readText } from '../scripts/lib/bundleReport.js
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const KB = 1024
 const BUDGET = {
-  indexScriptsRaw: 220 * KB,
+  indexScriptsRaw: 232 * KB, // was 220. 2026-11-24: answer blocks with copy icons, the live (streamed) answer and the parser of the event stream added 9 KB raw (3.3 KB gzipped, 3 KB Brotli, which stay inside their budgets); main was at 218.3 KB. Measure with `node scripts/smart-eval/size.mjs`.
   indexScriptsGzip: 80 * KB,
   indexTotalBrotli: 80 * KB, // was 75. 2026-11-23: main had grown to 74.5 KB (Study panel, dock, Show in chat) before the long-answer fit added ~0.5 KB. Still far below the 1.74 MB it started from.
   historyTotalGzip: 20 * KB,

@@ -8,7 +8,8 @@
  * puts it in its window title.
  */
 
-import { renderMarkdown } from '../chat/markdownView.js'
+import { renderAnswerBlocks } from '../chat/answerBlocks.js'
+import { renderMarkdownPlain } from '../chat/markdownView.js'
 
 const SESSION_TYPES = [
   ['study', 'Study', 'Learning new material. NUMZ AI can read your screen (if you allow it) and give you the correct answers; ask it to explain whenever you want.'],
@@ -119,11 +120,35 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     return [`${kind}${state.phase === 'paused' ? ' (paused)' : ''} · ${reading}`, state.watch.status === 'watching' ? 'reading' : state.phase === 'paused' ? 'paused' : 'on']
   }
 
-  /** An answer, drawn as the Markdown it is (the conversation's own renderer: nothing is parsed as HTML). */
-  function answerBox(markdown) {
-    const box = h(doc, 'div', { class: 'study-answer' })
-    renderMarkdown(box, markdown, doc)
+  /**
+   * An answer, drawn as answer blocks: a label, a small copy icon, the answer (the conversation's own Markdown renderer: nothing is parsed
+   * as HTML). `pending` ('writing' | 'checking') is for one that is not final yet: it has no copy icon until it is.
+   */
+  function answerBox(markdown, pending = null) {
+    const box = h(doc, 'div', { class: 'study-answers' })
+    renderAnswerBlocks(box, markdown, doc, { renderBody: renderMarkdownPlain, alwaysBlock: true, pending })
     return box
+  }
+
+  // The first letters of an answer heading that has not been written out yet ("#### ANS") are not shown as if they were the answer.
+  const PARTIAL_HEADING = /(?:^|\n)[ \t]*#{1,6}[ \t]*(?:A(?:N(?:S(?:W(?:E(?:R(?:[ \t]*\(?[a-z0-9]{0,4}\)?)?)?)?)?)?)?)?[ \t]*$/
+  const liveText = (q) => (q.live?.text ?? '').replace(PARTIAL_HEADING, '').trim()
+  const liveBox = (q) => {
+    const box = answerBox(liveText(q), q.live.pending)
+    box.dataset.live = q.id
+    box.dataset.painted = `${q.live.text.length}:${q.live.pending}`
+    return box
+  }
+  /** The words of answers being written are drawn in place, without redrawing the panel: typing, scrolling and selecting are never interrupted. */
+  function paintLive(state) {
+    for (const box of body.querySelectorAll('[data-live]')) {
+      const q = state.questions.find((x) => x.id === box.dataset.live)
+      if (!q?.live) continue
+      const painted = `${q.live.text.length}:${q.live.pending}`
+      if (box.dataset.painted === painted) continue
+      box.dataset.painted = painted
+      renderAnswerBlocks(box, liveText(q), doc, { renderBody: renderMarkdownPlain, alwaysBlock: true, pending: q.live.pending })
+    }
   }
 
   function renderQuestion(state, q) {
@@ -143,9 +168,10 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
         : null,
       q.state === 'failed' ? h(doc, 'p', { class: 'study-error', text: q.message }) : null,
       q.state === 'new' || q.state === 'failed' ? h(doc, 'button', { type: 'button', class: 'study-primary', disabled: state.phase === 'paused', text: q.partial ? 'Answer what is visible' : 'Answer', onclick: () => controller.answerQuestion(q.id) }) : null,
-      q.state === 'answering' ? h(doc, 'p', { class: 'study-working', text: 'Working on it…' }) : null,
+      q.state === 'answering' ? (liveText(q) ? liveBox(q) : h(doc, 'p', { class: 'study-working', text: 'Working on it…' })) : null,
       // The answer itself, right here (it is also in the conversation): the correct answer is what is wanted, so it is not behind a click.
       answer?.markdown ? answerBox(answer.markdown) : null,
+      answer?.validation?.verdict === 'flagged' ? h(doc, 'p', { class: 'study-note', text: 'This one could not be fully confirmed. Worth checking it yourself.' }) : null,
       answer
         ? h(doc, 'p', { class: 'study-answered', text: `Answered in the conversation (${answer.grounding === 'course' ? 'from your course materials' : answer.grounding === 'research' ? 'from research' : answer.grounding === 'both' ? 'from your materials and research' : 'from general knowledge'}).` })
         : null,
@@ -440,7 +466,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     return state.lastRead ? `${counts} Last read ${clockText(state.lastRead.at)}: ${readText(state.lastRead)}.` : counts
   }
   /** What the session tab shows, apart from the counters: the panel is redrawn only when this changes, so typing is never interrupted. */
-  const signature = (state) => JSON.stringify([tab, state.phase, state.session && [state.session.id, state.session.status, state.session.sessionType, state.session.captureEnabled, state.session.autoAnswer], state.message, state.tone, state.busy, state.watch.available, state.watch.status, state.watch.excludedNow, state.watch.note, state.courses.map((c) => c.id), state.questions.map((q) => [q.id, q.state, q.message, q.partial ? 1 : 0, q.text.length]), state.content.map((c) => [c.id, c.status, c.partial ? 1 : 0, c.text.length]), state.lastAnswer?.answerId ?? null])
+  const signature = (state) => JSON.stringify([tab, state.phase, state.session && [state.session.id, state.session.status, state.session.sessionType, state.session.captureEnabled, state.session.autoAnswer], state.message, state.tone, state.busy, state.watch.available, state.watch.status, state.watch.excludedNow, state.watch.note, state.courses.map((c) => c.id), state.questions.map((q) => [q.id, q.state, q.message, q.partial ? 1 : 0, q.text.length, q.task, q.live ? [liveText(q) ? 1 : 0, q.live.pending] : null, q.answer?.answerId ?? null]), state.content.map((c) => [c.id, c.status, c.partial ? 1 : 0, c.text.length]), state.lastAnswer?.answerId ?? null])
   let drawn = ''
 
   function render(force = false) {
@@ -453,7 +479,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     if (note) note.textContent = watchNote(state)
     if (!force && tab !== 'session') return // the other tabs are redrawn by what the person does there, never by the session's ticking
     const key = tab === 'session' ? signature(state) : null
-    if (!force && key === drawn) return
+    if (!force && key === drawn) return paintLive(state)
     drawn = key ?? ''
     for (const t of tabs) t.setAttribute('aria-selected', String(t.dataset.studyTab === tab))
     const active = doc.activeElement

@@ -36,9 +36,31 @@ const model = http.createServer((req, res) => {
     const flat = JSON.stringify(body.messages ?? [])
     seen.prompts.push(flat)
     const grounded = flat.includes('source id=\\"S1\\"') || flat.includes('<source id=')
-    const reply = grounded
-      ? 'Second normal form means every non-key column depends on the **whole** key, not just part of it [S1]. For example, in an order line keyed by (order, product), the product name belongs in a product table.'
-      : 'Second normal form removes partial dependencies on a composite key. That is general knowledge, not from your course materials.'
+    const review = flat.includes("You check a student's draft answer")
+    const parts = /THIS QUESTION HAS 3 PARTS/.test(flat)
+    const reply = review
+      ? 'OK'
+      : parts
+        ? '#### ANSWER (a)\nInflation is a general rise in prices.\n\n#### ANSWER (b)\n**5%**\n\n- (210 - 200) / 200 x 100\n\n#### ANSWER (c)\nSavings buy less over time.'
+        : grounded
+          ? 'Second normal form means every non-key column depends on the **whole** key, not just part of it [S1]. For example, in an order line keyed by (order, product), the product name belongs in a product table.'
+          : 'Second normal form removes partial dependencies on a composite key. That is general knowledge, not from your course materials.'
+    if (body.stream === true) {
+      // the words arrive a few at a time, slowly enough for the page to be seen drawing them
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+      const pieces = reply.match(/\S+\s*/g) ?? [reply]
+      let i = 0
+      const send = () => {
+        if (i < pieces.length) {
+          res.write(`data: ${JSON.stringify({ model: 'fake-model', choices: [{ delta: { content: pieces[i++] } }] })}\n\n`)
+          setTimeout(send, parts ? 90 : 5)
+        } else {
+          res.write(`data: ${JSON.stringify({ model: 'fake-model', choices: [], usage: { prompt_tokens: 200, completion_tokens: 60 } })}\n\n`)
+          res.end('data: [DONE]\n\n')
+        }
+      }
+      return send()
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ model: 'fake-model', choices: [{ message: { role: 'assistant', content: reply } }], usage: { prompt_tokens: 200, completion_tokens: 60 } }))
   })
@@ -177,7 +199,26 @@ try {
   // ---- the answer is the default; the explanation comes when it is asked for ----
   const studyPrompts = () => seen.prompts.filter((p) => /helping a student study/.test(p))
   check('by default the question is ANSWERED, not explained: the model was asked for the answer only', /WANTS THE ANSWER/.test(studyPrompts().at(-1)) && !/EXPLANATION of this answer/.test(studyPrompts().at(-1)))
-  check('the answer is in the question\'s card, with an Explain button; nothing was pressed to get it', (await page.locator('#studyBody .study-q .study-answer').count()) === 1 && (await page.textContent('#studyBody .study-q .study-answer')).length > 20 && (await page.locator('#studyBody .study-q button:has-text("Explain")').count()) === 1)
+  check('the answer is in the question\'s card, with an Explain button; nothing was pressed to get it', (await page.locator('#studyBody .study-q .study-answers .answer-block').count()) === 1 && (await page.textContent('#studyBody .study-q .study-answers .answer-body')).length > 20 && (await page.locator('#studyBody .study-q button:has-text("Explain")').count()) === 1)
+  // ---- the answer is a labelled block with one small copy icon, which copies that answer only, formatted ----
+  await ada.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(base).origin })
+  const block = page.locator('#studyBody .study-q .answer-block').first()
+  check('the answer is labelled ANSWER, with a copy icon beside the label', (await block.locator('.answer-label').textContent()) === 'ANSWER' && (await block.locator('.answer-head .answer-copy').count()) === 1)
+  const iconBox = await block.locator('.answer-copy').boundingBox()
+  check('the icon is small (not a large button)', iconBox.width <= 28 && iconBox.height <= 28, `${iconBox.width}x${iconBox.height}`)
+  check('the answer is subtly highlighted (an accent edge on a tinted background)', await block.evaluate((el) => { const c = getComputedStyle(el); return parseFloat(c.borderLeftWidth) >= 2 && c.backgroundColor !== 'rgba(0, 0, 0, 0)' }))
+  await block.locator('.answer-copy').click()
+  await block.locator('.answer-copy[data-copied="true"]').waitFor({ timeout: 5000 })
+  const copied = await page.evaluate(async () => {
+    const items = await navigator.clipboard.read()
+    const out = {}
+    for (const item of items) for (const type of item.types) out[type] = await (await item.getType(type)).text()
+    return out
+  })
+  check('copying puts the answer on the clipboard as formatted text and as plain text', /<strong>whole<\/strong>/.test(copied['text/html'] ?? '') && /whole key, not just part of it/.test(copied['text/plain'] ?? '') && !/\*\*/.test(copied['text/plain'] ?? ''), JSON.stringify(copied).slice(0, 160))
+  check('what is copied is the answer only: no label, no buttons', !/ANSWER|Copy/.test(copied['text/plain'] ?? '') && !/answer-copy|answer-label/.test(copied['text/html'] ?? ''))
+  check('the icon says it copied', (await block.locator('.answer-copy').getAttribute('data-copied')) === 'true' && (await block.locator('.answer-state').textContent()) === 'Copied')
+  check('the same answer, in the conversation, is a block with its own copy icon', (await page.locator('li.msg[data-role="assistant"] .answer-block .answer-copy').count()) >= 1)
   const beforeExplain = await page.locator('li.msg[data-role="assistant"]').count()
   await page.click('#studyBody .study-q button:has-text("Explain")')
   await page.waitForFunction((n) => document.querySelectorAll('li.msg[data-role="assistant"]').length > n, beforeExplain, { timeout: 30000 })
@@ -189,6 +230,28 @@ try {
   await page.click('button:has-text("Simpler")')
   await page.waitForFunction(() => document.querySelectorAll('li.msg[data-role="assistant"]').length >= 2, null, { timeout: 30000 })
   check('"Simpler" asks the same question again as a new answer', true)
+  // ---- a multi-part question: written part by part, shown as it arrives, each part its own block that copies on its own ----
+  await page.waitForFunction(() => document.querySelectorAll('#studyBody [data-live]').length === 0, null, { timeout: 30000 }) // the answer to "Simpler" has been written
+  await page.fill('#studyAskInput', '(a) Define inflation. (b) Calculate the rate of inflation if prices rose from 200 to 210. (c) State one way inflation hurts savers.')
+  await page.press('#studyAskInput', 'Enter')
+  await page.waitForFunction(() => document.querySelector('#studyBody .study-q:last-child [data-live] .answer-block[data-pending="writing"] .answer-body')?.textContent.trim().length > 0, null, { timeout: 15000 })
+  const shownWhileWriting = await page.evaluate(() => ({ text: document.querySelector('#studyBody .study-q:last-child [data-live] .answer-body')?.textContent ?? '', copy: document.querySelectorAll('#studyBody .study-q:last-child [data-live] .answer-copy').length, state: document.querySelector('#studyBody .study-q:last-child [data-live] .answer-state')?.textContent }))
+  check('the words appear while the answer is still being written, marked as such, with no copy icon yet', shownWhileWriting.text.length > 0 && /Inflation|ANSWER|general/.test(shownWhileWriting.text) && shownWhileWriting.copy === 0 && /writing/.test(shownWhileWriting.state ?? ''), JSON.stringify(shownWhileWriting).slice(0, 120))
+  await page.waitForFunction(() => document.querySelectorAll('#studyBody .study-q .answer-block .answer-copy').length >= 4, null, { timeout: 30000 })
+  const labels = await page.locator('#studyBody .study-q:last-child .answer-label').allTextContents()
+  check('the answer has one labelled block per part, each with its own copy icon', JSON.stringify(labels) === JSON.stringify(['ANSWER (a)', 'ANSWER (b)', 'ANSWER (c)']) && (await page.locator('#studyBody .study-q:last-child .answer-copy').count()) === 3, labels.join(' | '))
+  check('a complex question was read a second time before it was final: the model was asked to check the draft', seen.prompts.some((p) => p.includes("You check a student's draft answer") && p.includes('ANSWER (b)')))
+  await page.locator('#studyBody .study-q:last-child .answer-block').nth(1).locator('.answer-copy').click()
+  await page.waitForSelector('#studyBody .study-q:last-child .answer-block:nth-of-type(2) .answer-copy[data-copied="true"]', { timeout: 5000 })
+  const partB = await page.evaluate(async () => {
+    const items = await navigator.clipboard.read()
+    const out = {}
+    for (const item of items) for (const type of item.types) out[type] = await (await item.getType(type)).text()
+    return out
+  })
+  check('copying part (b) copies part (b) only, with its list and bold kept in the formatted version', /5%/.test(partB['text/plain']) && !/Inflation is|Savings buy/.test(partB['text/plain']) && /<strong>5%<\/strong>/.test(partB['text/html']) && /<li>/.test(partB['text/html']), JSON.stringify(partB).slice(0, 200))
+  await page.screenshot({ path: `${dir}/shot-3c-parts.png` })
+
   await page.click('button:has-text("Pause")')
   await page.waitForSelector('button:has-text("Resume")')
   check('Pause is shown, and asking is disabled while paused', /paused/.test(await page.textContent('#studyIndicator')) && (await page.isDisabled('#studyAskInput')))
@@ -251,7 +314,8 @@ try {
     const n = await forgets.count()
     await forgets.first().click()
     await page.waitForTimeout(800)
-    check('one learned item can be forgotten', (await page.locator('.study-lane button:has-text("Forget")').count()) < n || /Nothing yet/.test(await page.textContent('#studyBody')))
+    const after = await page.locator('.study-lane button:has-text("Forget")').count()
+    check('one learned item can be forgotten', after < n || /Nothing yet/.test(await page.textContent('#studyBody')), `before ${n}, after ${after}`)
   } else {
     check('(no learned item to forget: helpful feedback alone is not yet a lesson)', true)
   }

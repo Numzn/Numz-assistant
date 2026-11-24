@@ -89,3 +89,59 @@ test('a 204 is nothing, and a body that is not JSON is an empty one', async () =
   const odd = createAcademicApi({ fetchFn: async () => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => '<html>' }) })
   assert.deepEqual(await odd.courses.list(), {})
 })
+
+// ---- an answer as it is written ---------------------------------------------------------------------------------------------------
+
+const streamReply = (chunks, { status = 200 } = {}) => {
+  const encoder = new TextEncoder()
+  let i = 0
+  return {
+    ok: status < 300,
+    status,
+    headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'text/event-stream' : null) },
+    body: { getReader: () => ({ read: async () => (i < chunks.length ? { value: encoder.encode(chunks[i++]), done: false } : { value: undefined, done: true }) }) },
+    text: async () => chunks.join('')
+  }
+}
+const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+
+test('asking for an answer as it is written sends the event-stream request, passes each event on, and returns the final result', async () => {
+  const seen = []
+  const fetchFn = async (url, init) => {
+    seen.push({ url, headers: init.headers })
+    // the events arrive in pieces that do not line up with the events
+    const all = sse('start', { task: 'define', complexity: 'simple', parts: [{ key: null, label: 'ANSWER' }] }) + sse('delta', { text: 'The next ' }) + sse('delta', { text: 'best thing.' }) + sse('result', { status: 'answered', markdown: '#### ANSWER\n\nThe next best thing.' })
+    return streamReply([all.slice(0, 40), all.slice(40, 130), all.slice(130)])
+  }
+  const api = createAcademicApi({ fetchFn })
+  const events = []
+  const result = await api.answer('s1', 'q 1', { style: null }, { onEvent: (e) => events.push(e) })
+  assert.equal(seen[0].headers.Accept, 'text/event-stream')
+  assert.match(seen[0].url, /sessions\/s1\/questions\/q%201\/answer$/)
+  assert.deepEqual(events.map((e) => e.type), ['start', 'delta', 'delta'])
+  assert.equal(events.filter((e) => e.type === 'delta').map((e) => e.text).join(''), 'The next best thing.')
+  assert.equal(result.markdown, '#### ANSWER\n\nThe next best thing.')
+})
+
+test('an answer asked for live that the server answers as plain JSON (a refusal, or a decision for the person) is read as it always was', async () => {
+  const { api } = recorder(() => ({ status: 403, body: { error: 'Restricted.', code: 'restricted-assessment', details: { offer: 'explain_concept' } } }))
+  await assert.rejects(api.ask('s1', 'What is 2+2?', {}, { onEvent() {} }), (err) => err instanceof AcademicApiError && err.code === 'restricted-assessment' && err.details.offer === 'explain_concept')
+  const { api: ok } = recorder(() => ({ status: 200, body: { status: 'confirm-required', signals: ['exam'] } }))
+  assert.deepEqual((await ok.answer('s1', 'q1', {}, { onEvent() {} })).signals, ['exam'])
+})
+
+test('a stream that fails, or ends without its result, is an error the page can act on; a plain body with no reader still works', async () => {
+  const failing = createAcademicApi({ fetchFn: async () => streamReply([sse('start', {}), sse('error', { status: 502, code: 'answer-failed', error: 'An answer could not be worked out just now. Try again.' })]) })
+  await assert.rejects(failing.answer('s1', 'q1', {}, { onEvent() {} }), (err) => err.code === 'answer-failed' && err.status === 502 && /could not be worked out/.test(err.message))
+  const cut = createAcademicApi({ fetchFn: async () => streamReply([sse('start', {}), sse('delta', { text: 'Half' })]) })
+  await assert.rejects(cut.answer('s1', 'q1', {}, { onEvent() {} }), (err) => err.code === 'network')
+  const noReader = createAcademicApi({ fetchFn: async () => ({ ...streamReply([sse('delta', { text: 'x' }), sse('result', { status: 'answered', markdown: 'x' })]), body: null }) })
+  const heard = []
+  assert.equal((await noReader.answer('s1', 'q1', {}, { onEvent: (e) => heard.push(e.type) })).status, 'answered')
+  assert.deepEqual(heard, ['delta'])
+  // without a listener nothing about the request changes
+  const { api, calls } = recorder(() => ({ status: 200, body: { status: 'answered' } }))
+  await api.answer('s1', 'q1', {})
+  assert.equal(calls[0].headers['Content-Type'], 'application/json')
+  assert.equal(calls[0].headers.Accept, undefined)
+})
