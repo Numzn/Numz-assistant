@@ -63,7 +63,7 @@ test('a typed question is answered from the course materials, the citations are 
   const [system, user] = t.calls[0].messages
   assert.equal(system.role, 'system')
   assert.match(user.content, /<question>\nWhat is third normal form\?\n<\/question>/)
-  assert.match(user.content, /<source id="S1" title="Lecture 3" section="Normalisation > Third normal form"/)
+  assert.match(user.content, /<source id="S1" kind="own notes" title="Lecture 3" section="Normalisation > Third normal form"/)
 })
 
 test('a restricted session is stopped by the application BEFORE the model: no answer, no model call, with a conceptual offer', async () => {
@@ -537,4 +537,60 @@ test('a multiple-choice question typed with its options in the text is one quest
   t2.model.reply = () => replies.shift()
   const fixed = await t2.alice.answer({ sessionId: s2.id, text: 'What is its average speed after 150 km in 2.5 hours? A) 40 km/h B) 60 km/h C) 75 km/h' }, t2.ctx)
   assert.deepEqual([fixed.validation.verdict, fixed.validation.calls], ['repaired', 2])
+})
+
+// ---- the academic answer style, through the whole pipeline --------------------------------------------------------------------
+
+test('an answer that opens with a lead-in, or invents a reference, is sent back once and the plain answer is what is kept', async () => {
+  const t = setup()
+  const s = startStudy(t)
+  const replies = ['Certainly! I would be delighted to explain this. A table is in third normal form when every attribute depends on the key [S1].', 'A table is in third normal form when every non-key attribute depends on the key, the whole key and nothing but the key [S1].']
+  t.model.reply = () => replies.shift()
+  const fixed = await t.alice.answer({ sessionId: s.id, text: 'Define third normal form.' }, t.ctx)
+  assert.equal(fixed.validation.verdict, 'repaired')
+  assert.match(fixed.parts[0].markdown, /^A table is in third normal form/)
+  assert.match(t.calls[1].messages.at(-1).content, /opens with a lead-in instead of the answer/)
+
+  const t2 = setup()
+  const s2 = startStudy(t2)
+  const again = ['Third normal form removes transitive dependencies (Codd, 1972), as shown on page 88 [S1].', 'Third normal form removes transitive dependencies [S1].']
+  t2.model.reply = () => again.shift()
+  const done = await t2.alice.answer({ sessionId: s2.id, text: 'What does third normal form remove?' }, t2.ctx)
+  assert.equal(done.validation.verdict, 'repaired')
+  assert.doesNotMatch(done.markdown, /Codd|page 88/)
+  assert.match(t2.calls[1].messages.at(-1).content, /not in the sources it was given/)
+})
+
+test('"use only my notes" reaches the model, and the sources and what to do when they do not explain a point are in the message', async () => {
+  const t = setup()
+  const s = startStudy(t)
+  t.model.reply = 'A table is in third normal form when every attribute depends on the key [S1].'
+  await t.alice.answer({ sessionId: s.id, text: 'Define third normal form.', instruction: 'use only my notes' }, t.ctx)
+  const only = t.calls[0].messages[0].content
+  assert.match(only, /asked to use ONLY their own notes/)
+  assert.doesNotMatch(only, /Supplementary:/)
+  const t2 = setup()
+  const s2 = startStudy(t2)
+  await t2.alice.answer({ sessionId: s2.id, text: 'Define third normal form using only my notes.' }, t2.ctx)
+  assert.match(t2.calls[0].messages[0].content, /asked to use ONLY their own notes/, 'said in the question itself')
+  const t3 = setup()
+  const s3 = startStudy(t3)
+  await t3.alice.answer({ sessionId: s3.id, text: 'Define third normal form.' }, t3.ctx)
+  const normal = t3.calls[0].messages[0].content
+  assert.match(normal, /Answer from the sources first/)
+  assert.match(normal, /goes after a label "Supplementary:"/)
+  assert.doesNotMatch(normal, /ONLY their own notes/)
+})
+
+test('the same text uploaded twice is one source, and a 5-mark and a 10-mark question get their own depth', async () => {
+  const t = setup()
+  t.knowledge.forOwner(t.who.alice).addDocument({ courseId: t.course.id, title: 'Lecture 3 (copy)', text: NOTES })
+  const s = startStudy(t)
+  await t.alice.answer({ sessionId: s.id, text: 'Define third normal form. (5 marks)' }, t.ctx)
+  const user = t.calls[0].messages[1].content
+  assert.equal((user.match(/<source id=/g) ?? []).length, 1, 'two copies of the same notes are one source')
+  assert.match(t.calls[0].messages[0].content, /This question is worth 5 marks: start with a direct definition or statement, then usually four or five relevant points/)
+  await t.alice.answer({ sessionId: s.id, text: 'Discuss third normal form and its place in database design. (10 marks)' }, t.ctx)
+  assert.match(t.calls[1].messages[0].content, /This question is worth 10 marks: start with a direct definition or explanation, then explain the main features/)
+  assert.doesNotMatch(t.calls[1].messages[0].content, /worth 5 marks/)
 })

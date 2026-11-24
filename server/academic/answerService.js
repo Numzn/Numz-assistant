@@ -3,6 +3,7 @@ import { AcademicError, textField } from './academicError.js'
 import { analyseQuestion, extractOptions } from './questionAnalysis.js'
 import { checkAnswer, reviewVerdict } from './answerCheck.js'
 import { answerLabel, formatAnswers, normalizeAnswer } from './answerFormat.js'
+import { detectSourceOnly } from './answerStyle.js'
 import { enforce } from './integrity.js'
 import { buildMessages, buildRepairMessages, buildReviewMessages, EXPLAINING_STYLES, sourcesBlock, verifyCitations } from './responseEngine.js'
 import { deriveQuery } from './researchService.js'
@@ -119,7 +120,10 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
       const related = entry.segmentId ? sessions.runtime(session.id).ledger?.relatedTo(entry.segmentId) ?? [] : []
       const figureNote = entry.hasDiagram && !picture ? 'The question refers to a figure or table that could not be shown: say that part of the answer may be incomplete.' : ''
       const analysis = analyseQuestion(entry, { related })
-      const messages = buildMessages({ mode, task: analysis.task, analysis, question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote, related })
+      // "Use only my notes", said in the note to the answer or in the question itself, means no general knowledge to fill a gap.
+      const sourceOnly = detectSourceOnly(instruction, entry.text)
+      const sourcesText = [...retrieval.passages.map((p) => p.text), ...works.map((w) => `${w.title ?? ''} ${w.abstract ?? ''} ${(w.authors ?? []).join(' ')} ${w.year ?? ''}`)].join(' ')
+      const messages = buildMessages({ mode, task: analysis.task, analysis, sourceOnly, question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote, related })
       const partKeys = analysis.parts.map((p) => p.key)
       const labels = partKeys.length >= 2 ? analysis.parts.map((p) => ({ key: p.key, label: answerLabel(p.key) })) : [{ key: analysis.ownLabel, label: answerLabel(analysis.ownLabel) }]
       const timings = { lookup: Math.round(performance.now() - t0) }
@@ -168,7 +172,7 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
         const tCheck = performance.now()
         const examine = (text) => {
           const n = normalizeAnswer(text, partKeys)
-          return { n, ...checkAnswer({ analysis, question: entry, parts: n.parts }) }
+          return { n, ...checkAnswer({ analysis, question: entry, parts: n.parts, sourcesText }) }
         }
         let current = examine(draft)
         if (current.issues.length) {

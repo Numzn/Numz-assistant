@@ -10,6 +10,7 @@
  */
 
 import { plainText } from './answerFormat.js'
+import { overclaimProblems, paddingProblems, referenceProblems } from './answerStyle.js'
 
 const STOP = new Set('about above after again also another because been before being between both could does doing each from have having here into just like made make many more most much must only other over same should some such than that their them then there these they this those through under until very were what when where which while whom whose will with would your explain describe define state give list name outline question answer'.split(' '))
 const wordsIn = (text) => String(text ?? '').split(/\s+/).filter(Boolean).length
@@ -42,10 +43,12 @@ export function chosenOption(text) {
 }
 
 /**
- * @param {{ analysis: object, question: { text: string, options?: object[], type?: string }, parts: { key: string|null, markdown: string }[] }} input
+ * `sourcesText` is everything the answer was given to rest on (for the invented-reference check); the style checks (an AI-style opening, inflated
+ * wording, a promise of full marks) are answerStyle.js's.
+ * @param {{ analysis: object, question: { text: string, options?: object[], type?: string }, parts: { key: string|null, markdown: string }[], sourcesText?: string }} input
  * @returns {{ issues: string[], codes: string[] }}
  */
-export function checkAnswer({ analysis, question, parts }) {
+export function checkAnswer({ analysis, question, parts, sourcesText = '' }) {
   const issues = []
   const codes = []
   const flag = (code, message) => {
@@ -89,6 +92,14 @@ export function checkAnswer({ analysis, question, parts }) {
       if (n !== null && n < spec.count) flag('too-few', `The question asks for ${spec.count} items${where}; the answer gives ${n}.`)
     }
   }
+
+  // Style: the answer starts with the answer, in plain words, and promises nothing it cannot know. (A multiple-choice answer is one line.)
+  if (analysis.task !== 'multiple_choice') {
+    for (const part of parts) for (const p of paddingProblems(part.markdown)) if (!codes.includes(p.code)) flag(p.code, p.message)
+  }
+  for (const p of [...overclaimProblems(whole), ...referenceProblems(whole, sourcesText)]) flag(p.code, p.message)
+  // A question that asks for a diagram gets one: a code block, or arrows and bars drawn in text.
+  if ((analysis.commands ?? []).includes('draw') && !/```|-{1,3}>|<-{1,3}|\+-{2,}|\|\s*\S.*\|/.test(whole)) flag('no-diagram', 'The question asks for a diagram and there is none. Give a labelled plain-text diagram in a code block, then explain it.')
 
   // It must look like an answer to THIS question: a long reply sharing no word of substance with it is about something else.
   const stem = contentWords(question.text)
