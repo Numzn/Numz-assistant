@@ -57,3 +57,11 @@ test('plain text for a box with no formatting: marks removed, structure kept', (
   const text = '**Total** = `300`\n\n- first\n- second\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nSee [the notes](https://example.org/n).'
   assert.equal(plainText(text), 'Total = 300\n\n- first\n- second\n\na\tb\n1\t2\n\nSee the notes (https://example.org/n).')
 })
+
+test('a note about the sources is split off with the sources, never left in the last part', () => {
+  const text = '#### ANSWER\n\nThe answer.\n\n**Note**\nThe notes do not explain this.\n\n**Sources**\n- Lecture 3'
+  const parsed = parseAnswers(text)
+  assert.equal(parsed.parts[0].markdown, 'The answer.')
+  assert.equal(parsed.sources, '**Note**\nThe notes do not explain this.\n\n**Sources**\n- Lecture 3')
+  assert.deepEqual(splitSources('Body.\n\n**Note**\nOnly a note.'), { body: 'Body.', sources: '**Note**\nOnly a note.' })
+})

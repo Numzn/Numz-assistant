@@ -246,6 +246,29 @@ export function stripCitations(text) {
     .trim()
 }
 
+/**
+ * Takes what is said ABOUT the sources out of an answer's text, so that the answer is clean. The model puts it on a last line starting "NOTE:";
+ * a "Supplementary:" label, or "Not from your notes:" at the start, is taken out if the model wrote one anyway.
+ * @returns {{ text: string, notes: string[] }}
+ */
+export function takeNotes(text) {
+  const notes = []
+  let out = String(text ?? '')
+    .split('\n')
+    .filter((line) => {
+      const m = line.match(/^\s*(?:\*\*)?NOTE:(?:\*\*)?\s*(.+)$/)
+      if (m) notes.push(m[1].trim())
+      return !m
+    })
+    .join('\n')
+  out = out.replace(/^\s*(?:\*\*)?Supplementary:?(?:\*\*)?\s*$/gim, '')
+  if (/^\s*(?:\*\*)?Not from your notes:(?:\*\*)?\s*/i.test(out)) {
+    out = out.replace(/^\s*(?:\*\*)?Not from your notes:(?:\*\*)?\s*/i, '')
+    if (!notes.length) notes.push('Not from your notes: answered from general knowledge.')
+  }
+  return { text: out.replace(/\n{3,}/g, '\n\n').trim(), notes }
+}
+
 /** The list of sources shown to the student beside the answer (not inside it), built from our own records of them. */
 export function sourcesBlock(cited, passages, research) {
   const lines = []

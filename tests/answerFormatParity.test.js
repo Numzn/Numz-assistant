@@ -14,6 +14,8 @@ const TEXTS = [
   '#### ANSWER\nRun this:\n```\n#### ANSWER (b)\nprint(1)\n```',
   '## Answer\nAn ordinary heading is not a block.',
   '| a | b |\n|---|---|\n| 1 | 2 |\n\nSee [the notes](https://example.org/n). **bold** __also__ *em* `code`',
+  '#### ANSWER\n\nThe answer.\n\n**Note**\nThe notes do not explain this.\n\n**Sources**\n- Lecture 3',
+  '#### ANSWER\n\nThe answer.\n\n**Note**\nOnly a note.',
   '',
   '#### ANSWER (12)\n\nTwelve.'
 ]
