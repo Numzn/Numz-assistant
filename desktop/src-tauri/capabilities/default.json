@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "numz-ai-site",
-  "description": "What the NUMZ AI site, and only that site, may ask the desktop app to do: take screenshots. Nothing else is granted, and nothing here can send keys or mouse events.",
+  "description": "What the NUMZ AI site, and only that site, may ask the desktop app to do: take screenshots, and look for and install an update of this app (only one signed with the app's own update key). Nothing else is granted, and nothing here can send keys or mouse events.",
   "windows": ["main"],
   "remote": {
     "urls": ["https://lab.numz.site/*"]
@@ -16,6 +16,8 @@
     "allow-screenshot-watch-poll",
     "allow-screenshot-watch-pause",
     "allow-screenshot-watch-resume",
-    "allow-screenshot-watch-stop"
+    "allow-screenshot-watch-stop",
+    "allow-app-update-check",
+    "allow-app-update-install"
   ]
 }

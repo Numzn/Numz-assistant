@@ -1,6 +1,6 @@
 [package]
 name = "numz-ai-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "NUMZ AI as a desktop app: the NUMZ AI site in a native window, plus native screenshots."
 edition = "2021"
 publish = false
@@ -19,7 +19,11 @@ tauri-build = { version = "2", features = [] }
 numz-capture = { path = "crates/numz-capture" }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
+# the generated app context reads the plugin settings of tauri.conf.json with it
+serde_json = "1"
 tauri = { version = "2", features = [] }
+# Updates: the app asks for a new version, shows the person a line, and installs it only if the download is signed with the key whose public half is in tauri.conf.json.
+tauri-plugin-updater = "2"
 
 [profile.release]
 opt-level = "s"

@@ -8,6 +8,7 @@
 
 mod screenshot;
 mod study;
+mod update;
 
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -31,6 +32,7 @@ fn allowed_navigation(url: &tauri::Url, site_origin: &str) -> bool {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(screenshot::Screens::new())
         .manage(study::StudyWatch::default())
         .invoke_handler(tauri::generate_handler![
@@ -44,6 +46,8 @@ pub fn run() {
             study::screenshot_watch_pause,
             study::screenshot_watch_resume,
             study::screenshot_watch_stop,
+            update::app_update_check,
+            update::app_update_install,
         ])
         .setup(|app| {
             let url = start_url();

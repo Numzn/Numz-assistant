@@ -16,6 +16,8 @@
     "allow-screenshot-watch-poll",
     "allow-screenshot-watch-pause",
     "allow-screenshot-watch-resume",
-    "allow-screenshot-watch-stop"
+    "allow-screenshot-watch-stop",
+    "allow-app-update-check",
+    "allow-app-update-install"
   ]
 }
