@@ -12,7 +12,6 @@
 //!  - pause and stop take effect before the next look.
 
 use crate::detect::{signature_without, Area, Config as DetectConfig, Detector, Verdict};
-use crate::encode;
 use crate::exclusion::{Exclusions, Reason};
 use crate::held::Held;
 use crate::{Backend, CaptureError};
@@ -218,10 +217,9 @@ impl Watcher {
             Verdict::Unchanged => Tick::Unchanged,
             Verdict::Changed => {
                 let (width, height) = image.dimensions();
-                let preview = match encode::preview_data_url(&image) {
-                    Ok(p) => p,
-                    Err(e) => return Tick::Failed(e.detail()),
-                };
+                // No preview picture: a study session never shows the screen it read, and making one cost a full resize and encode of the
+                // screen for every report (about as long as preparing the picture to read), on the thread that looks at the screen.
+                let preview = String::new();
                 self.discard_pending();
                 let capture_id = match self.held.lock() {
                     Ok(mut held) => held.insert(image),
@@ -300,7 +298,7 @@ mod tests {
         assert_eq!(w.tick(&fake, t0 + Duration::from_secs(3)), Tick::Reported);
         assert_eq!(w.tick(&fake, t0 + Duration::from_secs(6)), Tick::Throttled, "not again within the minimum gap");
         let polled = w.poll(t0 + Duration::from_secs(7));
-        assert!(polled.pending.as_ref().is_some_and(|p| p.preview.starts_with("data:image/jpeg;base64,") && p.capture_id.starts_with("cap-")));
+        assert!(polled.pending.as_ref().is_some_and(|p| p.preview.is_empty() && p.capture_id.starts_with("cap-")), "a reported screen carries no preview picture");
         assert_eq!(polled.stats.reported, 1);
         assert!(w.poll(t0 + Duration::from_secs(8)).pending.is_none(), "a picture is handed over once");
         assert_eq!(w.tick(&fake, t0 + Duration::from_secs(20)), Tick::Unchanged, "the same screen is not reported again");
