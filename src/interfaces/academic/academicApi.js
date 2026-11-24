@@ -23,15 +23,38 @@ export class AcademicApiError extends Error {
   }
 }
 
-export function createAcademicApi({ fetchFn = (...args) => globalThis.fetch(...args) } = {}) {
-  async function request(path, init = {}) {
-    let res
+/** The events in a piece of an event stream: [{ event, data }], and what was left over (an event that is not complete yet). */
+export function parseEvents(buffer) {
+  const blocks = buffer.split('\n\n')
+  const rest = blocks.pop() ?? ''
+  const events = []
+  for (const block of blocks) {
+    const event = block.match(/^event: ?(.*)$/m)?.[1]
+    const data = block.match(/^data: ?(.*)$/m)?.[1]
+    if (!event) continue
+    let parsed = null
     try {
-      res = await fetchFn(`${BASE}${path}`, { credentials: 'same-origin', ...init })
+      parsed = data ? JSON.parse(data) : null
+    } catch {
+      parsed = null
+    }
+    events.push({ event, data: parsed })
+  }
+  return { events, rest }
+}
+
+export function createAcademicApi({ fetchFn = (...args) => globalThis.fetch(...args) } = {}) {
+  async function send(path, init) {
+    try {
+      return await fetchFn(`${BASE}${path}`, { credentials: 'same-origin', ...init })
     } catch (err) {
       if (err?.name === 'AbortError') throw err
       throw new AcademicApiError('The server could not be reached.', { status: 0, code: 'network' })
     }
+  }
+
+  /** The JSON of a reply, or the AcademicApiError a refusal is. */
+  async function readJson(res) {
     if (res.status === 204) return null
     const text = await res.text()
     let body = {}
@@ -45,6 +68,51 @@ export function createAcademicApi({ fetchFn = (...args) => globalThis.fetch(...a
       throw new AcademicApiError(body.error || `Request failed (${res.status})`, { status: res.status, code: typeof body.code === 'string' ? body.code : 'request-error', retryAfterMs: Number.isFinite(retryAfter) ? retryAfter * 1000 : 0, details: body.details ?? null })
     }
     return body
+  }
+
+  async function request(path, init = {}) {
+    return readJson(await send(path, init))
+  }
+
+  /**
+   * A request that may be answered as it is written. It asks for an event stream; the server answers with one only when there is an answer to
+   * write, and with ordinary JSON otherwise (a refusal, or a question that needs the person's decision first), which is read exactly as
+   * `request` reads it. `onEvent({ type, ...data })` hears start, delta and checking; the returned value is the final `result`.
+   */
+  async function requestLive(path, init = {}, { onEvent = null, signal = undefined } = {}) {
+    const res = await send(path, { ...init, signal, headers: { ...(init.headers ?? {}), Accept: 'text/event-stream' } })
+    if (!res.ok || !String(res.headers?.get?.('content-type') ?? '').includes('text/event-stream')) return readJson(res)
+    let result = null
+    let failure = null
+    const hear = ({ event, data }) => {
+      if (event === 'result') result = data
+      else if (event === 'error') failure = new AcademicApiError(data?.error || 'An answer could not be worked out just now. Try again.', { status: data?.status ?? 502, code: typeof data?.code === 'string' ? data.code : 'answer-failed', details: data?.details ?? null })
+      else onEvent?.({ type: event, ...(data ?? {}) })
+    }
+    if (res.body?.getReader) {
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      try {
+        for (;;) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const parsed = parseEvents(buffer)
+          buffer = parsed.rest
+          parsed.events.forEach(hear)
+        }
+      } catch (err) {
+        if (err?.name === 'AbortError') throw err
+        throw new AcademicApiError('The connection was lost while the answer was being written.', { status: 0, code: 'network' })
+      }
+      parseEvents(`${buffer}\n\n`).events.forEach(hear)
+    } else {
+      parseEvents(`${await res.text()}\n\n`).events.forEach(hear)
+    }
+    if (failure) throw failure
+    if (!result) throw new AcademicApiError('The connection was lost while the answer was being written.', { status: 0, code: 'network' })
+    return result
   }
   const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
   const e = encodeURIComponent
@@ -88,8 +156,9 @@ export function createAcademicApi({ fetchFn = (...args) => globalThis.fetch(...a
     sendCapture: (sessionId, { bytes, mimeType }) => request(`/sessions/${e(sessionId)}/captures`, { method: 'POST', headers: { 'Content-Type': mimeType }, body: bytes }),
     questions: (sessionId) => request(`/sessions/${e(sessionId)}/questions`),
     content: (sessionId) => request(`/sessions/${e(sessionId)}/content`),
-    answer: (sessionId, questionId, options = {}) => request(`/sessions/${e(sessionId)}/questions/${e(questionId)}/answer`, json('POST', options)),
-    ask: (sessionId, text, options = {}) => request(`/sessions/${e(sessionId)}/ask`, json('POST', { text, ...options })),
+    /** `live` ({ onEvent, signal }): the answer as it is written (see requestLive); without it, the whole answer in one reply. */
+    answer: (sessionId, questionId, options = {}, live = null) => (live ? requestLive(`/sessions/${e(sessionId)}/questions/${e(questionId)}/answer`, json('POST', options), live) : request(`/sessions/${e(sessionId)}/questions/${e(questionId)}/answer`, json('POST', options))),
+    ask: (sessionId, text, options = {}, live = null) => (live ? requestLive(`/sessions/${e(sessionId)}/ask`, json('POST', { text, ...options }), live) : request(`/sessions/${e(sessionId)}/ask`, json('POST', { text, ...options }))),
     concept: (sessionId, concept, options = {}) => request(`/sessions/${e(sessionId)}/concept`, json('POST', { concept, ...options })),
     feedback: (body) => request('/feedback', json('POST', body)),
     progress: (courseId = null) => request(`/progress${courseId ? `?course=${e(courseId)}` : ''}`)

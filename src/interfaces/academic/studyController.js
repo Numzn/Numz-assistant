@@ -14,9 +14,23 @@ import { AcademicApiError } from './academicApi.js'
  * Answers are added to the conversation that is open now (`onExchange`); the server saves them there too.
  */
 
-const POLL_MS = 1500
+/**
+ * How often the desktop app looks at the screen, and how often the page asks it for a finished picture. A screen that changed is reported on
+ * the second look after the change (once to see it, once to see that it stopped moving), and the page notices on its next ask: with 2.5 s
+ * and 1.5 s that took 4.3 s (median) and with these 2.5 s (docs/smart-screenshot.md). The pictures are still at least 10 s apart (the app)
+ * and 8 s (the server), so this makes the wait shorter without making more reads.
+ */
+const WATCH_INTERVAL_MS = 1500
+const POLL_MS = 500
 /** Questions answered by themselves from one screen (more are listed with an Explain button). */
 const AUTO_ANSWER_LIMIT = 3
+/**
+ * Answers worked on at the same time. The server lets a person have at least two model calls at once (more for some roles), so two
+ * questions from one screen are answered together instead of one after the other, and never so many that a third is turned away.
+ */
+const AUTO_ANSWER_PARALLEL = 2
+/** The words of an answer are shown at most this often while they arrive (each redraw is the page's work, not the model's). */
+const LIVE_PAINT_MS = 60
 /** A picture the server could not take yet (too soon, busy, a failed read, the network) is sent again after these waits, then dropped. */
 const RETRY_WAITS_MS = [4000, 8000]
 const RETRYABLE = ['capture-rate-limited', 'capture-busy', 'read-failed', 'network']
@@ -54,7 +68,9 @@ export function createStudyController({ api, native, getConversationId = () => n
   let working = false // a screen is being sent and read
   let queued = null // the newest screen that arrived meanwhile (an older one is let go)
   let retry = null // { picture, tries, due }: a screen to send again
-  let answering = Promise.resolve() // automatic answers go one at a time
+  const flights = new Map() // question id -> { key, promise, abort }: answers being worked on (the same ask twice is one answer)
+  const autoWaiting = [] // question ids to answer by themselves, in order
+  let autoRunning = 0
 
   function set(patch) {
     state = { ...state, ...patch }
@@ -102,7 +118,7 @@ export function createStudyController({ api, native, getConversationId = () => n
 
   async function startWatching() {
     const exclusions = getExclusions()
-    await native.watchStart({ excludeApps: exclusions.apps, excludeTitles: exclusions.titles })
+    await native.watchStart({ intervalMs: WATCH_INTERVAL_MS, excludeApps: exclusions.apps, excludeTitles: exclusions.titles })
     setWatch({ status: 'watching', excludedNow: false, looks: 0, reported: 0, skipped: 0 })
     poll(++pollToken)
   }
@@ -177,7 +193,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     }
     const waiting = state.questions.filter((q) => q.state === 'new' && !q.partial && !(q.signals ?? []).length)
     say(waiting.length ? 'Answering by itself is on: answering what was waiting.' : 'Answering by itself is on: questions it finds will be answered without you pressing anything.', 'ok')
-    for (const q of waiting.slice(0, AUTO_ANSWER_LIMIT)) answering = answering.then(() => answerQuestion(q.id)).catch(() => {})
+    for (const q of waiting.slice(0, AUTO_ANSWER_LIMIT)) answerByItself(q.id)
     return state
   }
 
@@ -215,6 +231,8 @@ export function createStudyController({ api, native, getConversationId = () => n
     if (!state.session) return state
     set({ phase: 'stopping' })
     pollToken++
+    autoWaiting.length = 0
+    for (const flight of flights.values()) flight.abort.abort()
     await dropWaiting()
     if (native?.available) await native.watchStop()
     try {
@@ -272,10 +290,11 @@ export function createStudyController({ api, native, getConversationId = () => n
     try {
       out = await native.exportCapture({ captureId: pending.captureId, maxSide: 1600, quality: 80 })
     } catch {
+      native.discard(pending.captureId).catch(() => {})
       return
-    } finally {
-      await native.discard(pending.captureId)
     }
+    // The held copy is let go while the picture is already on its way: the upload does not wait for the desktop app to say it is done.
+    native.discard(pending.captureId).catch(() => {})
     await deliver({ bytes: out.bytes, mimeType: out.mimeType }, 0)
   }
 
@@ -334,7 +353,7 @@ export function createStudyController({ api, native, getConversationId = () => n
     else if (completed.length) say('A question that was cut off is whole now.', 'ok')
     if (!session.autoAnswer || !ready.length) return
     if ((result.signals ?? []).length) return say('This screen may be an assessment, so nothing was answered automatically. Press Explain if it is practice.', 'warn')
-    for (const id of ready.slice(0, AUTO_ANSWER_LIMIT)) answering = answering.then(() => answerQuestion(id)).catch(() => {})
+    for (const id of ready.slice(0, AUTO_ANSWER_LIMIT)) answerByItself(id)
     if (ready.length > AUTO_ANSWER_LIMIT) say(`Answering the first ${AUTO_ANSWER_LIMIT} of ${ready.length} questions. Press Explain on the rest.`, 'info')
   }
 
@@ -384,46 +403,131 @@ export function createStudyController({ api, native, getConversationId = () => n
   }
 
   function applyOutcome(question, outcome) {
-    if (outcome.status === 'confirm-required') return patchQuestion(question.id, { state: 'confirm', signals: outcome.signals, message: outcome.message })
-    if (outcome.status === 'needs-course') return patchQuestion(question.id, { state: 'needs-course', candidates: outcome.candidates, message: outcome.message })
-    const answer = { answerId: outcome.answerId, questionId: outcome.questionId, courseId: outcome.courseId, topic: outcome.topic || state.session?.activeTopic || '', approach: outcome.approach, markdown: outcome.markdown, sources: outcome.sources, grounding: outcome.grounding, evidence: outcome.evidence, flags: outcome.flags, task: outcome.task }
+    if (outcome.status === 'confirm-required') return patchQuestion(question.id, { state: 'confirm', signals: outcome.signals, message: outcome.message, live: null })
+    if (outcome.status === 'needs-course') return patchQuestion(question.id, { state: 'needs-course', candidates: outcome.candidates, message: outcome.message, live: null })
+    const answer = { answerId: outcome.answerId, questionId: outcome.questionId, courseId: outcome.courseId, topic: outcome.topic || state.session?.activeTopic || '', approach: outcome.approach, markdown: outcome.markdown, parts: outcome.parts ?? null, sources: outcome.sources, grounding: outcome.grounding, evidence: outcome.evidence, flags: outcome.flags, task: outcome.task, validation: outcome.validation ?? null, timings: outcome.timings ?? null }
     // Only an answer that really went into the conversation can be pointed at there: `ref` names it for the conversation and the panel.
     const delivered = Boolean(getConversationId() && outcome.savedToConversation)
     if (delivered) answer.ref = answer.answerId ?? question.id
-    patchQuestion(question.id, { state: 'answered', answer, message: '' })
+    patchQuestion(question.id, { state: 'answered', answer, message: '', live: null, ...(outcome.task ? { task: outcome.task } : {}) })
     set({ lastAnswer: answer })
-    if (delivered) onExchange({ question: question.text, answer: outcome.markdown, ref: answer.ref })
+    // An answer handed back (the same question asked again) is already in the conversation: it is not added a second time.
+    if (delivered && !outcome.cached) onExchange({ question: question.text, answer: outcome.markdown, ref: answer.ref })
   }
 
-  async function answerQuestion(id, { style = null, instruction = null, confirmPractice = false, courseId = null } = {}) {
+  /**
+   * What the page does with the events of an answer being written: the words so far are kept on the question (`live`), a few times a second
+   * at most, so the card shows the answer as it arrives, and the card says when the words are done and the answer is being checked.
+   */
+  function liveListener(id) {
+    let text = ''
+    let timer = null
+    const flush = () => {
+      timer = null
+      patchQuestion(id, { live: { ...(state.questions.find((q) => q.id === id)?.live ?? {}), text } })
+    }
+    const listener = (event) => {
+      if (event.type === 'start') {
+        text = ''
+        patchQuestion(id, { live: { text: '', parts: event.parts ?? null, pending: 'writing' }, ...(event.task ? { task: event.task } : {}) })
+      } else if (event.type === 'delta') {
+        text += event.text ?? ''
+        if (!timer) timer = setTimeout(flush, LIVE_PAINT_MS)
+      } else if (event.type === 'checking') {
+        clearTimeout(timer)
+        timer = null
+        patchQuestion(id, { live: { ...(state.questions.find((q) => q.id === id)?.live ?? {}), text, pending: 'checking' } })
+      }
+    }
+    listener.stop = () => clearTimeout(timer)
+    return listener
+  }
+
+  async function work(id, { style, instruction, confirmPractice, courseId }, abort) {
     const question = state.questions.find((q) => q.id === id)
     if (!question || !state.session || state.phase === 'paused') return null
-    patchQuestion(id, { state: 'answering', message: '' })
-    try {
-      const outcome = await api.answer(state.session.id, id, { conversationId: getConversationId(), style, instruction, confirmPractice, courseId })
-      applyOutcome(question, outcome)
-      return outcome
-    } catch (err) {
-      const d = describe(err)
-      patchQuestion(id, { state: 'failed', message: d.message })
-      if (['session-ended', 'session-expired'].includes(d.code)) await stop('The study session has ended.')
-      return null
+    patchQuestion(id, { state: 'answering', message: '', live: { text: '', parts: null, pending: 'writing' } })
+    const listener = liveListener(id)
+    let patient = true
+    for (;;) {
+      try {
+        const outcome = await api.answer(state.session.id, id, { conversationId: getConversationId(), style, instruction, confirmPractice, courseId }, { onEvent: listener, signal: abort.signal })
+        listener.stop()
+        applyOutcome(question, outcome)
+        return outcome
+      } catch (err) {
+        listener.stop()
+        if (err?.name === 'AbortError') return null
+        const d = describe(err)
+        // Too many answers at once for this person: one wait, then again (the answer in progress will have finished).
+        if (patient && ['too-many-at-once', 'rate-limited'].includes(d.code) && state.session) {
+          patient = false
+          patchQuestion(id, { live: { text: '', parts: null, pending: 'writing' } })
+          await wait(Math.max(err?.retryAfterMs ?? 0, 2000))
+          if (!state.session || state.phase === 'paused') {
+            patchQuestion(id, { state: 'new', live: null })
+            return null
+          }
+          continue
+        }
+        patchQuestion(id, { state: 'failed', message: d.message, live: null })
+        if (['session-ended', 'session-expired'].includes(d.code)) await stop('The study session has ended.')
+        return null
+      }
     }
   }
 
-  /** A question typed by the person (no screen involved). */
+  /** One answer at a time per question and way of asking: asking again while it is being worked on is the same answer, not another one. */
+  function answerQuestion(id, { style = null, instruction = null, confirmPractice = false, courseId = null } = {}) {
+    const key = JSON.stringify([style, instruction, confirmPractice, courseId])
+    const flying = flights.get(id)
+    if (flying?.key === key) return flying.promise
+    const abort = new AbortController()
+    const promise = work(id, { style, instruction, confirmPractice, courseId }, abort).finally(() => {
+      if (flights.get(id)?.promise === promise) flights.delete(id)
+    })
+    flights.set(id, { key, promise, abort })
+    return promise
+  }
+
+  /** Questions answered without the person pressing anything: a couple at a time, in the order they were found. */
+  function answerByItself(id) {
+    if (!autoWaiting.includes(id)) autoWaiting.push(id)
+    pumpAnswers()
+  }
+
+  function pumpAnswers() {
+    while (autoRunning < AUTO_ANSWER_PARALLEL && autoWaiting.length) {
+      const next = autoWaiting.shift()
+      autoRunning++
+      answerQuestion(next)
+        .catch(() => {})
+        .finally(() => {
+          autoRunning--
+          pumpAnswers()
+        })
+    }
+  }
+
+  /** A question typed by the person (no screen involved): it appears at once and fills in as the answer is written. */
   async function ask(text, { topic = null, courseId = null, style = null, instruction = null, confirmPractice = false } = {}) {
     const typed = String(text ?? '').trim()
     if (!typed || !state.session || state.phase === 'paused') return null
-    set({ busy: true, message: 'Working on it…', tone: 'info' })
+    const temp = `typed-${now()}`
+    const card = { id: temp, text: typed, options: [], task: 'explain', signals: [], state: 'answering', live: { text: '', parts: null, pending: 'writing' } }
+    set({ busy: true, message: '', tone: 'info', questions: [...state.questions, card] })
+    const listener = liveListener(temp)
     try {
-      const outcome = await api.ask(state.session.id, typed, { conversationId: getConversationId(), topic, courseId, style, instruction, confirmPractice })
-      const question = { id: outcome.questionId ?? `typed-${Date.now()}`, text: typed, options: [], task: outcome.task ?? 'explain', signals: [], state: 'new' }
-      set({ questions: [...state.questions, question] })
+      const outcome = await api.ask(state.session.id, typed, { conversationId: getConversationId(), topic, courseId, style, instruction, confirmPractice }, { onEvent: listener })
+      listener.stop()
+      const question = { ...card, id: outcome.questionId ?? temp }
+      patchQuestion(temp, { id: question.id })
       applyOutcome(question, outcome)
       say('', 'info')
       return outcome
     } catch (err) {
+      listener.stop()
+      set({ questions: state.questions.filter((q) => q.id !== temp) })
       const d = describe(err)
       say(d.details?.offer === 'explain_concept' ? `${d.message}` : d.message, 'warn')
       return null

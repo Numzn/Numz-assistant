@@ -3,12 +3,22 @@
  * reply is ever parsed as HTML. Links open in a new tab with noopener noreferrer.
  */
 
+import { renderAnswerBlocks } from './answerBlocks.js'
 import { parseMarkdown } from './markdown.js'
 
 const COPIED_MS = 1500
 
-export function renderMarkdown(container, text, doc = container.ownerDocument ?? document) {
+/** Markdown as it is, with no special treatment of anything. */
+export function renderMarkdownPlain(container, text, doc = container.ownerDocument ?? document) {
   container.replaceChildren(...blockNodes(parseMarkdown(text), doc))
+}
+
+/**
+ * Markdown, where text that carries ANSWER headings (a study or screenshot answer) is drawn as labelled answer blocks, each with its own
+ * copy icon, and everything else exactly as before.
+ */
+export function renderMarkdown(container, text, doc = container.ownerDocument ?? document) {
+  if (!renderAnswerBlocks(container, text, doc, { renderBody: renderMarkdownPlain })) renderMarkdownPlain(container, text, doc)
 }
 
 function el(doc, tag, className, children = []) {

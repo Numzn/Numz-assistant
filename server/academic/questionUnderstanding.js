@@ -26,7 +26,7 @@ Rules for segments:
 Respond with ONLY a single JSON object (no markdown fences, no commentary) of exactly this shape:
 {
   "contentKind": "exam_question" | "revision_question" | "lecture_slide" | "assignment_instructions" | "reading_material" | "academic_document" | "diagram" | "table" | "multiple_choice" | "other_content" | "non_academic",
-  "segments": [ { "kind": "question" | "instructions" | "paragraph" | "heading" | "list" | "table" | "code" | "formula" | "figure" | "other", "title": "a short label if one is shown, such as 'Question 3' or 'Slide 4' or 'Section 2.1', else empty", "text": "the content exactly as shown", "options": [ { "label": "A", "text": "option wording" } ], "marks": "marks or weighting if shown, else null", "type": "multiple-choice" | "true-false" | "short-answer" | "calculation" | "descriptive" | "fill-in-the-blank" | "other", "hasDiagram": true or false, "region": [x, y, width, height] as fractions of the screen from 0 to 1, "cutOff": "none" | "top" | "bottom" | "both", "group": "label or empty", "dependsOn": "title of another segment or empty" } ],
+  "segments": [ { "kind": "question" | "instructions" | "paragraph" | "heading" | "list" | "table" | "code" | "formula" | "figure" | "other", "title": "a short label if one is shown, such as 'Question 3' or 'Slide 4' or 'Section 2.1', else empty", "text": "the content exactly as shown", "options": [ { "label": "A", "text": "option wording" } ], "marks": "marks or weighting if shown, else null", "type": "multiple-choice" | "true-false" | "short-answer" | "calculation" | "descriptive" | "fill-in-the-blank" | "other", "hasDiagram": true or false, "cutOff": "none" | "top" | "bottom" | "both", "group": "label or empty", "dependsOn": "title of another segment or empty" } ],
   "position": "where this is in a longer document or sequence if the screen says so (such as 'page 3 of 10', 'slide 4/12' or a tab name), else empty",
   "instructions": "instructions shown that apply to the whole screen (time, how to answer), else empty",
   "subject": "a word or two, such as databases or macroeconomics",
@@ -157,22 +157,8 @@ export function judgeReading(reading) {
   return { status: 'recognised', reason: '' }
 }
 
-/** The kind of task a question sets, from how it begins; this decides the shape of the answer (never a template for everything). */
-export function classifyTask(question) {
-  const text = String(question?.text ?? question ?? '').trim().toLowerCase().replace(/^\(?\d+[.)]\s*|^[a-z]\)\s*/, '')
-  if (question?.options?.length >= 2 || question?.type === 'multiple-choice' || question?.type === 'true-false') return 'multiple_choice'
-  const rules = [
-    ['calculate', /^(calculate|compute|work out|find the (value|sum|product|area|volume|mean|average)|solve|determine the (value|amount))/],
-    ['define', /^(define|what is meant by|state the meaning of|what does .* mean)/],
-    ['compare', /^(compare|contrast|differentiate|distinguish between|what is the difference between)/],
-    ['evaluate', /^(evaluate|assess|critically (assess|evaluate|examine)|to what extent|justify|how effective)/],
-    ['analyse', /^(analy[sz]e|examine|investigate|break down|what (are|were) the (causes|effects|implications))/],
-    ['discuss', /^(discuss|argue|debate|consider|comment on|review)/],
-    ['explain', /^(explain|describe|outline|illustrate|why|how|what is|what are|state)/]
-  ]
-  for (const [task, pattern] of rules) if (pattern.test(text)) return task
-  return 'explain'
-}
+// What kind of question it is, and how big an answer it needs: questionAnalysis.js (a plain rule over text; no model).
+export { analyseQuestion, classifyTask } from './questionAnalysis.js'
 
 /** Anything on the screen that suggests a formal assessment (kinds only), from the model's indicators and the question text. */
 export function readingSignals(reading) {

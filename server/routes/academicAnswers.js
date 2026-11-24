@@ -1,5 +1,6 @@
 import { AcademicError, textField } from '../academic/academicError.js'
 import { FEEDBACK_KINDS } from '../academic/learningMemory.js'
+import { createSseStream } from '../transport/sse.js'
 
 /**
  * Answering, feedback, progress and research (added to /api/v1/assistant/academic):
@@ -16,6 +17,12 @@ import { FEEDBACK_KINDS } from '../academic/learningMemory.js'
  *   GET  /research?q=                          verified scholarly sources (OpenAlex records confirmed with Crossref)
  *
  * The answer is added to the conversation named by `conversationId` (the person's own, open one) as an ordinary exchange.
+ *
+ * A caller that sends `Accept: text/event-stream` to the two answer routes gets the answer as it is written: `start` (kind, size, the labels of
+ * its parts), `delta` ({ text }, in pieces), `checking` (a repair or a second look is under way), then `result` (the same JSON the plain call
+ * returns, and the final form of the answer: it may differ from what was streamed) or `error` ({ status, code, error, details }). A request
+ * that is refused or needs the person's decision before anything is written (restricted, confirm-required, needs-course, a limit) answers as
+ * ordinary JSON, exactly as without the header: the stream is opened only when there is an answer to write.
  */
 
 const MAX_NOTE_TEXT = 20_000
@@ -28,8 +35,39 @@ export function addAnswerRoutes(router, { wrap, body, audit }, { answerService, 
     return { conversationId: typeof b.conversationId === 'string' ? b.conversationId : null, courseId: typeof b.courseId === 'string' ? b.courseId : null, style: b.style ?? null, instruction: b.instruction ?? null, confirmPractice: b.confirmPractice === true, useResearch: typeof b.useResearch === 'boolean' ? b.useResearch : null }
   }
 
-  router.post('/sessions/:id/questions/:qid/answer', wrap(async (req, res) => res.json(await answers(req).answer({ sessionId: req.params.id, questionId: req.params.qid, ...options(req) }, ctxOf(req)))))
-  router.post('/sessions/:id/ask', wrap(async (req, res) => res.json(await answers(req).answer({ sessionId: req.params.id, text: body(req).text, topic: body(req).topic ?? null, ...options(req) }, ctxOf(req)))))
+  const wantsStream = (req) => String(req.headers.accept ?? '').includes('text/event-stream')
+
+  /** The plain JSON reply, or (when asked for) the event stream, opened only when the first words are about to be written. */
+  async function respond(req, res, work) {
+    if (!wantsStream(req)) return res.json(await work({}))
+    let sse = null
+    const controller = new AbortController()
+    res.on('close', () => {
+      if (!res.writableEnded) controller.abort()
+    })
+    try {
+      const result = await work({
+        signal: controller.signal,
+        onEvent: (event) => {
+          sse ??= createSseStream(req, res)
+          sse.send(event.type, event)
+        }
+      })
+      if (!sse) return res.json(result)
+      sse.send('result', result)
+      sse.end()
+    } catch (err) {
+      if (controller.signal.aborted) return sse?.end() // the person left (closed the panel, ended the session): nobody is waiting for an answer or an error
+      if (!sse) throw err // nothing was sent yet: the ordinary error answer
+      const status = Number.isInteger(err?.statusCode) ? err.statusCode : 500
+      const exposed = err?.expose === true || status < 500
+      sse.send('error', { status, code: typeof err?.code === 'string' ? err.code : 'answer-failed', error: exposed && err?.message ? err.message : 'An answer could not be worked out just now. Try again.', details: exposed ? err?.details ?? null : null })
+      sse.end()
+    }
+  }
+
+  router.post('/sessions/:id/questions/:qid/answer', wrap((req, res) => respond(req, res, (hooks) => answers(req).answer({ sessionId: req.params.id, questionId: req.params.qid, ...options(req) }, ctxOf(req), hooks))))
+  router.post('/sessions/:id/ask', wrap((req, res) => respond(req, res, (hooks) => answers(req).answer({ sessionId: req.params.id, text: body(req).text, topic: body(req).topic ?? null, ...options(req) }, ctxOf(req), hooks))))
   router.post('/sessions/:id/concept', wrap(async (req, res) => res.json(await answers(req).explainConcept({ sessionId: req.params.id, concept: body(req).concept, conversationId: options(req).conversationId, courseId: options(req).courseId, style: options(req).style }, ctxOf(req)))))
 
   router.post(

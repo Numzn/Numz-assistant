@@ -2,9 +2,11 @@
 
 use crate::CaptureError;
 use base64::Engine;
+use fast_image_resize::images::Image;
+use fast_image_resize::{FilterType as FastFilter, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::{self, FilterType};
-use image::{DynamicImage, RgbaImage};
+use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbaImage};
 use serde::Deserialize;
 
 pub const PREVIEW_SIDE: u32 = 1280;
@@ -58,10 +60,40 @@ pub fn jpeg(image: &RgbaImage, quality: u8) -> Result<Vec<u8>, CaptureError> {
     Ok(out)
 }
 
+/// The picture as plain RGB bytes (a screenshot has no transparency worth keeping, and JPEG has none to give), scaled down so that its longer
+/// side is at most `max_side`. One copy of the pixels is made (alpha dropped); scaling is done on those three-byte pixels with SIMD, which is
+/// several times quicker than the general resize and gives the same picture (the same triangle filter, tested against it below).
+fn scaled_rgb(image: &RgbaImage, max_side: u32) -> Result<(Vec<u8>, u32, u32), CaptureError> {
+    let (w, h) = image.dimensions();
+    let mut rgb = Vec::with_capacity(w as usize * h as usize * 3);
+    for pixel in image.as_raw().chunks_exact(4) {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
+    let long = w.max(h);
+    if long <= max_side {
+        return Ok((rgb, w, h));
+    }
+    let scale = max_side as f64 / long as f64;
+    let nw = ((w as f64 * scale).round() as u32).max(1);
+    let nh = ((h as f64 * scale).round() as u32).max(1);
+    let failed = |e: &dyn std::fmt::Display| CaptureError::Failed(format!("could not scale the picture: {e}"));
+    let src = Image::from_vec_u8(w, h, rgb, PixelType::U8x3).map_err(|e| failed(&e))?;
+    let mut dst = Image::new(nw, nh, PixelType::U8x3);
+    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FastFilter::Bilinear));
+    Resizer::new().resize(&src, &mut dst, &options).map_err(|e| failed(&e))?;
+    Ok((dst.into_vec(), nw, nh))
+}
+
+fn jpeg_rgb(rgb: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>, CaptureError> {
+    let mut out = Vec::with_capacity(rgb.len() / 6);
+    JpegEncoder::new_with_quality(&mut out, quality.clamp(30, 95)).write_image(rgb, width, height, ExtendedColorType::Rgb8).map_err(|e| CaptureError::Failed(format!("could not encode the picture: {e}")))?;
+    Ok(out)
+}
+
 /// A small picture the page can show at once, as a `data:` URL.
 pub fn preview_data_url(image: &RgbaImage) -> Result<String, CaptureError> {
-    let small = limit_side(image.clone(), PREVIEW_SIDE);
-    let bytes = jpeg(&small, PREVIEW_QUALITY)?;
+    let (rgb, w, h) = scaled_rgb(image, PREVIEW_SIDE)?;
+    let bytes = jpeg_rgb(&rgb, w, h, PREVIEW_QUALITY)?;
     Ok(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
@@ -75,9 +107,8 @@ pub fn export(image: &RgbaImage, rect: Option<Rect>, max_side: u32, quality: u8)
         }
         None => image,
     };
-    let scaled = limit_side(source.clone(), max_side.clamp(MIN_SIDE, MAX_SIDE));
-    let (width, height) = scaled.dimensions();
-    Ok(Exported { bytes: jpeg(&scaled, quality)?, width, height })
+    let (rgb, width, height) = scaled_rgb(source, max_side.clamp(MIN_SIDE, MAX_SIDE))?;
+    Ok(Exported { bytes: jpeg_rgb(&rgb, width, height, quality)?, width, height })
 }
 
 #[cfg(test)]
@@ -122,6 +153,39 @@ mod tests {
         let back = image::load_from_memory(&out.bytes).unwrap();
         assert_eq!((back.width(), back.height()), (1000, 500));
         assert!(export(&img, Some(Rect { x: 0, y: 0, width: 1, height: 1 }), 1000, 85).is_err());
+    }
+
+    /// What the scaling changed in the picture, against the general resize it replaced: the mean and the largest difference of any colour value.
+    fn difference(a: &[u8], b: &[u8]) -> (f64, u8) {
+        assert_eq!(a.len(), b.len());
+        let total: u64 = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as u64).sum();
+        (total as f64 / a.len() as f64, a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap())
+    }
+
+    /// Lines of "text" on white: the kind of picture the scaling must keep readable.
+    fn page(w: u32, h: u32) -> RgbaImage {
+        RgbaImage::from_fn(w, h, |x, y| if (y / 3) % 5 < 2 && (x / 2) % 7 < 5 && x > w / 8 && x < w - w / 8 { Rgba([20, 20, 30, 255]) } else { Rgba([250, 250, 252, 255]) })
+    }
+
+    #[test]
+    fn the_fast_scaling_gives_the_same_picture_as_the_general_resize() {
+        let img = page(1920, 1080);
+        let (fast, w, h) = scaled_rgb(&img, 1600).unwrap();
+        assert_eq!((w, h), (1600, 900));
+        let general = limit_side(img.clone(), 1600);
+        assert_eq!(general.dimensions(), (w, h));
+        let general_rgb: Vec<u8> = general.as_raw().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let (mean, _) = difference(&fast, &general_rgb);
+        assert!(mean < 2.0, "the two scalings differ by {mean} on average (of 255): text would read differently");
+    }
+
+    #[test]
+    fn a_picture_already_small_enough_is_not_scaled_and_keeps_its_colours() {
+        let img = picture(800, 600);
+        let (rgb, w, h) = scaled_rgb(&img, 1600).unwrap();
+        assert_eq!((w, h), (800, 600));
+        assert_eq!(&rgb[..3], &img.get_pixel(0, 0).0[..3]);
+        assert_eq!(rgb.len(), 800 * 600 * 3);
     }
 
     #[test]

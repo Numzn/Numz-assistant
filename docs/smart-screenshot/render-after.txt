@@ -1,0 +1,6 @@
+render time per answer, median of 200 (ms)  — /srv/projects/Numz-assistant/.claude/worktrees/smart-screenshot
+one line (multiple choice)        0.10 ms   blocks 1   copy icons 1
+short paragraph (definition)      0.10 ms   blocks 1   copy icons 1
+list and table (comparison)       0.30 ms   blocks 1   copy icons 1
+three parts (a)(b)(c)             0.30 ms   blocks 3   copy icons 3
+long essay (evaluation)           0.50 ms   blocks 1   copy icons 1

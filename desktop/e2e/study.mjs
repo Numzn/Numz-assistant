@@ -515,8 +515,8 @@ try {
   await nextPicture('a picture in the last session')
   // The page stops checking in WITHOUT going away (no unload, nothing tells the app): its calls for results simply never come back, as
   // if the page had hung. Only the app's own dead-man switch can end the reading now.
-  // The page's poll loop waits 1.5 s between calls; timers of exactly that length are made never to fire, so the loop never calls again.
-  await run('const real = window.setTimeout.bind(window); window.__realInvoke = window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__); window.setTimeout = (fn, ms, ...rest) => (ms === 1500 ? 0 : real(fn, ms, ...rest)); return true')
+  // The page's poll loop waits 0.5 s between calls (POLL_MS in studyController.js, was 1.5 s); timers of exactly that length are made never to fire, so the loop never calls again.
+  await run('const real = window.setTimeout.bind(window); window.__realInvoke = window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__); window.setTimeout = (fn, ms, ...rest) => (ms === 500 ? 0 : real(fn, ms, ...rest)); return true')
   const seenAfterHang = await quietFor(40000)
   const native = await wd('POST', `/session/${sid}/execute/async`, { script: 'const done = arguments[arguments.length-1]; window.__realInvoke("screenshot_watch_poll", {}).then((v)=>done({ok:v}), (e)=>done({err:String(e&&e.message||e)}))', args: [] })
   check('with the page hung (still open, but asking for nothing), the app stops reading by itself: no more pictures, and the title is plain again', seenAfterHang <= 1 && title() === 'NUMZ AI', `${seenAfterHang} pictures, title "${title()}"`)

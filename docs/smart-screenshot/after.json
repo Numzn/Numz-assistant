@@ -1,0 +1,1103 @@
+{
+  "label": "after",
+  "root": "/srv/projects/Numz-assistant/.claude/worktrees/smart-screenshot",
+  "at": "2026-11-24T00:33:50.276Z",
+  "model": "claude-sonnet-5-5",
+  "vision": "claude-sonnet-5-5",
+  "runs": 3,
+  "summary": [
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "n": 3,
+      "read": 2690.248442,
+      "classify": 1.5706219999992754,
+      "first": 984.2925779999987,
+      "answer": 1603.1479299999992,
+      "total": 4328.429851,
+      "words": 22,
+      "correct": 3
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "n": 3,
+      "read": 3022.7223159999994,
+      "classify": 0.3001989999975194,
+      "first": 637.6069180000013,
+      "answer": 699.2366780000011,
+      "total": 3754.9470280000023,
+      "words": 5,
+      "correct": 3
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "n": 3,
+      "read": 2575.2068010000003,
+      "classify": 0.06461299999864423,
+      "first": 725.8753179999985,
+      "answer": 987.0996430000014,
+      "total": 3598.974252,
+      "words": 18,
+      "correct": 3
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "n": 3,
+      "read": 2728.056217999998,
+      "classify": 0.05125699999916833,
+      "first": 649.8490569999994,
+      "answer": 859.7195160000047,
+      "total": 3717.533015000001,
+      "words": 19,
+      "correct": 3
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "n": 3,
+      "read": 1729.0060299999968,
+      "classify": 0.06343800000468036,
+      "first": 714.7827479999978,
+      "answer": 3158.1183010000022,
+      "total": 4913.514660000001,
+      "words": 170,
+      "correct": 3
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "n": 3,
+      "read": 2525.9290489999985,
+      "classify": 0.0787960000016028,
+      "first": 1266.556276000003,
+      "answer": 7987.286410000001,
+      "total": 10436.50578800001,
+      "words": 287,
+      "correct": 3
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "n": 3,
+      "read": 2704.222443000006,
+      "classify": 0.1746629999979632,
+      "first": 1144.626390999998,
+      "answer": 4835.029924000002,
+      "total": 7608.621073999995,
+      "words": 167,
+      "correct": 3
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "n": 2,
+      "read": 2768.642129999993,
+      "classify": 0.09014600000227802,
+      "first": 636.3497060000082,
+      "answer": 1818.815029999998,
+      "total": 4622.5005320000055,
+      "words": 85,
+      "correct": 2
+    }
+  ],
+  "overall": {
+    "read": 2690.248442,
+    "first": 780.2389700000058,
+    "answer": 1723.7192379999997,
+    "total": 4399.900559,
+    "words": 24,
+    "correct": 23,
+    "runs": 23,
+    "failed": 1,
+    "modelCalls": 33
+  },
+  "results": [
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "run": 1,
+      "ok": true,
+      "read": 2808.571606,
+      "questions": 1,
+      "classify": 3.3432209999996303,
+      "tasks": [
+        "define/simple"
+      ],
+      "answer": 1519.858245,
+      "first": 854.7959210000004,
+      "words": 22,
+      "parts": 1,
+      "understood": [
+        "define/simple"
+      ],
+      "timings": [
+        {
+          "lookup": 2,
+          "model": 1514,
+          "check": 2,
+          "total": 1519
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 4328.429851,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 221,
+        "answerIn": 1161,
+        "answerOut": 31
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nOpportunity cost is the value of the next best alternative you give up when you choose one option over another."
+    },
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "run": 2,
+      "ok": true,
+      "read": 2676.181321,
+      "questions": 1,
+      "classify": 0.06560600000011618,
+      "tasks": [
+        "define/simple"
+      ],
+      "answer": 1723.7192379999997,
+      "first": 1087.1925539999993,
+      "words": 22,
+      "parts": 1,
+      "understood": [
+        "define/simple"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 1722,
+          "check": 1,
+          "total": 1724
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 4399.900559,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 226,
+        "answerIn": 1161,
+        "answerOut": 31
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nOpportunity cost is the value of the next best alternative you give up when you choose one option over another."
+    },
+    {
+      "scenario": "define",
+      "kind": "definition",
+      "run": 3,
+      "ok": true,
+      "read": 2690.248442,
+      "questions": 1,
+      "classify": 1.5706219999992754,
+      "tasks": [
+        "define/simple"
+      ],
+      "answer": 1603.1479299999992,
+      "first": 984.2925779999987,
+      "words": 22,
+      "parts": 1,
+      "understood": [
+        "define/simple"
+      ],
+      "timings": [
+        {
+          "lookup": 1,
+          "model": 1602,
+          "check": 0,
+          "total": 1603
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 4293.396371999999,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 226,
+        "answerIn": 1161,
+        "answerOut": 31
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nOpportunity cost is the value of the next best alternative you give up when you choose one option over another."
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "run": 1,
+      "ok": true,
+      "read": 2957.9220349999996,
+      "questions": 1,
+      "classify": 1.3674900000005437,
+      "tasks": [
+        "multiple_choice/simple"
+      ],
+      "answer": 665.7032289999988,
+      "first": 625.5539680000002,
+      "words": 5,
+      "parts": 1,
+      "understood": [
+        "multiple_choice/simple"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 664,
+          "check": 1,
+          "total": 665
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3623.6252639999984,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 308,
+        "answerIn": 1177,
+        "answerOut": 10
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nB) 60 km/h"
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "run": 2,
+      "ok": true,
+      "read": 3022.7223159999994,
+      "questions": 1,
+      "classify": 0.3001989999975194,
+      "tasks": [
+        "multiple_choice/simple"
+      ],
+      "answer": 850.8070310000003,
+      "first": 810.6869179999994,
+      "words": 5,
+      "parts": 1,
+      "understood": [
+        "multiple_choice/simple"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 849,
+          "check": 1,
+          "total": 850
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3873.5293469999997,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 308,
+        "answerIn": 1177,
+        "answerOut": 10
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nB) 60 km/h"
+    },
+    {
+      "scenario": "mcq",
+      "kind": "multiple choice",
+      "run": 3,
+      "ok": true,
+      "read": 3055.710350000001,
+      "questions": 1,
+      "classify": 0.17924300000231597,
+      "tasks": [
+        "multiple_choice/simple"
+      ],
+      "answer": 699.2366780000011,
+      "first": 637.6069180000013,
+      "words": 5,
+      "parts": 1,
+      "understood": [
+        "multiple_choice/simple"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 698,
+          "check": 0,
+          "total": 699
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3754.9470280000023,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 304,
+        "answerIn": 1177,
+        "answerOut": 10
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nB) 60 km/h"
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "run": 1,
+      "ok": true,
+      "read": 2436.728242000001,
+      "questions": 1,
+      "classify": 0.49474499999996624,
+      "tasks": [
+        "explain/moderate"
+      ],
+      "answer": 903.3506669999988,
+      "first": 725.8753179999985,
+      "words": 18,
+      "parts": 1,
+      "understood": [
+        "explain/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 903,
+          "check": 0,
+          "total": 903
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3340.078909,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 209,
+        "answerIn": 1200,
+        "answerOut": 34
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nSimple interest = P × r × t = 2,000 × 0.05 × 3 = **$300**"
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "run": 2,
+      "ok": true,
+      "read": 2575.2068010000003,
+      "questions": 1,
+      "classify": 0.06461299999864423,
+      "tasks": [
+        "explain/moderate"
+      ],
+      "answer": 1023.7674509999997,
+      "first": 800.8812599999983,
+      "words": 24,
+      "parts": 1,
+      "understood": [
+        "explain/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 1023,
+          "check": 0,
+          "total": 1024
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3598.974252,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 209,
+        "answerIn": 1200,
+        "answerOut": 45
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nSimple interest = P × r × t = 2,000 × 0.05 × 3 = **$300**\n\nThe total interest earned is $300."
+    },
+    {
+      "scenario": "calculate",
+      "kind": "calculation",
+      "run": 3,
+      "ok": true,
+      "read": 2620.9000190000006,
+      "questions": 1,
+      "classify": 0.050827000006393064,
+      "tasks": [
+        "explain/moderate"
+      ],
+      "answer": 987.0996430000014,
+      "first": 718.1722720000034,
+      "words": 18,
+      "parts": 1,
+      "understood": [
+        "explain/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 985,
+          "check": 0,
+          "total": 986
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3607.999662000002,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 209,
+        "answerIn": 1200,
+        "answerOut": 34
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nSimple interest = P × r × t = 2,000 × 0.05 × 3 = **$300**"
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "run": 1,
+      "ok": true,
+      "read": 2453.261317999997,
+      "questions": 1,
+      "classify": 0.05125699999916833,
+      "tasks": [
+        "list/moderate"
+      ],
+      "answer": 853.3383439999961,
+      "first": 643.3372219999947,
+      "words": 19,
+      "parts": 1,
+      "understood": [
+        "list/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 853,
+          "check": 0,
+          "total": 853
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3306.5996619999933,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 199,
+        "answerIn": 1173,
+        "answerOut": 34
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n- Medium of exchange\n- Unit of account\n- Store of value\n- Standard of deferred payment"
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "run": 2,
+      "ok": true,
+      "read": 2728.056217999998,
+      "questions": 1,
+      "classify": 0.04359000000113156,
+      "tasks": [
+        "list/moderate"
+      ],
+      "answer": 989.476797000003,
+      "first": 830.5930330000047,
+      "words": 19,
+      "parts": 1,
+      "understood": [
+        "list/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 989,
+          "check": 0,
+          "total": 989
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3717.533015000001,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 239,
+        "answerIn": 1173,
+        "answerOut": 34
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n- Medium of exchange\n- Unit of account\n- Store of value\n- Standard of deferred payment"
+    },
+    {
+      "scenario": "list",
+      "kind": "list",
+      "run": 3,
+      "ok": true,
+      "read": 3076.774627999999,
+      "questions": 1,
+      "classify": 0.14639400000305614,
+      "tasks": [
+        "list/moderate"
+      ],
+      "answer": 859.7195160000047,
+      "first": 649.8490569999994,
+      "words": 19,
+      "parts": 1,
+      "understood": [
+        "list/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 859,
+          "check": 0,
+          "total": 859
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 3936.494144000004,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 254,
+        "answerIn": 1173,
+        "answerOut": 34
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n- Medium of exchange\n- Unit of account\n- Store of value\n- Standard of deferred payment"
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "run": 1,
+      "ok": true,
+      "read": 1758.6450350000014,
+      "questions": 1,
+      "classify": 0.06343800000468036,
+      "tasks": [
+        "compare/moderate"
+      ],
+      "answer": 3158.1183010000022,
+      "first": 726.6179520000005,
+      "words": 175,
+      "parts": 1,
+      "understood": [
+        "compare/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 3158,
+          "check": 0,
+          "total": 3158
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 4916.763336000004,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 189,
+        "answerIn": 1167,
+        "answerOut": 374
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n| Feature | TCP | UDP |\n|---|---|---|\n| Connection | Connection-oriented: a three-way handshake sets up the connection before data is sent | Connectionless: data is sent with no setup |\n| Reliability | Reliable: uses acknowledgements, retransmission of lost segments and checksums | Unreliable: no acknowledgements or retransmission, so packets may be lost or duplicated |\n| Ordering | Data arrives in order, using sequence numbers | No ordering, so packets may arrive in any order |\n| Flow and congestion control | Yes (window-based flow control and congestion control) | None |\n| Speed"
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "run": 2,
+      "ok": true,
+      "read": 1663.3877670000002,
+      "questions": 1,
+      "classify": 0.03763900000194553,
+      "tasks": [
+        "compare/moderate"
+      ],
+      "answer": 2969.943858999999,
+      "first": 714.7827479999978,
+      "words": 155,
+      "parts": 1,
+      "understood": [
+        "compare/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 2970,
+          "check": 0,
+          "total": 2970
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 4633.331625999999,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 189,
+        "answerIn": 1167,
+        "answerOut": 335
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n| Feature | TCP | UDP |\n|---|---|---|\n| Connection | Connection-oriented: a three-way handshake sets up the connection first | Connectionless: data is sent with no setup |\n| Reliability | Reliable: uses acknowledgements, retransmits lost packets, and detects errors | Unreliable: no acknowledgements or retransmission (only an optional checksum) |\n| Ordering | Delivers data in order using sequence numbers | No ordering; packets may arrive out of order or be lost |\n| Speed and overhead | Slower, with a larger header (20 bytes or more) | Faster, with a small 8-byte header |\n| Flow and"
+    },
+    {
+      "scenario": "compare",
+      "kind": "comparison",
+      "run": 3,
+      "ok": true,
+      "read": 1729.0060299999968,
+      "questions": 1,
+      "classify": 0.13500300000305288,
+      "tasks": [
+        "compare/moderate"
+      ],
+      "answer": 3184.508630000004,
+      "first": 673.8117899999997,
+      "words": 170,
+      "parts": 1,
+      "understood": [
+        "compare/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 3184,
+          "check": 0,
+          "total": 3184
+        }
+      ],
+      "checked": "ok",
+      "calls": 1,
+      "total": 4913.514660000001,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 189,
+        "answerIn": 1167,
+        "answerOut": 367
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n| Feature | TCP | UDP |\n|---|---|---|\n| Connection | Connection-oriented: a three-way handshake sets up the connection before data is sent | Connectionless: data is sent with no setup |\n| Reliability | Reliable: uses acknowledgements, retransmits lost segments and detects errors | Unreliable: no acknowledgements or retransmission, so packets may be lost (only an optional checksum) |\n| Ordering | Data arrives in order, using sequence numbers | No ordering, so packets can arrive out of order |\n| Flow and congestion control | Yes (windowing) | None |\n| Speed and overhead | Slower, wi"
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "run": 1,
+      "ok": true,
+      "read": 2525.9290489999985,
+      "questions": 1,
+      "classify": 0.0787960000016028,
+      "tasks": [
+        "evaluate/complex"
+      ],
+      "answer": 7999.824452000001,
+      "first": 1565.3742770000026,
+      "words": 286,
+      "parts": 1,
+      "understood": [
+        "evaluate/complex"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 6250,
+          "check": 1749,
+          "total": 8000
+        }
+      ],
+      "checked": "ok",
+      "calls": 2,
+      "total": 10525.753501,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 203,
+        "answerIn": 2169,
+        "answerOut": 522
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nRent control is only partly effective: it helps people who already have a rented home, but it tends to reduce the overall supply and quality of housing, so it is a weak way to make housing affordable for everyone.\n\n**For:**\n- A rent ceiling directly lowers rents for sitting tenants, so they pay less than the market price. This helps low-income households in the short run.\n- It gives tenants security and stops sudden rent rises or forced moves, so it protects people from displacement.\n\n**Against:**\n- A price ceiling set below the market rent creates excess demand. More people want "
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "run": 2,
+      "ok": true,
+      "read": 2887.48485600001,
+      "questions": 1,
+      "classify": 0.04328100000566337,
+      "tasks": [
+        "evaluate/complex"
+      ],
+      "answer": 7199.35536500001,
+      "first": 1266.556276000003,
+      "words": 287,
+      "parts": 1,
+      "understood": [
+        "evaluate/complex"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 5798,
+          "check": 1401,
+          "total": 7199
+        }
+      ],
+      "checked": "ok",
+      "calls": 2,
+      "total": 10086.84022100002,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 203,
+        "answerIn": 2175,
+        "answerOut": 528
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nRent control is only partly effective. It helps current tenants in the short run, but it tends to reduce the supply and quality of housing, so it is a poor long-run fix for affordability.\n\n**In favour:**\n- A rent ceiling below the market rent makes housing cheaper right away for tenants who already have a controlled flat.\n- It gives security and stops sudden rent rises, so low-income families are less likely to be forced out.\n\n**Against:**\n- A price ceiling below equilibrium creates excess demand. The quantity demanded rises and the quantity supplied falls, so there is a shortage "
+    },
+    {
+      "scenario": "evaluate",
+      "kind": "discussion / evaluation",
+      "run": 3,
+      "ok": true,
+      "read": 2449.219378000009,
+      "questions": 1,
+      "classify": 0.16224699998565484,
+      "tasks": [
+        "evaluate/complex"
+      ],
+      "answer": 7987.286410000001,
+      "first": 1086.7144410000037,
+      "words": 322,
+      "parts": 1,
+      "understood": [
+        "evaluate/complex"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 6584,
+          "check": 1403,
+          "total": 7987
+        }
+      ],
+      "checked": "ok",
+      "calls": 2,
+      "total": 10436.50578800001,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 203,
+        "answerIn": 2260,
+        "answerOut": 613
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\nRent control is effective in the short run for the tenants it protects, but I think it is a poor way to make housing affordable overall.\n\n**For:**\n- A rent ceiling below the market rent lowers housing costs for existing tenants. This helps low-income households and the elderly in particular.\n- Tenants get security, so they are less likely to be forced out by sudden rent rises. This keeps communities together.\n- It is cheap for the government to introduce because it needs no public spending.\n\n**Against:**\n- A price ceiling below equilibrium creates excess demand. Quantity demanded "
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "run": 1,
+      "ok": true,
+      "read": 2704.222443000006,
+      "questions": 1,
+      "classify": 0.17953100000158884,
+      "tasks": [
+        "apply/moderate"
+      ],
+      "answer": 6104.880864000006,
+      "first": 780.2389700000058,
+      "words": 189,
+      "parts": 1,
+      "understood": [
+        "case_study/complex"
+      ],
+      "timings": [
+        {
+          "lookup": 1,
+          "model": 4255,
+          "check": 1849,
+          "total": 6105
+        }
+      ],
+      "checked": "ok",
+      "calls": 2,
+      "total": 8809.103307000012,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 381,
+        "answerIn": 2435,
+        "answerOut": 352
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n1. **Raise prices on cakes and specialty items, and on bread by a small amount.** Ana hasn't changed her prices in three years, while flour and energy costs have risen 20%. Each loaf and cake now earns less profit than before. A modest rise would restore some of that margin. Cakes are less directly in competition with the supermarket's cheap bread, so customers are less likely to leave if cake prices go up. Sales have held steady so far, which suggests she has some loyal customers.\n\n2. **Make her products different from the supermarket's and cut costs where she can.** She cannot w"
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "run": 2,
+      "ok": true,
+      "read": 2773.591149999993,
+      "questions": 1,
+      "classify": 0.1746629999979632,
+      "tasks": [
+        "apply/moderate"
+      ],
+      "answer": 4835.029924000002,
+      "first": 1239.3407290000032,
+      "words": 167,
+      "parts": 1,
+      "understood": [
+        "case_study/complex"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 4138,
+          "check": 697,
+          "total": 4835
+        }
+      ],
+      "checked": "ok",
+      "calls": 2,
+      "total": 7608.621073999995,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 380,
+        "answerIn": 2395,
+        "answerOut": 314
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n1. **Raise prices on her cakes and specialty items, and make only a small rise on basic bread.** Ana has not changed prices in three years, while flour and energy costs have gone up 20%, so each item now earns less profit. Cakes are less likely to compete directly with the supermarket's cheap bread, so customers should accept a higher price there. A small bread increase would cover some of the cost rise without pushing customers to the supermarket.\n\n2. **Cut costs and waste, and shift sales toward products the supermarket can't match.** She could bake closer to demand so less unso"
+    },
+    {
+      "scenario": "case",
+      "kind": "case study",
+      "run": 3,
+      "ok": true,
+      "read": 2570.6868140000006,
+      "questions": 1,
+      "classify": 0.05444599999464117,
+      "tasks": [
+        "apply/moderate"
+      ],
+      "answer": 4637.2479100000055,
+      "first": 1144.626390999998,
+      "words": 167,
+      "parts": 1,
+      "understood": [
+        "case_study/complex"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 3839,
+          "check": 798,
+          "total": 4637
+        }
+      ],
+      "checked": "ok",
+      "calls": 2,
+      "total": 7207.934724000006,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 380,
+        "answerIn": 2383,
+        "answerOut": 302
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER\n\n1. **Raise prices on her cakes and specialty items, and make only a small rise on basic bread.** Ana hasn't changed her prices in three years, while flour and energy costs have gone up 20%. Each item now earns less profit. Cakes are less exposed to the supermarket's cheap bread, so customers are less likely to leave over a price rise. A small rise on bread keeps it close to the supermarket's price. This should widen her profit margin and cover the higher costs.\n\n2. **Cut costs and compete on quality rather than price.** She could buy flour in bulk or compare suppliers, and bake in"
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "run": 1,
+      "ok": true,
+      "read": 2768.642129999993,
+      "questions": 3,
+      "classify": 0.260376999998698,
+      "tasks": [
+        "define/simple",
+        "explain/moderate",
+        "list/moderate"
+      ],
+      "answer": 2020.7709699999978,
+      "first": 636.3497060000082,
+      "words": 85,
+      "parts": 3,
+      "understood": [
+        "define/simple",
+        "explain/moderate",
+        "list/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 884,
+          "check": 0,
+          "total": 884
+        },
+        {
+          "lookup": 0,
+          "model": 2020,
+          "check": 1,
+          "total": 2020
+        },
+        {
+          "lookup": 0,
+          "model": 1863,
+          "check": 0,
+          "total": 1863
+        }
+      ],
+      "checked": "ok,ok,ok",
+      "calls": 3,
+      "total": 4789.413099999991,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 420,
+        "answerIn": 3487,
+        "answerOut": 141
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER (a)\n\nInflation is a sustained rise in the general price level of goods and services in an economy over time, which reduces the purchasing power of money.\n#### ANSWER (b)\n\nRate of inflation = (210 − 200) ÷ 200 × 100 = **5%**\n#### ANSWER (c)\n\nInflation reduces the real value (purchasing power) of savings. If prices rise faster than the interest rate on the savings account, the same amount of money buys less than before, so savers lose out in real terms."
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "run": 2,
+      "ok": false,
+      "read": 5048.233483000004,
+      "questions": 0,
+      "error": "no question found (unclear)"
+    },
+    {
+      "scenario": "multipart",
+      "kind": "multi-part",
+      "run": 3,
+      "ok": true,
+      "read": 2803.6855020000075,
+      "questions": 3,
+      "classify": 0.09014600000227802,
+      "tasks": [
+        "define/simple",
+        "explain/moderate",
+        "list/moderate"
+      ],
+      "answer": 1818.815029999998,
+      "first": 656.3978389999975,
+      "words": 97,
+      "parts": 3,
+      "understood": [
+        "define/simple",
+        "explain/moderate",
+        "list/moderate"
+      ],
+      "timings": [
+        {
+          "lookup": 0,
+          "model": 926,
+          "check": 0,
+          "total": 926
+        },
+        {
+          "lookup": 0,
+          "model": 1512,
+          "check": 0,
+          "total": 1513
+        },
+        {
+          "lookup": 0,
+          "model": 1818,
+          "check": 0,
+          "total": 1818
+        }
+      ],
+      "checked": "ok,ok,ok",
+      "calls": 3,
+      "total": 4622.5005320000055,
+      "tokens": {
+        "visionIn": 3247,
+        "visionOut": 417,
+        "answerIn": 3487,
+        "answerOut": 155
+      },
+      "missing": [],
+      "forbidden": [],
+      "partsOk": true,
+      "correct": true,
+      "sample": "#### ANSWER (a)\n\nInflation is a sustained rise in the general price level of goods and services in an economy over time, which means each unit of money buys less than before.\n#### ANSWER (b)\n\nRate of inflation = (210 − 200) ÷ 200 × 100 = **5%**\n#### ANSWER (c)\n\nInflation reduces the real value (purchasing power) of savings, so the same amount of money buys fewer goods and services later. This is especially true if the interest rate on the savings is lower than the inflation rate, which means the real interest rate is negative."
+    }
+  ]
+}

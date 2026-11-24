@@ -29,12 +29,12 @@ test('the system message is explicit: priorities in order, evidence rules, and n
 
 test('every kind of task gets its own structure; none is forced into a template', () => {
   const structures = new Set()
-  for (const task of ['define', 'explain', 'discuss', 'compare', 'analyse', 'evaluate', 'calculate', 'multiple_choice']) {
+  for (const task of ['define', 'explain', 'discuss', 'compare', 'analyse', 'evaluate', 'calculate', 'list', 'apply', 'case_study', 'multiple_choice']) {
     const line = buildSystemPrompt({ task, style: 'explain' }).split('\n').find((l) => l.startsWith('THE TASK'))
     assert.match(line, new RegExp(`THE TASK \\(${task.replace('_', ' ')}\\)`))
     structures.add(line)
   }
-  assert.equal(structures.size, 8)
+  assert.equal(structures.size, 11)
   assert.match(buildSystemPrompt({ task: 'calculate', style: 'explain' }), /show every step of the working with units/)
   assert.match(buildSystemPrompt({ task: 'compare', style: 'explain' }), /by feature, not by item/)
   assert.match(buildSystemPrompt({ task: 'nonsense', style: 'explain' }), /THE TASK \(nonsense\): Say what the idea is/, 'an unknown task falls back to explaining')
@@ -42,15 +42,15 @@ test('every kind of task gets its own structure; none is forced into a template'
 
 test('by default a question is answered, not explained: the answer is what is correct, in the shape the task needs, and nothing around it', () => {
   const lines = new Set()
-  for (const task of ['define', 'explain', 'discuss', 'compare', 'analyse', 'evaluate', 'calculate', 'multiple_choice']) {
+  for (const task of ['define', 'explain', 'discuss', 'compare', 'analyse', 'evaluate', 'calculate', 'list', 'apply', 'case_study', 'multiple_choice']) {
     const prompt = buildSystemPrompt({ task })
     assert.match(prompt, /THE STUDENT WANTS THE ANSWER, NOT AN EXPLANATION/, task)
     assert.doesNotMatch(prompt, /Teach step by step|Where it fits|everyday words first|why each of the others is wrong|show every step/, `${task}: nothing that explains`)
     lines.add(prompt.split('\n').find((l) => l.startsWith('THE TASK')))
   }
-  assert.equal(lines.size, 8, 'each kind of task has its own short shape')
+  assert.equal(lines.size, 11, 'each kind of task has its own short shape')
   assert.match(buildSystemPrompt({ task: 'multiple_choice' }), /Give the correct option: its letter and its text, on one line\. Nothing else\./)
-  assert.match(buildSystemPrompt({ task: 'calculate' }), /final result with its unit, in bold, on one line/)
+  assert.match(buildSystemPrompt({ task: 'calculate' }), /Show the working that is needed and no more.*final answer and its unit, in bold, on its own line/)
   assert.match(buildSystemPrompt({ task: 'nonsense' }), /THE TASK \(nonsense\): Give the correct answer in the fewest words/, 'an unknown task is answered briefly')
   const answer = buildSystemPrompt({})
   assert.match(answer, /Be accurate above all\. If you are not sure the answer is right, say so in one short sentence/)

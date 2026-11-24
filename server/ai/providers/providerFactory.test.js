@@ -66,3 +66,29 @@ test('DeepSeek keeps the same persona, and a custom provider is left exactly as 
     assert.deepEqual(calls[1].body.messages, [{ role: 'user', content: 'hi' }])
   })
 })
+
+test('a service that ignores stream: true and answers with one ordinary completion still gives its answer', async () => {
+  // like a real response: once a reader has been taken from the body, it can no longer be read as text
+  const plain = (content) => {
+    let locked = false
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null) },
+      body: { getReader: () => ((locked = true), { read: async () => ({ value: undefined, done: true }) }) },
+      text: async () => {
+        if (locked) throw new TypeError('Body is unusable: Body has already been read')
+        return JSON.stringify({ model: 'm', choices: [{ message: { content } }], usage: { prompt_tokens: 7, completion_tokens: 3 } })
+      }
+    }
+  }
+  await withFetch(() => plain('The window is blue.'), async (calls) => {
+    const provider = createAiProvider(env)
+    const seen = []
+    const usage = []
+    for await (const chunk of provider.stream({ messages: [{ role: 'user', content: 'hi' }], onUsage: (u) => usage.push(u) })) seen.push(chunk)
+    assert.equal(calls[0].body.stream, true)
+    assert.deepEqual(seen, [{ type: 'message', content: 'The window is blue.' }])
+    assert.deepEqual([usage[0].promptTokens, usage[0].completionTokens], [7, 3])
+  })
+})

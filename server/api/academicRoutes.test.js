@@ -33,7 +33,17 @@ async function serve({ limits: limitOverrides = {}, pause } = {}) {
   const conversations = createSessionService({ store: createConversationRepository(t.database), logger: quiet })
   const model = { calls: [], reply: 'Third normal form means no transitive dependency [S1].' }
   const research = { forOwner: () => ({ search: async () => ({ works: [{ label: 'R1', title: 'Codd', authors: ['E. Codd'], year: 1970, doi: '10.1145/362384.362685', verified: true, url: 'https://doi.org/10.1145/362384.362685', abstract: 'a' }], query: 'q' }) }) }
-  const answerService = createAnswerService({ generate: async (messages) => { model.calls.push(messages); return model.reply }, knowledgeService, lanes, sessionManager, researchService: research, conversations, courses: (u) => t.academic.forOwner(u).courses, now: () => t.clock.t, audit: t.audit, logger: quiet })
+  const streamed = []
+  const stream = async function* (messages) {
+    streamed.push(messages)
+    if (model.streamFails) {
+      yield { type: 'token', token: 'Partly ' }
+      throw Object.assign(new Error('boom'), { statusCode: 503 })
+    }
+    for (const word of model.reply.split(/(?<=\s)/)) yield { type: 'token', token: word }
+    yield { type: 'message', content: model.reply }
+  }
+  const answerService = createAnswerService({ generate: async (messages) => { model.calls.push(messages); return model.reply }, stream, knowledgeService, lanes, sessionManager, researchService: research, conversations, courses: (u) => t.academic.forOwner(u).courses, now: () => t.clock.t, audit: t.audit, logger: quiet })
   const identities = {
     alice: personIdentity({ id: t.who.alice, external_id: 'a', email: 'alice@example.com', name: 'alice', role: 'viewer' }, { ref: 'r', csrf: 'x' }),
     bob: personIdentity({ id: t.who.bob, external_id: 'b', email: 'bob@example.com', name: 'bob', role: 'viewer' }, { ref: 'r', csrf: 'x' }),
@@ -53,10 +63,10 @@ async function serve({ limits: limitOverrides = {}, pause } = {}) {
     const s = app.listen(0, '127.0.0.1', () => resolve(s))
   })
   const base = `http://127.0.0.1:${server.address().port}/academic`
-  const as = (who) => async (path, { method = 'GET', body, text: textBody, type, raw } = {}) => {
+  const as = (who) => async (path, { method = 'GET', body, text: textBody, type, raw, accept } = {}) => {
     const res = await fetch(base + path, {
       method,
-      headers: { ...(who ? { 'x-test-user': who } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(type ? { 'content-type': type } : {}) },
+      headers: { ...(accept ? { accept } : {}), ...(who ? { 'x-test-user': who } : {}), ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(type ? { 'content-type': type } : {}) },
       body: raw ?? (textBody !== undefined ? textBody : body === undefined ? undefined : JSON.stringify(body))
     })
     const text = await res.text()
@@ -68,7 +78,7 @@ async function serve({ limits: limitOverrides = {}, pause } = {}) {
     }
     return { status: res.status, json, text, headers: res.headers }
   }
-  return { t, vision, model, conversations, knowledge, knowledgeService, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
+  return { t, vision, model, streamed, conversations, knowledge, knowledgeService, alice: as('alice'), bob: as('bob'), legacy: as('legacy'), nobody: as(''), close: () => new Promise((resolve) => server.close(resolve)) }
 }
 
 async function using(body, options) {
@@ -608,5 +618,50 @@ test('fifty files one after the other, as the page sends a batch: every one is s
     assert.equal(docs.length, 50)
     assert.ok(docs.every((d) => d.status === 'ready'))
     assert.equal((await r.alice(`/search?course=${course.id}&q=uniquetopic37`)).json.passages[0].title, 'Lecture 37')
+  })
+})
+
+/** The events of a text/event-stream body, in order: [{ event, data }]. */
+const sseEvents = (text) => text.split('\n\n').filter((b) => b.trim()).map((block) => ({ event: block.match(/^event: (.*)$/m)?.[1], data: JSON.parse(block.match(/^data: (.*)$/m)?.[1] ?? 'null') }))
+
+test('asking for an event stream gives the answer as it is written, then the same result as the plain call; a refusal is still plain JSON', async () => {
+  await using(async (r) => {
+    r.model.reply = 'Normal forms organise tables so each fact is stored once.'
+    const s = (await r.alice('/sessions', { method: 'POST', body: { type: 'study' } })).json
+    const plain = await r.alice(`/sessions/${s.id}/ask`, { method: 'POST', body: { text: 'Define normalisation.' } })
+    assert.equal(plain.status, 200)
+    const live = await r.alice(`/sessions/${s.id}/ask`, { method: 'POST', body: { text: 'Define denormalisation.' }, accept: 'text/event-stream' })
+    assert.equal(live.status, 200)
+    assert.match(live.headers.get('content-type'), /text\/event-stream/)
+    const events = sseEvents(live.text)
+    assert.deepEqual([events[0].event, events.at(-1).event], ['start', 'result'])
+    const words = events.filter((e) => e.event === 'delta').map((e) => e.data.text).join('')
+    assert.equal(words, r.model.reply, 'every word was sent as it was written')
+    assert.equal(events.filter((e) => e.event === 'delta').length > 1, true)
+    assert.equal(events.at(-1).data.status, 'answered')
+    assert.equal(events.at(-1).data.markdown, '#### ANSWER\n\nNormal forms organise tables so each fact is stored once.')
+    assert.equal(plain.json.markdown, events.at(-1).data.markdown, 'the stream ends with exactly what the plain call returns')
+    assert.equal(r.streamed.length, 1, 'the stream used the streaming model; the plain call used the plain one')
+    assert.equal(r.model.calls.length, 1)
+
+    // Nothing is streamed when there is no answer to write: a restricted session is refused, as JSON, with the same status as ever.
+    const restricted = (await r.alice('/sessions', { method: 'POST', body: { type: 'restricted' } })).json
+    const refused = await r.alice(`/sessions/${restricted.id}/ask`, { method: 'POST', body: { text: 'What is 2+2?' }, accept: 'text/event-stream' })
+    assert.equal(refused.status, 403)
+    assert.match(refused.headers.get('content-type'), /application\/json/)
+    assert.equal(refused.json.code, 'restricted-assessment')
+  })
+})
+
+test('a stream that fails after it began ends with an error event that the page can act on', async () => {
+  await using(async (r) => {
+    r.model.streamFails = true
+    const s = (await r.alice('/sessions', { method: 'POST', body: { type: 'study' } })).json
+    const live = await r.alice(`/sessions/${s.id}/ask`, { method: 'POST', body: { text: 'Define normalisation.' }, accept: 'text/event-stream' })
+    const events = sseEvents(live.text)
+    assert.deepEqual(events.map((e) => e.event), ['start', 'delta', 'error'])
+    assert.equal(events.at(-1).data.code, 'answer-failed')
+    assert.equal(events.at(-1).data.status, 502)
+    assert.match(events.at(-1).data.error, /could not be worked out/)
   })
 })

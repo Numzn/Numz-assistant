@@ -8,6 +8,8 @@ publish = false
 [dependencies]
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# SIMD resizing: scaling a screenshot down to what the model reads was the slowest step of preparing it (see examples/prepbench.rs).
+fast_image_resize = "6"
 serde = { version = "1", features = ["derive"] }
 
 # Linux: X11 (read-only requests on the display) or, on Wayland, the desktop portal's Screenshot interface.
