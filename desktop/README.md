@@ -99,12 +99,13 @@ sent): needs `tauri-driver`, `WebKitWebDriver`, Xvfb, openbox, xdotool, ImageMag
 ```bash
 cargo install tauri-driver --locked
 cd desktop/src-tauri
-TAURI_CONFIG='{"app":{"security":{"capabilities":["numz-ai-site","numz-ai-dev-local"]}}}' cargo build   # the test build
+TAURI_CONFIG='{"app":{"security":{"capabilities":["numz-ai-site","numz-ai-dev-local"]}},"plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}' cargo build   # the test build
 cd ../.. && node desktop/e2e/run.mjs                              # 26 checks: screenshots
 node desktop/e2e/study.mjs                                        # the study watcher end to end, signed in through the real broker
+node desktop/e2e/update.mjs                                       # the update line: offered, put away, refused when not signed by the app's own key, accepted when it is (needs the test build below)
 node desktop/e2e/layout.mjs                                       # the Study/Meeting dock and the conversation at 1280/1000/800/720px, in the app's own WebKit (19 checks)
 # and, with an app built WITHOUT that config:
-NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # all ten commands are refused for any other address
+NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # all twelve commands are refused for any other address
 ```
 
 `study.mjs` additionally needs numzlab-auth's test rig (`NUMZLAB_AUTH_DIR`, default `/srv/infrastructure/auth`): Academic Intelligence only works for a
@@ -142,3 +143,32 @@ small proxy that removes that one directive. The real site is https and needs no
 * The study watcher judges "an excluded window is open" from the **window list**, which does not know about a window that is minimised behind
   another, a second monitor (the primary display only is captured), or a title the person did not think to list. It errs towards not reading.
 * The features reach the app's users only once the new site is deployed: the app opens the live site, which does not have them yet.
+
+
+## Updates (the update line)
+
+An installed app finds out for itself when a newer version is published and shows **one thin line at the top of its window**: "A new version of NUMZ AI is
+ready (0.2.1, you have 0.2.0). **Update now** · Not now". Nothing is downloaded or installed until the person presses *Update now*; the app then downloads
+it, checks its signature, installs it and opens the new version (Windows: the installer runs passively, with a progress bar and no questions). *Not now* puts
+the line away for that version until the app is started again. A browser has no line: only the desktop app can update itself.
+
+* **Where the app asks:** `plugins.updater.endpoints` in `tauri.conf.json`: `https://github.com/Numzn/Numz-assistant/releases/latest/download/latest.json`, the list
+  of versions attached to the newest GitHub release. It looks 15 seconds after the window opens and then every 6 hours; offline, it stays quiet.
+* **What it will install:** only a download signed with the **update key**. Its public half is `plugins.updater.pubkey` in `tauri.conf.json` (every installed app
+  carries it); the private half is on the machine that publishes (`~/.numz-updater/updater.key`, password in `updater.password`, a copy under
+  `/srv/backups/manual/numz-updater-20261124/`). **It is never given to GitHub.** If the private key is lost, installed apps can no longer be updated and must be
+  installed by hand once more, with a new key in a new build: keep the backup.
+* **The commands** (`app_update_check`, `app_update_install`, in `src/update.rs`) are allowed for the NUMZ AI site only, like the screenshot commands, and
+  refuse any other page (`desktop/e2e/acl-check.mjs`).
+
+### Publishing an update
+
+1. Raise `version` in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` (a version that is not higher than the one installed is not offered).
+2. Build the installer on GitHub's Windows machine: Actions → "Desktop app (Windows)" → Run workflow (on the branch with the change), then download the artifact.
+3. Sign it and write the list of versions, on the machine that has the key:
+   `node desktop/scripts/prepare-update-release.mjs <the installer.exe> <version> [notes.txt] [out-dir]`. It signs, checks the signature against the public key in
+   `tauri.conf.json` (so a list an app would refuse is never made) and prints the `gh release create ...` command that publishes the three files.
+4. Publish that release (it becomes the "latest" one, which is where installed apps look). Installed apps offer it at their next look.
+
+The very first build with an update line (0.2.0) has to be installed by hand once; the 0.1.0 installers already out there have no update line and cannot be updated.
+The installer is still not code-signed for Windows (SmartScreen warns on a first install), which is a different thing from the update key.
