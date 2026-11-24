@@ -57,6 +57,7 @@ export function addAnswerRoutes(router, { wrap, body, audit }, { answerService, 
       sse.send('result', result)
       sse.end()
     } catch (err) {
+      if (controller.signal.aborted) return sse?.end() // the person left (closed the panel, ended the session): nobody is waiting for an answer or an error
       if (!sse) throw err // nothing was sent yet: the ordinary error answer
       const status = Number.isInteger(err?.statusCode) ? err.statusCode : 500
       const exposed = err?.expose === true || status < 500

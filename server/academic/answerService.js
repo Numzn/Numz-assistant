@@ -312,7 +312,8 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
           const shown = entry.options?.length ? `${entry.text}\n${entry.options.map((o) => `${o.label}) ${o.text}`).join('\n')}` : entry.text
           const saved = appendToConversation(conversationId, shown, result.markdown)
           note('academic.answer', { sessionId, questionId: entry.id, grounding: result.grounding, course: result.evidence.course, research: result.evidence.research, style })
-          return { status: 'answered', answerId, questionId: entry.id, courseId: course.courseId, task: entry.task, savedToConversation: saved, ...result }
+          // what the card is labelled with: the kind the analysis found (a question of several parts is just that)
+          return { status: 'answered', answerId, questionId: entry.id, courseId: course.courseId, task: result.analysis.parts >= 2 ? 'multi-part' : result.analysis.task, savedToConversation: saved, ...result }
         })()
         entry.working.set(key, work)
         try {

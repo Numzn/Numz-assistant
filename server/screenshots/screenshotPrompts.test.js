@@ -13,6 +13,7 @@ test('a screenshot of a question is answered: by size, in a student\'s voice, ea
   assert.match(system.content, /"#### ANSWER \(a\)"/)
   assert.match(system.content, /"#### ANSWER \(1\)"/)
   assert.match(system.content, /A case study: work from the facts given/)
+  assert.match(system.content, /A list: exactly as many items as it asks for, each just its name/)
   assert.match(user.content, /If it shows a question or task to answer, answer it/)
 })
 

@@ -90,6 +90,21 @@ export function createOpenAiCompatibleProvider({
 
     async *stream({ messages, signal, onUsage }) {
       const res = await requestChat({ messages, stream: true, signal })
+      // A service that ignores `stream: true` and answers with one ordinary completion is read as one piece (the whole answer, no words before it).
+      // This is decided before the body is taken up as a stream: a body that has a reader cannot also be read as text.
+      if (/application\/json/i.test(String(res.headers?.get?.('content-type') ?? ''))) {
+        const text = await res.text()
+        let content = text
+        try {
+          const data = JSON.parse(text)
+          report(onUsage, data)
+          content = getChoiceText(data).trim()
+        } catch {
+          /* not a completion after all: what it said is passed on as it is */
+        }
+        yield { type: 'message', content }
+        return
+      }
       const reader = res.body?.getReader()
       if (!reader) {
         const content = await res.text()

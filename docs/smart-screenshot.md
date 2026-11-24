@@ -13,7 +13,7 @@ look ─ settle ─ report ─ poll ─ export JPEG ─ upload ─ read (vision)
 
 | Area | Change | Where |
 |---|---|---|
-| Capture and preparation | The picture is scaled with SIMD instead of the general resize (about 2.4× quicker), without the extra copies; the watcher no longer builds a preview picture nobody shows for every screen it reports; the look interval is 1.5 s (was 2.5 s) and the page asks for a finished picture every 0.5 s (was 1.5 s); the upload no longer waits for the app to release its copy | `desktop/src-tauri/crates/numz-capture/src/encode.rs`, `watch.rs`, `src/interfaces/academic/studyController.js` |
+| Capture and preparation | The picture is scaled with SIMD instead of the general resize and handed to the encoder without extra copies (scaling and encoding together take 2.4× less time at 1080p); the watcher no longer builds a preview picture nobody shows for every screen it reports; the look interval is 1.5 s (was 2.5 s) and the page asks for a finished picture every 0.5 s (was 1.5 s); the upload no longer waits for the app to release its copy | `desktop/src-tauri/crates/numz-capture/src/encode.rs`, `watch.rs`, `src/interfaces/academic/studyController.js` |
 | No duplicate work | The same question asked twice (a double click, an automatic answer racing a button) is one answer on the page, and one answer on the server (the second ask shares the first's work, or is handed its result and is not added to the conversation twice). The server's exact-picture check, the app's changed-and-settled rule and the one retry are unchanged | `studyController.js` (`flights`), `answerService.js` (`entry.results`, `entry.working`) |
 | Reading | The screen-reading prompt no longer asks for each segment's `region` (nothing used it): 20% fewer tokens written per read | `questionUnderstanding.js` |
 | Question intelligence | A pure analysis of each question: its kind (definition, explanation, list, comparison, discussion, evaluation, calculation, application, case study, multiple choice), its labelled parts, every instruction in it, how many items it asks for, its marks, and how complex it is | `server/academic/questionAnalysis.js` |
@@ -82,8 +82,8 @@ text (a test), and the JPEG is the same size (185 → 186 KB at 1080p). Copies o
 | **1.5 s (now)** | **0.5 s (now)** | **2.50 s** | **3.05 s** |
 
 A changed screen is reported on the second look after the change (one to see it, one to see that it stopped moving), so a quicker look is a
-quicker report. The cost is more looks: the watcher's own work per look is 7–10 ms of CPU for a 1080p screen (the OS capture comes on top and was not
-measured here, only on Linux X11 would it be). Reads are still at least 10 s apart (the app) and 8 s apart (the server): this makes the wait
+quicker report. The cost is more looks: the watcher's own work per look (detection and bookkeeping) is 7–10 ms of CPU for a 1080p screen. The operating
+system's capture comes on top of that and is not in this measurement. Reads are still at least 10 s apart (the app) and 8 s apart (the server): this makes the wait
 shorter, not the number of reads larger.
 
 ### 3. Reading, answering and showing (real models, 8 kinds of screen × 3 runs)
@@ -132,15 +132,22 @@ cd desktop/src-tauri && cargo run --release --example prepbench -p numz-capture 
 
 | Check | Result |
 |---|---|
-| `npm test` (Node) | see the final report |
-| Academic Chromium end to end (`node scripts/academic-e2e/run.mjs`), 58 checks: block, label, small icon, highlight, copy as formatted + plain text, copy only that answer, part-by-part blocks, words shown while writing, second look before final | all pass |
+| `npm test` (Node) | **1,345 of 1,345 pass** (1,298 before; 47 new: question analysis, answer layout, checks, streaming service and route, the page's controller and API, layout parity, prompts, provider) |
+| Academic Chromium end to end (`node scripts/academic-e2e/run.mjs`), 59 checks: block, label, small icon, highlight, copy as formatted + plain text, copy only that answer, part-by-part blocks, words shown while writing, second look before final, phone width (375 px: no sideways scroll, touch area larger than the icon) | all pass |
+| **The real desktop app, end to end** (`desktop/e2e/study.mjs`: the new Rust code built into the app, Xvfb + openbox, a real desktop, the real server and sign-in broker, a stand-in model) | **41 of 41 pass**: the real 1600×900 picture arrives with the right pixels, a changed digit / word / code token is captured, an unchanged screen is not captured again, the question is answered by itself, pause / stop / excluded windows / a hung page all behave |
 | Rust: `cargo test --release -p numz-capture` | 53 + 2 pass (2 new: the scaling matches the old one; a picture that is small enough is not scaled) |
 | Rust cross-checks: `cargo check --target x86_64-pc-windows-msvc` and `aarch64-apple-darwin` | pass |
-| `vite build` and the bundle budget test | see the final report |
+| `vite build` and the bundle budget test | pass; first-load scripts 227.4 KB raw (main 218.3), 76.6 KB gzipped (73.3), page 79.1 KB Brotli (76.1): the raw budget was raised from 220 to 232 KB with the reason beside it |
+
+Two things these runs found that the unit tests did not, both fixed: (1) a model service that answers a streaming request with one ordinary JSON completion
+made the streamed answer come back empty (the real-app run's stand-in model does exactly that; the OpenAI-style provider now reads a plain completion when
+that is what comes back, with a test that behaves like a real response whose body, once taken up as a stream, can no longer be read as text); (2) a
+second look given only the question and the draft "corrected" a case-study answer into a refusal because it could not see the case, so it is now given
+the writer's own request, and a "correction" that is only talk about the draft is ignored.
 
 ## Limits
 
-* The Windows and macOS capture paths were only type-checked; the faster look interval and the SIMD scaling have not run on a real Windows or macOS PC. The real desktop app (Linux X11 end to end, `desktop/e2e/study.mjs`) was not re-run with these changes unless the final report says so.
+* The Windows and macOS capture paths were only type-checked; the faster look interval and the SIMD scaling have not run on a real Windows or macOS PC. The real desktop app was run on Linux X11 only (41 of 41).
 * The look interval of 1.5 s is a trade of battery and CPU for speed; the operating system's own capture cost per look was not measured on Windows or macOS. It is one constant (`WATCH_INTERVAL_MS`) if it should go back.
 * The second look uses the same model as the writer; it catches slips and invented figures, not every wrong fact. A question whose answer cannot be confirmed is marked "could not be fully confirmed".
 * Reading a screen (about 2.7 s) is now the longest single step for simple questions, and it is the vision model's: only a shorter reading (fewer segments) or another model changes it.

@@ -159,7 +159,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
       { class: 'study-q', 'data-state': q.state },
       h(doc, 'div', { class: 'study-q-text', text: q.text }),
       q.options?.length ? h(doc, 'ul', { class: 'study-q-options' }, q.options.map((o) => h(doc, 'li', { text: `${o.label}) ${o.text}` }))) : null,
-      h(doc, 'div', { class: 'study-q-meta' }, h(doc, 'span', { class: 'study-chip', text: (q.task ?? 'explain').replace('_', ' ') }), q.partial ? h(doc, 'span', { class: 'study-chip', 'data-tone': 'warn', text: 'cut off by the screen' }) : null, q.marks ? h(doc, 'span', { class: 'study-chip', text: `${q.marks} marks` }) : null),
+      h(doc, 'div', { class: 'study-q-meta' }, h(doc, 'span', { class: 'study-chip', text: (q.task ?? 'explain').replace(/_/g, ' ') }), q.partial ? h(doc, 'span', { class: 'study-chip', 'data-tone': 'warn', text: 'cut off by the screen' }) : null, q.marks ? h(doc, 'span', { class: 'study-chip', text: `${q.marks} marks` }) : null),
       q.state === 'confirm'
         ? h(doc, 'div', { class: 'study-warn' }, h(doc, 'p', { text: q.message }), h(doc, 'button', { type: 'button', text: 'This is practice: carry on', onclick: () => controller.answerQuestion(q.id, { confirmPractice: true }) }), h(doc, 'button', { type: 'button', text: 'End this session', onclick: () => controller.stop() }))
         : null,

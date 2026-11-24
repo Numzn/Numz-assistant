@@ -251,6 +251,20 @@ try {
   })
   check('copying part (b) copies part (b) only, with its list and bold kept in the formatted version', /5%/.test(partB['text/plain']) && !/Inflation is|Savings buy/.test(partB['text/plain']) && /<strong>5%<\/strong>/.test(partB['text/html']) && /<li>/.test(partB['text/html']), JSON.stringify(partB).slice(0, 200))
   await page.screenshot({ path: `${dir}/shot-3c-parts.png` })
+  // ---- on a phone-width screen ----
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.waitForTimeout(400)
+  const phone = await page.evaluate(() => {
+    const blocks = [...document.querySelectorAll('#studyBody .study-q:last-child .answer-block')]
+    const icon = blocks[0].querySelector('.answer-copy').getBoundingClientRect()
+    const reach = document.elementFromPoint(icon.left - 7, icon.top + icon.height / 2)
+    const page = document.documentElement
+    return { sideways: page.scrollWidth - page.clientWidth, blocks: blocks.length, inside: blocks.every((b) => b.getBoundingClientRect().right <= innerWidth + 1 && b.getBoundingClientRect().left >= -1), touch: Boolean(reach?.closest('.answer-copy')), icon: Math.round(icon.width) }
+  })
+  check('on a phone-width screen the answer blocks fit, the page does not scroll sideways, and the small copy icon has a larger touch area', phone.sideways <= 1 && phone.blocks === 3 && phone.inside && phone.touch && phone.icon <= 28, JSON.stringify(phone))
+  await page.screenshot({ path: `${dir}/shot-3d-phone.png` })
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.waitForTimeout(200)
 
   await page.click('button:has-text("Pause")')
   await page.waitForSelector('button:has-text("Resume")')
@@ -313,7 +327,8 @@ try {
   if ((await forgets.count()) > 0) {
     const n = await forgets.count()
     await forgets.first().click()
-    await page.waitForTimeout(800)
+    // the list is read again from the server after the click: give it time on a busy machine instead of a fixed 800 ms
+    await page.waitForFunction((count) => document.querySelectorAll('.study-lane button').length > 0 && ([...document.querySelectorAll('.study-lane button')].filter((b) => /Forget/.test(b.textContent)).length < count || /Nothing yet/.test(document.getElementById('studyBody').textContent)), n, { timeout: 8000 }).catch(() => {})
     const after = await page.locator('.study-lane button:has-text("Forget")').count()
     check('one learned item can be forgotten', after < n || /Nothing yet/.test(await page.textContent('#studyBody')), `before ${n}, after ${after}`)
   } else {

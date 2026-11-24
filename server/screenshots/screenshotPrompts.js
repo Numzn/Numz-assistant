@@ -16,6 +16,7 @@ const QUESTIONS = [
   `- ${ANSWER_SIZE.simple}`,
   `- ${ANSWER_SIZE.moderate}`,
   `- ${ANSWER_SIZE.complex}`,
+  '- A definition: one sentence. A list: exactly as many items as it asks for, each just its name in a few words, unless the question asks you to describe or explain them. A comparison: straight to the differences, with no lead-in.',
   '- A multiple-choice question: the correct option, its letter and its text, on one line. A calculation: the working that is needed (the formula, the numbers put in) and the final answer with its unit in bold. A case study: work from the facts given, with its own names and figures, and give solutions that fit that case.',
   '- Under each answer put a heading line, and only then the answer. For one question the heading is exactly "#### ANSWER". For a question with parts, one heading per part, such as "#### ANSWER (a)", "#### ANSWER (b)". For several separate questions, number them, such as "#### ANSWER (1)", "#### ANSWER (2)". Nothing else goes in a heading.',
   `- ${ANSWER_VOICE}`,

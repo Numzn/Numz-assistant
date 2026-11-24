@@ -365,6 +365,7 @@ test('a multi-part question is answered part by part, each part under its own la
   const result = await t.alice.answer({ sessionId: s.id, text }, t.ctx)
   assert.deepEqual(result.parts.map((p) => [p.key, p.label, p.markdown]), [['a', 'ANSWER (a)', 'A general rise in prices.'], ['b', 'ANSWER (b)', '**5%**'], ['c', 'ANSWER (c)', 'Savings buy less over time.']])
   assert.equal(result.analysis.parts, 3)
+  assert.equal(result.task, 'multi-part', 'the card says what it is')
   assert.equal(result.analysis.complexity, 'complex')
   assert.deepEqual([result.validation.verdict, result.validation.reviewed, result.validation.calls, result.validation.level], ['ok', true, 2, 'review'])
   assert.match(t.calls[0].messages[0].content, /THIS QUESTION HAS 3 PARTS: \(a\), \(b\), \(c\)/)
