@@ -55,7 +55,7 @@ try {
     args: [command, args]
   }).catch((e) => ({ ok: false, error: String(e.message) }))
   check('the page is open in the app', (await wd('POST', `/session/${sid}/execute/sync`, { script: 'return location.origin', args: [] })) === base)
-  for (const [command, args] of [['screenshot_status'], ['screenshot_windows'], ['screenshot_capture', { mode: 'screen', windowId: null }], ['screenshot_export', { captureId: 'x', rect: null, maxSide: 1024, quality: 80 }], ['screenshot_discard', { captureId: 'x' }], ['screenshot_watch_start', { intervalMs: 2500, excludeApps: [], excludeTitles: [] }], ['screenshot_watch_poll', {}], ['screenshot_watch_pause', {}], ['screenshot_watch_resume', {}], ['screenshot_watch_stop', {}], ['app_update_check', {}], ['app_update_install', {}]]) {
+  for (const [command, args] of [['screenshot_status'], ['screenshot_windows'], ['screenshot_capture', { mode: 'screen', windowId: null }], ['screenshot_export', { captureId: 'x', rect: null, maxSide: 1024, quality: 80 }], ['screenshot_discard', { captureId: 'x' }], ['screenshot_watch_start', { intervalMs: 2500, excludeApps: [], excludeTitles: [] }], ['screenshot_watch_poll', {}], ['screenshot_watch_pause', {}], ['screenshot_watch_resume', {}], ['screenshot_watch_stop', {}], ['app_update_check', {}], ['app_update_install', {}], ['plugin:updater|check', {}], ['plugin:updater|download_and_install', {}]]) {
     const r = await call(command, args)
     check(`${command} is refused for a page that is not the real site`, r.ok === false && /not allowed|forbidden|denied|permission/i.test(r.error ?? ''), JSON.stringify(r).slice(0, 420))
   }

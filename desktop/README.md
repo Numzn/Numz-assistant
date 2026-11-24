@@ -105,7 +105,7 @@ node desktop/e2e/study.mjs                                        # the study wa
 node desktop/e2e/update.mjs                                       # the update line: offered, put away, refused when not signed by the app's own key, accepted when it is (needs the test build below)
 node desktop/e2e/layout.mjs                                       # the Study/Meeting dock and the conversation at 1280/1000/800/720px, in the app's own WebKit (19 checks)
 # and, with an app built WITHOUT that config:
-NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # all twelve commands are refused for any other address
+NUMZ_DESKTOP_BIN=<default build> node desktop/e2e/acl-check.mjs   # all of them (the twelve above and the updater plugin's own) are refused for any other address
 ```
 
 `study.mjs` additionally needs numzlab-auth's test rig (`NUMZLAB_AUTH_DIR`, default `/srv/infrastructure/auth`): Academic Intelligence only works for a
