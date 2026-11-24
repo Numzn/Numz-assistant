@@ -233,17 +233,30 @@ export function verifyCitations(text, givenLabels) {
   return { text: cleaned.replace(/[ \t]+([.,;:])/g, '$1').replace(/ {2,}/g, ' ').trim(), cited, dropped }
 }
 
-/** The list of sources shown to the student, built from our own records of them. */
+/**
+ * Takes the source labels out of an answer's text. The model cites with [S1] so that we know what each statement rests on; the person is
+ * given the plain answer, and the sources it used are listed apart from it (sourcesBlock), never inside it.
+ */
+export function stripCitations(text) {
+  return String(text ?? '')
+    .replace(GROUP, '')
+    .replace(/[ \t]+([.,;:!?])/g, '$1')
+    .replace(/ {2,}/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim()
+}
+
+/** The list of sources shown to the student beside the answer (not inside it), built from our own records of them. */
 export function sourcesBlock(cited, passages, research) {
   const lines = []
   for (const label of cited) {
     const p = passages.find((x) => x.label === label)
     if (p) {
-      lines.push(`- [${p.label}] ${p.title}${p.version > 1 ? ` (v${p.version})` : ''}${p.headingPath ? ` — ${p.headingPath}` : ''}${p.locator ? ` (${p.locator})` : ''}${p.crossCourse ? ' — from another of your courses' : ''}`)
+      lines.push(`- ${p.title}${p.version > 1 ? ` (v${p.version})` : ''}${p.headingPath ? ` — ${p.headingPath}` : ''}${p.locator ? ` (${p.locator})` : ''}${p.crossCourse ? ' — from another of your courses' : ''}`)
       continue
     }
     const r = research.find((x) => x.label === label)
-    if (r) lines.push(`- [${r.label}] ${(r.authors ?? []).slice(0, 3).join(', ')}${(r.authors ?? []).length > 3 ? ' et al.' : ''}${r.year ? ` (${r.year})` : ''}. ${r.title}.${r.venue ? ` ${r.venue}.` : ''}${r.doi ? ` https://doi.org/${r.doi}` : ''}${r.verified ? '' : ' (not verified)'}`)
+    if (r) lines.push(`- ${(r.authors ?? []).slice(0, 3).join(', ')}${(r.authors ?? []).length > 3 ? ' et al.' : ''}${r.year ? ` (${r.year})` : ''}. ${r.title}.${r.venue ? ` ${r.venue}.` : ''}${r.doi ? ` https://doi.org/${r.doi}` : ''}${r.verified ? '' : ' (not verified)'}`)
   }
   return lines.length ? `**Sources**\n${lines.join('\n')}` : ''
 }

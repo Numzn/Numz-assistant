@@ -132,7 +132,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
 
   // The first letters of an answer heading that has not been written out yet ("#### ANS") are not shown as if they were the answer.
   const PARTIAL_HEADING = /(?:^|\n)[ \t]*#{1,6}[ \t]*(?:A(?:N(?:S(?:W(?:E(?:R(?:[ \t]*\(?[a-z0-9]{0,4}\)?)?)?)?)?)?)?)?[ \t]*$/
-  const liveText = (q) => (q.live?.text ?? '').replace(PARTIAL_HEADING, '').trim()
+  const liveText = (q) => (q.live?.text ?? '').replace(/\s*\[(?:[SR]\d{1,2}(?:\s*[,;]\s*[SR]\d{1,2})*)\]/g, '').replace(PARTIAL_HEADING, '').trim() // the source labels are never shown, not even while the words arrive
   const liveBox = (q) => {
     const box = answerBox(liveText(q), q.live.pending)
     box.dataset.live = q.id

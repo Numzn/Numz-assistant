@@ -49,10 +49,12 @@ test('a typed question is answered from the course materials, the citations are 
   assert.equal(result.grounding, 'course')
   assert.equal(result.task, 'explain')
   assert.deepEqual(result.sources.map((x) => [x.label, x.kind, x.title, x.section]), [['S1', 'course', 'Lecture 3', 'Normalisation > Third normal form']])
-  assert.match(result.markdown, /every attribute depends on the key \[S1\]\./)
+  assert.match(result.markdown, /every attribute depends on the key\./)
+  assert.doesNotMatch(result.parts[0].markdown, /\[[SR]\d+\]/, 'the answer holds the plain answer: no source labels in it')
   assert.doesNotMatch(result.markdown, /\[S9\]/, 'a citation the model invented is removed')
   assert.deepEqual(result.flags.droppedCitations, ['S9'])
-  assert.match(result.markdown, /\*\*Sources\*\*\n- \[S1\] Lecture 3 — Normalisation > Third normal form/)
+  assert.match(result.markdown, /\*\*Sources\*\*\n- Lecture 3 — Normalisation > Third normal form/, 'the sources it used are listed after the answer, without labels')
+  assert.equal(result.parts[0].markdown.includes('Sources'), false, 'and not inside it')
   assert.deepEqual([result.evidence.course, result.evidence.research], [1, 0])
   assert.equal(result.savedToConversation, true)
   const saved = t.store.forOwner(t.who.alice).get(t.conversation).messages
@@ -205,7 +207,7 @@ test('research is used only when the session asks for it, is labelled and verifi
   const r = await t.alice.answer({ sessionId: withResearch.id, text: 'What is third normal form?' }, t.ctx)
   assert.equal(r.grounding, 'both')
   assert.deepEqual(r.sources.map((x) => [x.label, x.kind, x.verified]), [['S1', 'course', undefined], ['R1', 'research', true]])
-  assert.match(r.markdown, /\[R1\] E\. Codd \(1970\)\. A Relational Model of Data\. CACM\. https:\/\/doi\.org\/10\.1145\/362384\.362685/)
+  assert.match(r.markdown, /- E\. Codd \(1970\)\. A Relational Model of Data\. CACM\. https:\/\/doi\.org\/10\.1145\/362384\.362685/)
   assert.match(t.calls.at(-1).messages[1].content, /<source id="R1"[^>]*verified="yes"/)
 
   t.aliceSessions.stop(withResearch.id)
