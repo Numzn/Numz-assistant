@@ -13,6 +13,8 @@
  * still gets an answer: the analysis only shapes and checks it, it never refuses.
  */
 
+import { commandsOf } from './answerStyle.js'
+
 const WORD_NUMBERS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 }
 const COUNT = '(one|two|three|four|five|six|seven|eight|nine|ten|\\d{1,2})'
 
@@ -215,6 +217,7 @@ export function analyseQuestion(question, { related = [] } = {}) {
     marks,
     caseStudy,
     options,
+    commands: commandsOf(text, instructions),
     ownLabel: own && !parts.length ? own[1].toLowerCase() : null,
     review: complexity === 'complex'
   }

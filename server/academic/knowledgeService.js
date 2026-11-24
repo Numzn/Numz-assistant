@@ -68,7 +68,14 @@ export function createKnowledgeService({ knowledge, meetingService = null, pause
         }
         if (!courseId && also.length === 0) return { passages: [], crossCourse: false, reason: null }
         const ids = [...(courseId ? [String(courseId)] : []), ...also]
-        const rows = mine.search({ courseIds: ids, query: `${topic} ${query}`, limit })
+        // The same text uploaded twice (or in two documents) is one source: the best-ranked copy is kept, so the answer never counts a duplicate as support.
+        const seen = new Set()
+        const rows = mine.search({ courseIds: ids, query: `${topic} ${query}`, limit: limit * 2 }).filter((row) => {
+          const key = String(row.text ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        }).slice(0, limit)
         const passages = rows.map((row, i) => ({
           label: `S${i + 1}`,
           documentId: row.documentId,
