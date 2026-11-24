@@ -32,7 +32,7 @@ import { createMeetingIntelligenceService } from './services/meetingIntelligence
 import { generateGroundedNotes } from './services/speechNotesService.js'
 import { createLiveMeetingIntelligence } from './services/liveMeetingIntelligenceService.js'
 import { generateMeetingSummary } from './services/meetingSummaryService.js'
-import { generateResponse } from './services/aiService.js'
+import { generateResponse, streamResponse } from './services/aiService.js'
 import { attachSocketServer } from './websocket/socketServer.js'
 import { createUpgradeRouter } from './websocket/upgradeRouter.js'
 import { attachLiveSpeechRelay, liveSpeechUpstreamUrl } from './websocket/liveSpeechRelay.js'
@@ -244,6 +244,11 @@ const answerService = createAnswerService({
   generate: async (messages, opts) => {
     requireAi()
     return generateResponse(messages, opts)
+  },
+  // The same model, word by word, for an answer a person is waiting for (the page asks for it with Accept: text/event-stream).
+  stream: (messages, opts) => {
+    requireAi()
+    return streamResponse(messages, opts)
   },
   knowledgeService,
   lanes: memoryLanes,

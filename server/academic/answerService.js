@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { AcademicError, textField } from './academicError.js'
-import { classifyTask } from './questionUnderstanding.js'
+import { analyseQuestion } from './questionAnalysis.js'
+import { checkAnswer, reviewVerdict } from './answerCheck.js'
+import { answerLabel, formatAnswers, normalizeAnswer } from './answerFormat.js'
 import { enforce } from './integrity.js'
-import { buildMessages, EXPLAINING_STYLES, sourcesBlock, verifyCitations } from './responseEngine.js'
+import { buildMessages, buildRepairMessages, buildReviewMessages, EXPLAINING_STYLES, sourcesBlock, verifyCitations } from './responseEngine.js'
 import { deriveQuery } from './researchService.js'
 
 /**
@@ -15,9 +17,16 @@ import { deriveQuery } from './researchService.js'
  *   4  evidence: the course's materials (course-isolated), then research if the session wants it
  *   5  memory: the learning profile and the few learning notes that matter to this topic (nothing if adaptive learning is off)
  *   6  the person's own daily allowance of answers (and the emergency stop)
- *   7  the model, with an explicit system message
- *   8  the citations are verified and the source list is built from our records
- *   9  the exchange is added to the conversation the person has open (their ordinary NUMZ AI conversation)
+ *   7  the question is analysed (kind, size, parts, instructions) and the model is asked, with an explicit system message; when the caller
+ *      listens (`hooks.onEvent`) and the provider streams, the words are passed on as they arrive
+ *   8  the answer is checked before it is final: always by rules (answerCheck.js), with one repair when a rule fails; a complex question is
+ *      also read a second time by the model (a review that redoes any calculation). Checking never costs the person another answer of their
+ *      daily allowance: it is part of the same metered call
+ *   9  the citations are verified and the source list is built from our records
+ *  10  the exchange is added to the conversation the person has open (their ordinary NUMZ AI conversation)
+ *
+ * The same question asked the same way twice (a double click, an automatic answer racing a button) is answered once: the second ask shares
+ * the first's work, or gets its result back.
  *
  * Conceptual explanations (`explainConcept`) are the one thing a restricted session may ask for: a named concept, never a pasted question.
  */
@@ -25,8 +34,9 @@ import { deriveQuery } from './researchService.js'
 const MODEL_TIMEOUT_MS = 60_000
 const MAX_QUESTION = 2000
 
-const withDeadline = (run, ms) => {
+const withDeadline = (run, ms, outer = null) => {
   const controller = new AbortController()
+  const signal = outer ? AbortSignal.any([controller.signal, outer]) : controller.signal
   let timer
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => {
@@ -34,7 +44,22 @@ const withDeadline = (run, ms) => {
       reject(Object.assign(new Error('The model did not answer in time'), { name: 'TimeoutError' }))
     }, ms)
   })
-  return Promise.race([Promise.resolve().then(() => run(controller.signal)), deadline]).finally(() => clearTimeout(timer))
+  return Promise.race([Promise.resolve().then(() => run(signal)), deadline]).finally(() => clearTimeout(timer))
+}
+
+/** Token counts of several model calls, reported once for the one metered call they belong to. */
+function usageTotal() {
+  const sum = { promptTokens: 0, completionTokens: 0, model: undefined, provider: undefined, any: false }
+  return {
+    add(u = {}) {
+      sum.any = true
+      if (Number.isFinite(u.promptTokens)) sum.promptTokens += u.promptTokens
+      if (Number.isFinite(u.completionTokens)) sum.completionTokens += u.completionTokens
+      sum.model = u.model ?? sum.model
+      sum.provider = u.provider ?? sum.provider
+    },
+    report: () => (sum.any ? { promptTokens: sum.promptTokens, completionTokens: sum.completionTokens, model: sum.model, provider: sum.provider } : null)
+  }
 }
 
 /** A concept is a short phrase. A pasted question (long, with options, or asking something at length) is refused in a restricted session. */
@@ -44,7 +69,7 @@ export function looksLikeQuestion(text) {
   return words > 12 || t.length > 120 || /^\s*[A-Da-d][).]\s+\S/m.test(t) || /\n/.test(t) || (/\?\s*$/.test(t) && words > 8) || /\b(calculate|solve|work out)\b.*\d/i.test(t)
 }
 
-export function createAnswerService({ generate, knowledgeService, lanes, sessionManager, researchService = null, conversations, courses, now = Date.now, newId = randomUUID, audit = () => {}, logger = console }) {
+export function createAnswerService({ generate, stream = null, knowledgeService, lanes, sessionManager, researchService = null, conversations, courses, now = Date.now, newId = randomUUID, audit = () => {}, logger = console }) {
   if (typeof generate !== 'function') throw new Error('a model call is required')
 
   function forOwner(userId) {
@@ -63,8 +88,19 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
       return true
     }
 
-    /** Runs the pipeline for an entry (a recognised question held in the session, or one typed). */
-    async function run({ session, entry, mode, courseId, courseTitle, conversationId, style, instruction, useResearch, ctx }) {
+    /**
+     * Runs the pipeline for an entry (a recognised question held in the session, or one typed).
+     * `hooks.onEvent` (optional) hears { type: 'start' | 'delta' | 'checking' } while it works; `hooks.signal` stops the work.
+     */
+    async function run({ session, entry, mode, courseId, courseTitle, conversationId, style, instruction, useResearch, ctx, hooks = {} }) {
+      const t0 = performance.now()
+      const emit = (event) => {
+        try {
+          hooks.onEvent?.(event)
+        } catch {
+          /* a listener that fails never fails the answer */
+        }
+      }
       const profile = memory.getProfile().learningProfile
       const topic = entry.topic || session.activeTopic || ''
       const retrieval = courseId ? knowledge.retrieve({ courseId, query: entry.text, topic }) : { passages: [], crossCourse: false, reason: null }
@@ -82,40 +118,137 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
       const picture = entry.captureId ? sessions.runtime(session.id).captures.get(entry.captureId)?.picture : null
       const related = entry.segmentId ? sessions.runtime(session.id).ledger?.relatedTo(entry.segmentId) ?? [] : []
       const figureNote = entry.hasDiagram && !picture ? 'The question refers to a figure or table that could not be shown: say that part of the answer may be incomplete.' : ''
-      const messages = buildMessages({ mode, task: entry.task, question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote, related })
+      const analysis = analyseQuestion(entry, { related })
+      const messages = buildMessages({ mode, task: analysis.task, analysis, question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote, related })
+      const partKeys = analysis.parts.map((p) => p.key)
+      const labels = partKeys.length >= 2 ? analysis.parts.map((p) => ({ key: p.key, label: answerLabel(p.key) })) : [{ key: analysis.ownLabel, label: answerLabel(analysis.ownLabel) }]
+      const timings = { lookup: Math.round(performance.now() - t0) }
 
       const call = ctx.meter?.begin(ctx.identity, 'academic_answer', { requestId: ctx.requestId, conversationId })
-      let raw
+      const used = usageTotal()
+      const listening = typeof hooks.onEvent === 'function' && typeof stream === 'function'
+      let modelCalls = 0
+      const ask = async (msgs, { live = false } = {}) => {
+        modelCalls++
+        if (live && listening) {
+          return withDeadline(async (signal) => {
+            let text = ''
+            for await (const chunk of stream(msgs, { signal, onUsage: used.add })) {
+              if (chunk.type === 'token') {
+                text += chunk.token
+                emit({ type: 'delta', text: chunk.token })
+              } else if (chunk.type === 'message') text = chunk.content
+            }
+            return text
+          }, MODEL_TIMEOUT_MS, hooks.signal)
+        }
+        return withDeadline((signal) => generate(msgs, { signal, onUsage: used.add }), MODEL_TIMEOUT_MS, hooks.signal)
+      }
+
+      let finished = false
+      const finishCall = () => {
+        if (!call || finished) return
+        finished = true
+        const total = used.report()
+        if (total) call.usage(total)
+        call.finish()
+      }
+      let normalized
+      const validation = { verdict: 'ok', issues: [], repaired: false, reviewed: false, calls: 1, level: analysis.review ? 'review' : 'rules' }
       try {
-        raw = await withDeadline((signal) => generate(messages, { signal, onUsage: call?.usage }), MODEL_TIMEOUT_MS)
-        call?.finish()
+        emit({ type: 'start', task: analysis.task, complexity: analysis.complexity, parts: labels })
+        const tModel = performance.now()
+        const draft = await ask(messages, { live: true })
+        timings.model = Math.round(performance.now() - tModel)
+        if (!String(draft ?? '').trim()) {
+          finishCall() // the model did answer (and was paid for): it answered with nothing
+          throw new AcademicError(502, 'answer-failed', 'The assistant sent back nothing to show. Try again.')
+        }
+
+        const tCheck = performance.now()
+        const examine = (text) => {
+          const n = normalizeAnswer(text, partKeys)
+          return { n, ...checkAnswer({ analysis, question: entry, parts: n.parts }) }
+        }
+        let current = examine(draft)
+        if (current.issues.length) {
+          // One repair: the draft goes back with exactly what was wrong with it. If the repair is no better, the draft stands (flagged).
+          emit({ type: 'checking', stage: 'repair' })
+          validation.issues = current.issues
+          try {
+            const fixed = examine(await ask(buildRepairMessages({ messages, draft, issues: current.issues })))
+            validation.repaired = true
+            if (fixed.issues.length <= current.issues.length && fixed.n.parts.some((p) => p.markdown.trim())) current = fixed
+            validation.verdict = current.issues.length ? 'flagged' : 'repaired'
+          } catch (err) {
+            if (hooks.signal?.aborted) throw err
+            validation.verdict = 'flagged'
+          }
+        }
+        if (analysis.review && !current.issues.length && validation.verdict !== 'flagged') {
+          // A complex question is read a second time: relevance, correctness (every calculation redone), completeness, clarity.
+          emit({ type: 'checking', stage: 'review' })
+          try {
+            const verdict = reviewVerdict(await ask(buildReviewMessages({ request: messages[1].content, draft: formatAnswers(current.n.parts) })))
+            validation.reviewed = true
+            if (!verdict.ok) {
+              const revised = examine(verdict.corrected)
+              if (!revised.issues.length && revised.n.parts.some((p) => p.markdown.trim())) {
+                current = revised
+                validation.verdict = 'corrected'
+              }
+            }
+          } catch (err) {
+            if (hooks.signal?.aborted) throw err
+            /* the second look is a bonus: the draft that passed the rules stands */
+          }
+        }
+        validation.calls = modelCalls
+        timings.check = Math.round(performance.now() - tCheck)
+        normalized = current.n
+        validation.issues = current.issues
+        finishCall()
       } catch (err) {
-        call?.fail(err)
+        if (!finished) call?.fail(err)
+        if (err instanceof AcademicError) throw err
+        if (hooks.signal?.aborted && err?.name !== 'TimeoutError') throw err
         logger.warn?.(`[academic] answer failed (${err?.statusCode ?? err?.status ?? err?.name ?? 'error'})`)
         throw new AcademicError(502, 'answer-failed', 'An answer could not be worked out just now. Try again.')
       }
-      const text = typeof raw === 'string' ? raw.trim() : ''
-      if (!text) throw new AcademicError(502, 'answer-failed', 'The assistant sent back nothing to show. Try again.')
 
-      const labels = [...retrieval.passages.map((p) => p.label), ...works.map((w) => w.label)]
-      const checked = verifyCitations(text, labels)
-      const sources = sourcesBlock(checked.cited, retrieval.passages, works)
-      const markdown = sources ? `${checked.text}\n\n${sources}` : checked.text
-      const citedCourse = checked.cited.filter((l) => l.startsWith('S')).length
-      const citedResearch = checked.cited.filter((l) => l.startsWith('R')).length
+      const given = [...retrieval.passages.map((p) => p.label), ...works.map((w) => w.label)]
+      const cited = []
+      const dropped = []
+      const parts = normalized.parts.map((p) => {
+        const checked = verifyCitations(p.markdown, given)
+        for (const l of checked.cited) if (!cited.includes(l)) cited.push(l)
+        for (const l of checked.dropped) if (!dropped.includes(l)) dropped.push(l)
+        // A question that is itself one part of a bigger one on the screen ("(b) Calculate ...") keeps that part's label on its answer.
+        const own = normalized.parts.length === 1 && analysis.ownLabel ? analysis.ownLabel : p.key
+        return { key: own, label: answerLabel(own), markdown: checked.text }
+      })
+      const sources = sourcesBlock(cited, retrieval.passages, works)
+      const markdown = formatAnswers(parts, sources)
+      const citedCourse = cited.filter((l) => l.startsWith('S')).length
+      const citedResearch = cited.filter((l) => l.startsWith('R')).length
       const grounding = citedCourse && citedResearch ? 'both' : citedCourse ? 'course' : citedResearch ? 'research' : 'general'
+      timings.total = Math.round(performance.now() - t0)
       return {
         markdown,
+        parts,
         grounding,
-        sources: checked.cited.map((label) => {
+        sources: cited.map((label) => {
           const p = retrieval.passages.find((x) => x.label === label)
           const r = works.find((x) => x.label === label)
           return p ? { label, kind: 'course', title: p.title, version: p.version, section: p.headingPath, where: p.locator, crossCourse: p.crossCourse } : { label, kind: 'research', title: r.title, authors: r.authors, year: r.year, doi: r.doi, url: r.url, verified: r.verified }
         }),
         evidence: { course: retrieval.passages.length, research: works.length, crossCourse: retrieval.crossCourse, learningNotes: experiences.length },
-        flags: { droppedCitations: checked.dropped, uncitedDespiteEvidence: labels.length > 0 && checked.cited.length === 0, researchUnavailable: researchNote, figureMissing: Boolean(figureNote) },
+        flags: { droppedCitations: dropped, uncitedDespiteEvidence: given.length > 0 && cited.length === 0, researchUnavailable: researchNote, figureMissing: Boolean(figureNote) },
         approach: style ?? 'answer',
-        topic
+        topic,
+        analysis: { task: analysis.task, complexity: analysis.complexity, format: analysis.format, parts: partKeys.length, count: analysis.count },
+        validation: { verdict: validation.verdict, level: validation.level, repaired: validation.repaired, reviewed: validation.reviewed, calls: validation.calls, issues: validation.verdict === 'flagged' ? validation.issues : [] },
+        timings
       }
     }
 
@@ -138,7 +271,7 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
        * @returns {Promise<object>} { status: 'answered', answerId, questionId, markdown, grounding, sources, evidence, flags, ... }
        *   or { status: 'confirm-required', signals } or { status: 'needs-course', candidates }
        */
-      async answer({ sessionId, questionId = null, text = null, conversationId = null, courseId = null, topic = null, style = null, instruction = null, confirmPractice = false, useResearch = null }, ctx = {}) {
+      async answer({ sessionId, questionId = null, text = null, conversationId = null, courseId = null, topic = null, style = null, instruction = null, confirmPractice = false, useResearch = null }, ctx = {}, hooks = {}) {
         const session = sessions.requireOpen(sessionId)
         const verdict = enforce({ session, action: 'answer', now: now() })
         if (style !== null && !EXPLAINING_STYLES.includes(style)) throw new AcademicError(400, 'invalid-input', 'style must be explain, simpler or deeper.')
@@ -149,7 +282,7 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
           if (!entry) throw new AcademicError(404, 'question-not-found', 'That question is no longer in this session. Read the screen again.')
         } else {
           const typed = textField(text, 'text', { max: MAX_QUESTION, required: true })
-          entry = { id: newId(), text: typed, options: [], marks: null, type: 'other', hasDiagram: false, task: classifyTask({ text: typed }), subject: '', topic: textField(topic, 'topic', { max: 120 }) ?? '', contentKind: 'typed', instructions: '', contextSnapshot: null, signals: [], confirmedPractice: false, answer: null, createdAt: now() }
+          entry = { id: newId(), text: typed, options: [], marks: null, type: 'other', hasDiagram: false, task: analyseQuestion({ text: typed }).task, subject: '', topic: textField(topic, 'topic', { max: 120 }) ?? '', contentKind: 'typed', instructions: '', contextSnapshot: null, signals: [], confirmedPractice: false, answer: null, createdAt: now() }
           runtime.questions.set(entry.id, entry)
         }
         const course = resolveCourse(session, entry, courseId)
@@ -164,14 +297,31 @@ export function createAnswerService({ generate, knowledgeService, lanes, session
           note('academic.integrity_confirm', { sessionId, questionId: entry.id, signals: entry.signals })
         }
 
+        // The same question, asked the same way, is answered once: an answer already given is handed back, one being worked on is shared.
+        const key = JSON.stringify([entry.text, entry.options, style, instruction ?? null, course.courseId, useResearch ?? session.useResearch ?? false, conversationId])
+        entry.results ??= new Map()
+        if (!instruction && entry.results.has(key)) return { ...entry.results.get(key), cached: true }
+        entry.working ??= new Map()
+        if (entry.working.has(key)) return { ...(await entry.working.get(key)), cached: true }
+
         sessions.touch(sessionId)
-        const result = await run({ session, entry, mode: verdict.mode, courseId: course.courseId, courseTitle: course.title, conversationId, style, instruction: textField(instruction, 'instruction', { max: 500 }), useResearch: useResearch ?? session.useResearch, ctx })
-        const answerId = newId()
-        entry.answer = { answerId, grounding: result.grounding, approach: result.approach, topic: result.topic, courseId: course.courseId }
-        const shown = entry.options?.length ? `${entry.text}\n${entry.options.map((o) => `${o.label}) ${o.text}`).join('\n')}` : entry.text
-        const saved = appendToConversation(conversationId, shown, result.markdown)
-        note('academic.answer', { sessionId, questionId: entry.id, grounding: result.grounding, course: result.evidence.course, research: result.evidence.research, style })
-        return { status: 'answered', answerId, questionId: entry.id, courseId: course.courseId, task: entry.task, savedToConversation: saved, ...result }
+        const work = (async () => {
+          const result = await run({ session, entry, mode: verdict.mode, courseId: course.courseId, courseTitle: course.title, conversationId, style, instruction: textField(instruction, 'instruction', { max: 500 }), useResearch: useResearch ?? session.useResearch, ctx, hooks })
+          const answerId = newId()
+          entry.answer = { answerId, grounding: result.grounding, approach: result.approach, topic: result.topic, courseId: course.courseId }
+          const shown = entry.options?.length ? `${entry.text}\n${entry.options.map((o) => `${o.label}) ${o.text}`).join('\n')}` : entry.text
+          const saved = appendToConversation(conversationId, shown, result.markdown)
+          note('academic.answer', { sessionId, questionId: entry.id, grounding: result.grounding, course: result.evidence.course, research: result.evidence.research, style })
+          return { status: 'answered', answerId, questionId: entry.id, courseId: course.courseId, task: entry.task, savedToConversation: saved, ...result }
+        })()
+        entry.working.set(key, work)
+        try {
+          const done = await work
+          if (!instruction) entry.results.set(key, done)
+          return done
+        } finally {
+          entry.working.delete(key)
+        }
       },
 
       /**
