@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildMessages, buildSystemPrompt, buildUserMessage, neutralize, sourcesBlock, stripCitations, verifyCitations } from './responseEngine.js'
+import { buildMessages, buildSystemPrompt, buildUserMessage, neutralize, sourcesBlock, stripCitations, takeNotes, verifyCitations } from './responseEngine.js'
 
 const passages = [
   { label: 'S1', title: 'Lecture 3', version: 2, headingPath: 'Normalisation > Third normal form', locator: 'lines 7-14', text: 'Every attribute depends on the key.', crossCourse: false },
@@ -145,4 +145,11 @@ test('the answer is plain: the labels the model cited are taken out and nothing 
   assert.equal(stripCitations('A list:\n- first [S1]\n- second [S2, S3]\n'), 'A list:\n- first\n- second')
   assert.equal(stripCitations('See [Smith 2020] and [1] and array[2].'), 'See [Smith 2020] and [1] and array[2].', 'ordinary brackets stay')
   assert.equal(stripCitations('No labels here.'), 'No labels here.')
+})
+
+test('what is said about the sources is taken out of the answer: NOTE lines, a Supplementary label, a "Not from your notes" start', () => {
+  assert.deepEqual(takeNotes('The answer.\nNOTE: The notes do not explain this.'), { text: 'The answer.', notes: ['The notes do not explain this.'] })
+  assert.deepEqual(takeNotes('First.\n\nSupplementary:\nSecond.'), { text: 'First.\n\nSecond.', notes: [] })
+  assert.deepEqual(takeNotes('Not from your notes: It is a thing.'), { text: 'It is a thing.', notes: ['Not from your notes: answered from general knowledge.'] })
+  assert.deepEqual(takeNotes('A plain answer with a note word: this is a NOTE in the middle.'), { text: 'A plain answer with a note word: this is a NOTE in the middle.', notes: [] })
 })

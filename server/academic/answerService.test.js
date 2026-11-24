@@ -570,7 +570,7 @@ test('"use only my notes" reaches the model, and the sources and what to do when
   await t.alice.answer({ sessionId: s.id, text: 'Define third normal form.', instruction: 'use only my notes' }, t.ctx)
   const only = t.calls[0].messages[0].content
   assert.match(only, /asked to use ONLY their own notes/)
-  assert.doesNotMatch(only, /Supplementary:/)
+  assert.doesNotMatch(only, /still give the explanation the question needs from general knowledge/)
   const t2 = setup()
   const s2 = startStudy(t2)
   await t2.alice.answer({ sessionId: s2.id, text: 'Define third normal form using only my notes.' }, t2.ctx)
@@ -580,7 +580,7 @@ test('"use only my notes" reaches the model, and the sources and what to do when
   await t3.alice.answer({ sessionId: s3.id, text: 'Define third normal form.' }, t3.ctx)
   const normal = t3.calls[0].messages[0].content
   assert.match(normal, /Answer from the sources first/)
-  assert.match(normal, /goes after a label "Supplementary:"/)
+  assert.match(normal, /end with a line like "NOTE: The uploaded lecture notes list/)
   assert.doesNotMatch(normal, /ONLY their own notes/)
 })
 
@@ -595,4 +595,24 @@ test('the same text uploaded twice is one source, and a 5-mark and a 10-mark que
   await t.alice.answer({ sessionId: s.id, text: 'Discuss third normal form and its place in database design. (10 marks)' }, t.ctx)
   assert.match(t.calls[1].messages[0].content, /This question is worth 10 marks: start with a direct definition or explanation, then explain the main features/)
   assert.doesNotMatch(t.calls[1].messages[0].content, /worth 5 marks/)
+})
+
+test('the answer box is clean: what the model says about the sources is taken out of it and shown beside it, with the sources', async () => {
+  const t = setup()
+  const s = startStudy(t)
+  t.model.reply = 'Third normal form means every attribute depends on the key [S1].\n\nSupplementary:\nIt also avoids update anomalies.\nNOTE: The uploaded notes do not explain anomalies; that part is from general knowledge.'
+  const r = await t.alice.answer({ sessionId: s.id, text: 'What is third normal form?' }, t.ctx)
+  const box = r.parts[0].markdown
+  assert.equal(box, 'Third normal form means every attribute depends on the key.\n\nIt also avoids update anomalies.')
+  assert.doesNotMatch(box, /NOTE|Supplementary|\[S1\]/)
+  assert.match(r.markdown, /\*\*Note\*\*\nThe uploaded notes do not explain anomalies; that part is from general knowledge\.\n\n\*\*Sources\*\*\n- Lecture 3/)
+  // the box and what is beside it are told apart by the page's own reader too
+  assert.equal(r.markdown.indexOf('**Note**') > r.markdown.indexOf('It also avoids'), true)
+
+  const t2 = setup()
+  const s2 = startStudy(t2)
+  t2.model.reply = 'Not from your notes: Normalisation removes repeated data.'
+  const none = await t2.alice.answer({ sessionId: s2.id, text: 'What is normalisation?' }, t2.ctx)
+  assert.equal(none.parts[0].markdown, 'Normalisation removes repeated data.')
+  assert.match(none.markdown, /\*\*Note\*\*\nNot from your notes: answered from general knowledge\./)
 })

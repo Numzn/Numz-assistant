@@ -102,14 +102,16 @@ test('7. an answer follows the supplied material: the kind of each source is giv
   assert.equal(sourceKind({ sourceType: 'textbook', title: 'Operating Systems' }), 'textbook')
 })
 
-test('8 and 9. when the sources do not explain a topic the answer says so, and what it adds from general knowledge is labelled supplementary', () => {
+test('8 and 9. what is said about the sources stays out of the answer: one NOTE line, which is shown beside the answer', () => {
   const { system } = prompt('Explain the four types of memory.')
-  assert.match(system, /Answer from the sources first\. If they name or list something but do not explain it, say so in one short sentence \(for example "The uploaded lecture notes list these four types but do not explain them in detail\."\)/)
-  assert.match(system, /goes after a label "Supplementary:"/)
-  assert.match(system, /must not read as if it came from the lecturer's slides and must not overwrite what the sources say/)
+  assert.match(system, /Keep the answer itself clean: no remark about your sources inside it, no label such as "Supplementary:" or "Not from your notes:"/)
+  assert.match(system, /ONE short sentence on its own last line that starts exactly with "NOTE:"/)
+  assert.match(system, /Answer from the sources first\. If they name or list something but do not explain it, still give the explanation the question needs from general knowledge/)
+  assert.match(system, /"NOTE: The uploaded lecture notes list these four types but do not explain them in detail; the explanation is from general knowledge\."/)
+  assert.match(system, /must not overwrite what the sources say/)
   assert.match(system, /at the student's course level/)
   const none = prompt('Explain the four types of memory.', {}, { hasSources: false }).system
-  assert.match(none, /none of its materials matched this question[\s\S]*"Not from your notes:"/)
+  assert.match(none, /none of its materials matched this question[\s\S]*"NOTE: Not from your notes: answered from general knowledge\."/)
   assert.doesNotMatch(none, /Answer from the sources first/)
   const noCourse = prompt('Explain the four types of memory.', {}, { hasSources: false, hasCourse: false }).system
   assert.match(noCourse, /No course was identified[\s\S]*without remarking on it/)
@@ -120,9 +122,9 @@ test('10. "use only my notes" means no general knowledge: it is found in the not
   for (const said of ['explain this in simple words', 'use my notes and add examples', 'what do my notes say about caching?', 'only two marks', '']) assert.equal(detectSourceOnly(said), false, said)
   const only = prompt('Explain virtual memory.', {}, { sourceOnly: true }).system
   assert.match(only, /asked to use ONLY their own notes\. Use only what the sources say\. Do not add general knowledge, even to fill a gap/)
-  assert.match(only, /The uploaded notes do not explain this/)
-  assert.doesNotMatch(only, /Supplementary:/, 'no label for something that is not to be added')
-  assert.doesNotMatch(only, /Not from your notes/)
+  assert.match(only, /NOTE: The uploaded notes do not explain this/)
+  assert.doesNotMatch(only, /still give the explanation the question needs from general knowledge/, 'nothing is added to fill the gap')
+  assert.doesNotMatch(only, /answered from general knowledge/)
 })
 
 test('11. nothing is invented: a source label that was not given is removed, and a page number or author-year that is not in the sources is found', () => {
@@ -156,7 +158,7 @@ test('13. no promises: nothing in the prompt is about beating detection, and an 
 test('14. the study style stays in the study pipeline: ordinary conversation, coding help and voice never receive it', () => {
   const chat = formatChatMessages([{ role: 'user', content: 'Write me a function that reverses a string.' }])
   const text = JSON.stringify(chat)
-  assert.doesNotMatch(text, /Supplementary|kind="lecturer"|worth \d+ marks|ANSWER|everyday English|Not from your notes/)
+  assert.doesNotMatch(text, /NOTE:|kind="lecturer"|worth \d+ marks|ANSWER|everyday English|Not from your notes/)
   // and no module of the conversation, the voice assistant or the providers imports the academic style or prompt engine
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const users = []

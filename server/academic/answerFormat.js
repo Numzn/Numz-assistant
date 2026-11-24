@@ -24,7 +24,9 @@ export const answerLabel = (key) => (key ? `${ANSWER_WORD} (${key})` : ANSWER_WO
 /** The sources list the server adds after the answer, split from the answer itself. */
 export function splitSources(markdown) {
   const text = String(markdown ?? '')
-  const at = text.lastIndexOf('\n**Sources**\n')
+  // What stands beside the answer rather than in it begins at the first of these: a note about the sources, or the list of sources.
+  const marks = ['\n**Note**\n', '\n**Sources**\n'].map((m) => text.lastIndexOf(m)).filter((i) => i !== -1)
+  const at = marks.length ? Math.min(...marks) : -1
   if (at === -1) return { body: text, sources: '' }
   return { body: text.slice(0, at).replace(/\s+$/, ''), sources: text.slice(at).trim() }
 }

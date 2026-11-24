@@ -5,7 +5,7 @@ import { checkAnswer, reviewVerdict } from './answerCheck.js'
 import { answerLabel, formatAnswers, normalizeAnswer } from './answerFormat.js'
 import { detectSourceOnly } from './answerStyle.js'
 import { enforce } from './integrity.js'
-import { buildMessages, buildRepairMessages, buildReviewMessages, EXPLAINING_STYLES, sourcesBlock, stripCitations, verifyCitations } from './responseEngine.js'
+import { buildMessages, buildRepairMessages, buildReviewMessages, EXPLAINING_STYLES, sourcesBlock, stripCitations, takeNotes, verifyCitations } from './responseEngine.js'
 import { deriveQuery } from './researchService.js'
 
 /**
@@ -223,6 +223,7 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
       const given = [...retrieval.passages.map((p) => p.label), ...works.map((w) => w.label)]
       const cited = []
       const dropped = []
+      const notes = [] // what the answer says about its sources: shown beside it, not in it
       const parts = normalized.parts.map((p) => {
         const checked = verifyCitations(p.markdown, given)
         for (const l of checked.cited) if (!cited.includes(l)) cited.push(l)
@@ -230,10 +231,13 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
         // A question that is itself one part of a bigger one on the screen ("(b) Calculate ...") keeps that part's label on its answer.
         const own = normalized.parts.length === 1 && analysis.ownLabel ? analysis.ownLabel : p.key
         // The answer holds the plain answer only: the labels the model cited are taken out, and the sources they stood for are listed apart from it.
-        return { key: own, label: answerLabel(own), markdown: stripCitations(checked.text) }
+        const clean = takeNotes(stripCitations(checked.text))
+        for (const n of clean.notes) if (!notes.includes(n)) notes.push(n)
+        return { key: own, label: answerLabel(own), markdown: clean.text }
       })
       const sources = sourcesBlock(cited, retrieval.passages, works)
-      const markdown = formatAnswers(parts, sources)
+      const beside = [notes.length ? `**Note**\n${notes.join(' ')}` : '', sources].filter(Boolean).join('\n\n')
+      const markdown = formatAnswers(parts, beside)
       const citedCourse = cited.filter((l) => l.startsWith('S')).length
       const citedResearch = cited.filter((l) => l.startsWith('R')).length
       const grounding = citedCourse && citedResearch ? 'both' : citedCourse ? 'course' : citedResearch ? 'research' : 'general'
