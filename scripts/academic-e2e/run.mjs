@@ -318,7 +318,7 @@ try {
 
   // ---- memory ----
   await page.click('[data-study-tab="memory"]')
-  await page.waitForSelector('.study-lane', { timeout: 10000 })
+  await page.waitForFunction(() => /Database Systems/.test(document.getElementById('studyBody')?.textContent ?? '') && /1 document/.test(document.getElementById('studyBody')?.textContent ?? ''), null, { timeout: 15000 }).catch(() => {})
   const memoryText = await page.textContent('#studyBody')
   check('the Memory tab shows the course, the material and what it learned', /Database Systems/.test(memoryText) && /1 document/.test(memoryText))
   await page.screenshot({ path: `${dir}/shot-5-memory.png` })
@@ -335,6 +335,52 @@ try {
     check('(no learned item to forget: helpful feedback alone is not yet a lesson)', true)
   }
   const ownRes = await page.evaluate(async () => (await fetch('/ai/api/v1/assistant/academic/courses', { credentials: 'same-origin' })).json())
+  // ---- what NUMZ remembers about her: said in the chat, known in the next one, seen and forgotten in the Memory tab ----
+  const chatCount = () => page.locator('li.msg[data-role="assistant"]').count()
+  const memoryApi = '/ai/api/v1/assistant/memory'
+  const listMemories = () => page.evaluate(async (u) => (await (await fetch(u, { credentials: 'same-origin' })).json()).memories, memoryApi)
+  const beforeSay = await chatCount()
+  await page.fill('#composerInput', 'Remember that my exam is on Friday')
+  await page.press('#composerInput', 'Enter')
+  await page.waitForFunction((n) => { const m = document.querySelectorAll('li.msg[data-role="assistant"]'); return m.length > n && !/Thinking/.test(m[m.length - 1].textContent) }, beforeSay, { timeout: 30000 })
+  const said = await listMemories()
+  check('"Remember that ..." said in the chat is remembered, as what she said', said.some((m) => m.text === 'my exam is on Friday' && m.source === 'said' && m.kind === 'fact'), JSON.stringify(said).slice(0, 160))
+  const lastChatPrompt = () => seen.prompts.filter((p) => /You are Numz, a voice assistant/.test(p)).at(-1) ?? ''
+  check('the model was told what really happened, and what the date and time are', /JUST NOW the person asked you to remember: \\?"my exam is on Friday/.test(lastChatPrompt()) && /Now: [A-Z][a-z]+day \d+ [A-Z][a-z]+ \d{4}, \d\d:\d\d \(/.test(lastChatPrompt()), lastChatPrompt().slice(0, 200))
+  await page.waitForFunction(() => document.getElementById('stopButton')?.hidden, null, { timeout: 30000 })
+  const beforeNext = await chatCount()
+  await page.fill('#composerInput', 'what should I revise this week?')
+  await page.press('#composerInput', 'Enter')
+  await page.waitForFunction((n) => { const m = document.querySelectorAll('li.msg[data-role="assistant"]'); return m.length > n && !/Thinking/.test(m[m.length - 1].textContent) }, beforeNext, { timeout: 30000 })
+  check('the next question, in the same or any conversation, is answered by someone who knows it', /- my exam is on Friday/.test(lastChatPrompt()) && !/JUST NOW/.test(lastChatPrompt()))
+  await page.click('[data-study-tab="memory"]')
+  await page.waitForSelector('#assistantMemory li', { timeout: 10000 })
+  check('the Memory tab lists it, in the person\'s own words', /my exam is on Friday/.test(await page.textContent('#assistantMemory')))
+  await page.fill('#assistantMemoryInput', 'I prefer short answers')
+  await page.click('#assistantMemory button:has-text("Remember")')
+  await page.waitForFunction(() => /I prefer short answers/.test(document.getElementById('assistantMemory')?.textContent ?? ''), null, { timeout: 10000 })
+  check('something can be added there', (await listMemories()).some((m) => m.text === 'I prefer short answers' && m.source === 'added'))
+  await page.screenshot({ path: `${dir}/shot-5b-remembered.png` })
+  await page.locator('#assistantMemory li', { hasText: 'my exam is on Friday' }).locator('button:has-text("Forget")').click()
+  await page.waitForFunction(() => !/my exam is on Friday/.test(document.getElementById('assistantMemory')?.textContent ?? ''), null, { timeout: 10000 })
+  check('and forgotten there', !(await listMemories()).some((m) => /exam/.test(m.text)))
+  check('what she added is used by the study answers too (a hint under the rules)', await (async () => {
+    await page.click('[data-study-tab="session"]')
+    await page.selectOption('#studyBody select', { label: 'Database Systems' })
+    await page.check('input[value="study"]') // the form kept the restricted choice from before, and a restricted session is answered without anything about the person
+    await page.click('button:has-text("Start session")')
+    await page.waitForSelector('#studyAskInput', { timeout: 10000 })
+    const promptsBefore = studyPrompts().length
+    await page.fill('#studyAskInput', 'What is second normal form?')
+    await page.press('#studyAskInput', 'Enter')
+    for (let i = 0; i < 300 && studyPrompts().length === promptsBefore; i += 1) await page.waitForTimeout(100) // the model has been asked
+    const used = studyPrompts().at(-1)
+    await page.click('button:has-text("End session")')
+    await page.waitForSelector('button:has-text("Start session")')
+    return /ABOUT THE PERSON/.test(used) && /I prefer short answers/.test(used)
+  })())
+  await page.click('[data-study-tab="memory"]')
+
   check('the API shows her course', ownRes.courses?.length === 1)
 
   // ============ B. a second person sees none of it ===============================================================

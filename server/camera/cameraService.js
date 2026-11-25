@@ -48,7 +48,7 @@ export const CAMERA_LIMITS = Object.freeze({
 
 const FIGURE_NOTE = 'This question refers to a figure or table that could not be seen, so the answer may be incomplete.'
 
-export function createCameraService({ vision, answerEngine, sessions, now = Date.now, logger = console, newId = randomUUID, limits = {} } = {}) {
+export function createCameraService({ vision, answerEngine, sessions, about = () => '', now = Date.now, logger = console, newId = randomUUID, limits = {} } = {}) {
   const cap = { ...CAMERA_LIMITS, ...limits }
   const active = new Map() // sessionId -> { id, createdAt, lastUsedAt, lastReadAt, reads, busy, known: [{questionId, identity}], questions: Map }
   let readsInFlight = 0
@@ -220,7 +220,7 @@ export function createCameraService({ vision, answerEngine, sessions, now = Date
 
   async function ask(entry, text, ctx = {}) {
     // A note about what could not be read no longer applies once the person has corrected the question.
-    const messages = buildAnswerMessages({ text, options: entry.options, type: entry.type, subject: entry.subject, readerNote: text === entry.text ? entry.note : '' })
+    const messages = buildAnswerMessages({ text, options: entry.options, type: entry.type, subject: entry.subject, readerNote: text === entry.text ? entry.note : '', about: about(ctx.identity?.ownerKey ?? null) })
     const seesFigure = entry.hasDiagram && entry.picture && typeof vision?.answer === 'function'
     const call = ctx.meter?.begin(ctx.identity, 'vision_answer', { requestId: ctx.requestId, conversationId: ctx.conversationId })
     let raw

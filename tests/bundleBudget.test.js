@@ -18,7 +18,7 @@ const KB = 1024
 const BUDGET = {
   indexScriptsRaw: 232 * KB, // was 220. 2026-11-24: answer blocks with copy icons, the live (streamed) answer and the parser of the event stream added 9 KB raw (3.3 KB gzipped, 3 KB Brotli, which stay inside their budgets); main was at 218.3 KB. Measure with `node scripts/smart-eval/size.mjs`.
   indexScriptsGzip: 80 * KB,
-  indexTotalBrotli: 80 * KB, // was 75. 2026-11-23: main had grown to 74.5 KB (Study panel, dock, Show in chat) before the long-answer fit added ~0.5 KB. Still far below the 1.74 MB it started from.
+  indexTotalBrotli: 82 * KB, // was 80 (and 75 before that). 2026-11-25: "What NUMZ remembers about you" in the Study panel's Memory tab, its API client and the time zone sent with each message added ~1.7 KB. (It was 75. 2026-11-23: main had grown to 74.5 KB (Study panel, dock, Show in chat) before the long-answer fit added ~0.5 KB. Still far below the 1.74 MB it started from.)
   historyTotalGzip: 20 * KB,
   cameraTotalGzip: 38 * KB // measured 25.2 KB: the shared stylesheet, the access gate, the markdown renderer and the camera code
 }

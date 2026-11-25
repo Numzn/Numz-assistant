@@ -26,3 +26,10 @@ test('everything else about a screenshot is still described as before, and what 
   assert.match(asked.content, /<question>\nWhat is the error\?\n<\/question>/)
   assert.match(buildFollowUpMessages({ question: 'And now?', earlier: 'It is a stack trace.' })[1].content, /earlier analysis/)
 })
+
+test('a note on the person is added to the system message when there is one, and nothing is added when there is not', () => {
+  const [plain] = buildAnalyzeMessages()
+  const [withNote] = buildAnalyzeMessages({ about: 'ABOUT THE PERSON (their own words: a hint):\n- I prefer short answers' })
+  assert.equal(withNote.content, `${plain.content}\n\nABOUT THE PERSON (their own words: a hint):\n- I prefer short answers`)
+  assert.equal(buildAnalyzeMessages({ about: '' })[0].content, plain.content)
+})

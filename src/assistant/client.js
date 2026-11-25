@@ -1,5 +1,6 @@
 import { createAssistantRealtimeClient } from './realtimeClient.js'
 import { withBase } from '../core/apiPaths.js'
+import { localTimeZone } from '../utils/timeZone.js'
 
 const BASE = withBase('/api/v1/assistant')
 
@@ -131,7 +132,7 @@ export function createAssistantClient() {
       const res = await fetch(sessionPath('/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, sessionId })
+        body: JSON.stringify({ message, sessionId, timeZone: localTimeZone() })
       })
       const data = await parseJson(res)
       if (!res.ok && isMissingSession(res, data)) {
@@ -181,7 +182,7 @@ export function createAssistantClient() {
       const res = await fetch(sessionPath('/chat/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, sessionId }),
+        body: JSON.stringify({ message, sessionId, timeZone: localTimeZone() }),
         signal
       })
 

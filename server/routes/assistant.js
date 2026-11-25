@@ -8,7 +8,7 @@ import {
 } from '../services/sttService.js'
 import { ASSISTANT_STATES, isValidAssistantState, sessionService } from '../sessions/sessionService.js'
 import { createSseStream } from '../transport/sse.js'
-import { createAssistantOrchestrator } from '../orchestrator/assistantOrchestrator.js'
+import { createAssistantOrchestrator, withKnowledge } from '../orchestrator/assistantOrchestrator.js'
 import { can, requireIdentity } from '../auth/identity.js'
 import { NO_METER } from '../usage/meter.js'
 import { abortOnClose } from '../http/abortOnClose.js'
@@ -126,7 +126,7 @@ async function handleChat(req, res, next) {
       const userMessage = { role: 'user', content: message.trim() }
       sessions.appendMessage(session.id, userMessage)
 
-      const messages = session.messages.map(({ role, content }) => ({ role, content }))
+      const messages = withKnowledge({ messages: session.messages.map(({ role, content }) => ({ role, content })), owner: identity.ownerKey, person: { name: identity.name, timeZone: req.body?.timeZone }, message })
       const reply = await generateResponse(messages, { signal: call.signal, onUsage: call.usage })
       call.estimate({ inText: messages.map((m) => m.content).join(''), outText: reply })
       sessions.appendMessage(session.id, { role: 'assistant', content: reply })
@@ -305,6 +305,7 @@ async function handleChatStream(req, res, next) {
       message,
       requestId: req.id,
       owner: identity.ownerKey,
+      person: { name: identity.name, timeZone: req.body?.timeZone },
       signal: call.signal,
       onUsage: call.usage,
       emit(eventType, data) {

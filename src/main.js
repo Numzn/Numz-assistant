@@ -19,6 +19,7 @@ import { createMeetingPanel } from './interfaces/meeting/meetingPanel.js'
 import { checkLiveSpeechSupport } from './interfaces/meeting/liveSupport.js'
 import { createChatController } from './interfaces/chat/chatController.js'
 import { createChatView } from './interfaces/chat/chatView.js'
+import { createAssistantMemoryApi } from './interfaces/assistant/memoryApi.js'
 import { createNativeCapture } from './interfaces/screenshot/nativeCapture.js'
 import { createScreenshotApi } from './interfaces/screenshot/screenshotApi.js'
 import { createScreenshotController } from './interfaces/screenshot/screenshotController.js'
@@ -392,6 +393,14 @@ chatView = createChatView({
     screenshotController?.removeById(shotId, assistantClient.getSessionId?.() ?? '').catch(() => chatView?.notify('The screenshot could not be deleted. Try again.'))
 })
 
+// What the assistant did about its memory of the person (remembered / forgotten) is shown as a short notice, so they can see that it really happened.
+eventBus.on?.('assistant:stream-event', ({ event, data } = {}) => {
+  if (event !== 'MEMORY') return
+  if (data?.action === 'remembered') chatView?.notify(`Remembered: ${String(data.text ?? '').slice(0, 120)}`)
+  else if (data?.action === 'forgotten') chatView?.notify(data.count === 1 ? 'Forgotten.' : `Forgotten (${data.count} things).`)
+  else if (data?.action === 'forget-all-needs-panel') chatView?.notify('To forget everything, open Study, then Memory, and press "Forget all of it".')
+})
+
 // ---- Screenshot Intelligence: pictures are taken by the desktop app's native layer; in a browser the button says so ----
 try {
   screenshotController = createScreenshotController({
@@ -432,6 +441,7 @@ try {
   const studyView = createStudyView({
     controller: studyController,
     api: academicApi,
+    remembered: createAssistantMemoryApi(),
     onOpen: () => studyController.refreshCourses(),
     // Where the dock covers the conversation (a narrow window) it is put away first, so the answer is on screen when it is found.
     onShowInChat: (ref) => {

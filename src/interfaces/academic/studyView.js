@@ -54,7 +54,7 @@ export function storedExclusions() {
   return { apps: words, titles: words }
 }
 
-export function createStudyView({ controller, api, doc = document, onOpen = () => {}, onShowInChat = null } = {}) {
+export function createStudyView({ controller, api, remembered = null, doc = document, onOpen = () => {}, onShowInChat = null } = {}) {
   const $ = (id) => doc.getElementById(id)
   const button = $('studyButton')
   const panel = $('studyPanel')
@@ -68,6 +68,8 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
   let materials = { courseId: '', documents: [], lectures: [], message: '', busy: false, uploading: false, limits: { maxDocumentBytes: 100 * 1024 * 1024, maxBatchFiles: 50 } }
   let pollTimer = null
   let memory = { data: null, message: '', busy: false, failed: false }
+  // what the assistant remembers about the person (said in conversation, or added here): seen, changed and forgotten here
+  let kept = { items: null, message: '', adding: '' }
   let askText = ''
   let correcting = false
 
@@ -413,6 +415,55 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     await loadMemory()
   }
 
+  // ---- what NUMZ remembers about you (the assistant's memory, across chat, voice, study, screenshots and the camera) ------------------------------
+
+  async function loadKept() {
+    if (!remembered) return
+    try {
+      kept.items = (await remembered.list()).memories
+      kept.message = ''
+    } catch (err) {
+      kept.items = kept.items ?? []
+      kept.message = err.message
+    }
+    render(true)
+  }
+
+  async function keptAction(work, done) {
+    try {
+      await work()
+      kept.message = done
+    } catch (err) {
+      kept.message = err.message
+    }
+    await loadKept()
+  }
+
+  function renderKept() {
+    if (!remembered) return null
+    if (kept.items === null) loadKept()
+    const items = kept.items ?? []
+    return h(
+      doc,
+      'section',
+      { class: 'study-lane', id: 'assistantMemory' },
+      h(doc, 'h3', { text: 'What NUMZ remembers about you' }),
+      h(doc, 'p', { class: 'study-note', text: 'Only what you asked it to remember (say "remember that…" in a chat or out loud) or add here. NUMZ uses it in chat, voice, study answers, screenshots and the camera. Forget any of it at any time.' }),
+      items.length
+        ? h(doc, 'ul', { class: 'study-docs' }, items.map((m) => h(doc, 'li', {}, h(doc, 'span', { text: `${m.text}` }), h(doc, 'button', { type: 'button', 'aria-label': `Forget: ${m.text}`, text: 'Forget', onclick: () => keptAction(() => remembered.remove(m.id), 'Forgotten.') }))))
+        : h(doc, 'p', { class: 'study-empty', text: kept.items === null ? 'Loading…' : 'Nothing yet.' }),
+      h(
+        doc,
+        'form',
+        { class: 'study-ask', onsubmit: (e) => { e.preventDefault(); const text = kept.adding.trim(); kept.adding = ''; if (text) keptAction(() => remembered.add(text), 'Remembered.'); else render(true) } },
+        h(doc, 'input', { id: 'assistantMemoryInput', type: 'text', maxlength: 400, placeholder: 'Add something for NUMZ to remember', value: kept.adding, oninput: (e) => (kept.adding = e.target.value) }),
+        h(doc, 'button', { type: 'submit', text: 'Remember' })
+      ),
+      items.length ? h(doc, 'button', { type: 'button', 'data-danger': 'true', text: 'Forget all of it', onclick: () => { if (globalThis.confirm?.('Forget everything NUMZ remembers about you?') !== false) keptAction(() => remembered.removeAll(), 'Everything was forgotten.') } }) : null,
+      kept.message ? h(doc, 'p', { class: 'study-note', role: 'status', text: kept.message }) : null
+    )
+  }
+
   function renderMemory() {
     if (!memory.data && !memory.busy && !memory.failed) loadMemory()
     const d = memory.data
@@ -484,7 +535,7 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
     for (const t of tabs) t.setAttribute('aria-selected', String(t.dataset.studyTab === tab))
     const active = doc.activeElement
     const keepFocus = active?.id === 'studyAskInput' ? { start: active.selectionStart, end: active.selectionEnd } : null
-    const view = tab === 'materials' ? renderMaterials(state) : tab === 'memory' ? renderMemory() : renderSession(state)
+    const view = tab === 'materials' ? renderMaterials(state) : tab === 'memory' ? h(doc, 'div', { class: 'study-memory-tab' }, renderKept(), renderMemory()) : renderSession(state)
     body.replaceChildren(h(doc, 'p', { class: 'study-message', role: 'status', 'aria-live': 'polite', 'data-tone': state.tone, text: tab === 'session' ? state.message : '' }), view)
     const input = keepFocus ? $('studyAskInput') : null
     if (input) {
@@ -500,7 +551,10 @@ export function createStudyView({ controller, api, doc = document, onOpen = () =
   for (const t of tabs) {
     t.addEventListener('click', () => {
       tab = t.dataset.studyTab
-      if (tab === 'memory') Object.assign(memory, { data: null, failed: false })
+      if (tab === 'memory') {
+        Object.assign(memory, { data: null, failed: false })
+        kept.items = null
+      }
       if (tab === 'materials') materials.courseId = ''
       render(true)
     })

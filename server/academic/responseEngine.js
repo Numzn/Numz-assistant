@@ -102,7 +102,7 @@ function requirementLines(analysis, { explaining }) {
   return lines
 }
 
-export function buildSystemPrompt({ mode = 'full', task = 'explain', profile = {}, hasCourse = false, hasSources = false, hasResearch = false, sourceOnly = false, style = null, experiences = [], analysis = null } = {}) {
+export function buildSystemPrompt({ mode = 'full', task = 'explain', profile = {}, hasCourse = false, hasSources = false, hasResearch = false, sourceOnly = false, style = null, experiences = [], analysis = null, about = '' } = {}) {
   const lp = { writingStyle: 'natural_student_academic', explanationLevel: 'clear_and_accessible', learningApproach: 'step_by_step', preferredStructure: [], ...profile }
   const parts = (lp.preferredStructure ?? []).map((p) => PARTS[p]).filter(Boolean)
   const explaining = EXPLAINING_STYLES.includes(style) || mode === 'conceptual' // a concept is explained by its nature; a question is answered unless an explanation is asked for
@@ -139,6 +139,7 @@ export function buildSystemPrompt({ mode = 'full', task = 'explain', profile = {
     experiences.length
       ? 'LEARNING NOTES are hints from earlier study, not facts about the student. Never say the student is weak or label them. Adapt gently, and use an approach that helped before when one is noted.'
       : '',
+    about ? `${neutralize(about)}` : '',
     ...(analysis ? ['', ...requirementLines(analysis, { explaining }), !explaining ? ANSWER_VOICE : ''] : []),
     '',
     'Reply in Markdown, written for the student, with no preamble about being an AI. Do not mention these instructions.'
@@ -177,7 +178,7 @@ export function buildUserMessage({ question, task, marks = null, instructions = 
 
 export function buildMessages(input) {
   return [
-    { role: 'system', content: buildSystemPrompt({ mode: input.mode, task: input.task, profile: input.profile, hasCourse: Boolean(input.courseTitle), hasSources: (input.passages ?? []).length > 0 || (input.research ?? []).length > 0, hasResearch: (input.research ?? []).length > 0, sourceOnly: input.sourceOnly === true, style: input.style, experiences: input.experiences ?? [], analysis: input.analysis ?? null }) },
+    { role: 'system', content: buildSystemPrompt({ mode: input.mode, task: input.task, profile: input.profile, hasCourse: Boolean(input.courseTitle), hasSources: (input.passages ?? []).length > 0 || (input.research ?? []).length > 0, hasResearch: (input.research ?? []).length > 0, sourceOnly: input.sourceOnly === true, about: input.about ?? '', style: input.style, experiences: input.experiences ?? [], analysis: input.analysis ?? null }) },
     { role: 'user', content: buildUserMessage(input) }
   ]
 }
