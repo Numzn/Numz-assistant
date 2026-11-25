@@ -550,7 +550,7 @@ test('migration 3 upgrades a version 2 database in place and keeps its data', ()
   applyMigrations(database)
   const sessions = createSpeechSessionRepository(database)
 
-  assert.deepEqual(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], 'every pending migration is applied, in order')
+  assert.deepEqual(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 'every pending migration is applied, in order')
   assert.ok(database.prepare('PRAGMA table_info(speech_sessions)').all().some((c) => c.name === 'committed_segments'))
   assert.equal(transcript.getByMeeting(meeting.meetingId)[0].text, 'kept across the upgrade')
   assert.equal(sessions.getById(legacySessionId).committedSegments, null, 'old sessions are unverified, not zero')

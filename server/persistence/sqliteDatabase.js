@@ -464,6 +464,27 @@ const MIGRATIONS = [
         );
       `)
     }
+  },
+  {
+    // What the assistant remembers about a person, across everything it does (chat, voice, study, screenshots, camera). One short fact per row, written
+    // by the person ("remember that ...") or confirmed by them, and always visible and deletable by them. owner_user_id is NULL for the single-tenant
+    // fallback (the shared access code), exactly as in assistant_conversations. Additive.
+    version: 12,
+    run(database) {
+      database.exec(`
+        CREATE TABLE assistant_memories (
+          id TEXT PRIMARY KEY,
+          owner_user_id TEXT REFERENCES ai_users(id) ON DELETE CASCADE,
+          text TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('fact', 'preference', 'goal', 'person', 'note')),
+          source TEXT NOT NULL CHECK (source IN ('said', 'added', 'assistant')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_used_at TEXT
+        );
+        CREATE INDEX idx_assistant_memories_owner ON assistant_memories (owner_user_id, updated_at DESC);
+      `)
+    }
   }
 ]
 
