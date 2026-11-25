@@ -118,6 +118,7 @@ export function attachSocketServer(httpServer, { path = '/api/v1/assistant/ws', 
           message,
           requestId: null,
           owner: identity.ownerKey,
+          person: { name: identity.name, timeZone: msg?.timeZone },
           signal: call.signal,
           onUsage: call.usage,
           emit(eventType, data) {
