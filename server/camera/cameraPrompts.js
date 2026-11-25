@@ -50,7 +50,7 @@ export function buildReadMessages() {
 
 const neutralize = (text) => String(text ?? '').replace(/<\/?\s*question\s*>/gi, '[question]')
 
-export function buildAnswerMessages({ text, options = [], type = '', subject = '', readerNote = '' } = {}) {
+export function buildAnswerMessages({ text, options = [], type = '', subject = '', readerNote = '', about = '' } = {}) {
   const choices = (Array.isArray(options) ? options : []).map((option, i) => `${neutralize(option?.label) || String.fromCharCode(65 + i)}) ${neutralize(option?.text)}`)
   const body = [neutralize(text), ...choices].join('\n')
   // What the reader said it could not read (a covered option, a glare patch). Without this a partly read question would be
@@ -58,7 +58,7 @@ export function buildAnswerMessages({ text, options = [], type = '', subject = '
   const note = neutralize(readerNote).replace(/\s+/g, ' ').trim()
   const hints = [type && `Type: ${neutralize(type)}`, subject && `Subject: ${neutralize(subject)}`, note && `The text was read from a photograph and the reader noted: ${note}`].filter(Boolean).join('. ')
   return [
-    { role: 'system', content: ANSWER_SYSTEM_PROMPT },
+    { role: 'system', content: about ? `${ANSWER_SYSTEM_PROMPT}\n\n${String(about).slice(0, 800)}` : ANSWER_SYSTEM_PROMPT },
     { role: 'user', content: `<question>\n${body}\n</question>${hints ? `\n${hints}.` : ''}` }
   ]
 }

@@ -70,7 +70,7 @@ export function looksLikeQuestion(text) {
   return words > 12 || t.length > 120 || /^\s*[A-Da-d][).]\s+\S/m.test(t) || /\n/.test(t) || (/\?\s*$/.test(t) && words > 8) || /\b(calculate|solve|work out)\b.*\d/i.test(t)
 }
 
-export function createAnswerService({ generate, stream = null, knowledgeService, lanes, sessionManager, researchService = null, conversations, courses, now = Date.now, newId = randomUUID, audit = () => {}, logger = console }) {
+export function createAnswerService({ generate, stream = null, about = () => '', knowledgeService, lanes, sessionManager, researchService = null, conversations, courses, now = Date.now, newId = randomUUID, audit = () => {}, logger = console }) {
   if (typeof generate !== 'function') throw new Error('a model call is required')
 
   function forOwner(userId) {
@@ -123,7 +123,7 @@ export function createAnswerService({ generate, stream = null, knowledgeService,
       // "Use only my notes", said in the note to the answer or in the question itself, means no general knowledge to fill a gap.
       const sourceOnly = detectSourceOnly(instruction, entry.text)
       const sourcesText = [...retrieval.passages.map((p) => p.text), ...works.map((w) => `${w.title ?? ''} ${w.abstract ?? ''} ${(w.authors ?? []).join(' ')} ${w.year ?? ''}`)].join(' ')
-      const messages = buildMessages({ mode, task: analysis.task, analysis, sourceOnly, question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote, related })
+      const messages = buildMessages({ mode, task: analysis.task, analysis, sourceOnly, about: mode === 'conceptual' ? '' : about(userId), question: entry, marks: entry.marks, instructions: entry.instructions, courseTitle, topic, passages: retrieval.passages, research: works, crossCourseReason: retrieval.reason, instruction, experiences, profile, style, figureNote, related })
       const partKeys = analysis.parts.map((p) => p.key)
       const labels = partKeys.length >= 2 ? analysis.parts.map((p) => ({ key: p.key, label: answerLabel(p.key) })) : [{ key: analysis.ownLabel, label: answerLabel(analysis.ownLabel) }]
       const timings = { lookup: Math.round(performance.now() - t0) }

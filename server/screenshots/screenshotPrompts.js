@@ -67,13 +67,13 @@ function fenced(question) {
 }
 
 /** The first look at a screenshot: explain it, or answer the person's question about it. */
-export function buildAnalyzeMessages({ question = '' } = {}) {
+export function buildAnalyzeMessages({ question = '', about = '' } = {}) {
   const asked = fenced(question)
   const user = asked
     ? `Here is my screenshot. Answer my question about it, and add anything else on the screen that I clearly need to know.\n\n${asked}`
     : 'Here is my screenshot. If it shows a question or task to answer, answer it. Otherwise explain it: what it shows, any text that matters, and anything that looks wrong or needs attention.'
   return [
-    { role: 'system', content: SYSTEM },
+    { role: 'system', content: about ? `${SYSTEM}\n\n${String(about).slice(0, 800)}` : SYSTEM },
     { role: 'user', content: user }
   ]
 }

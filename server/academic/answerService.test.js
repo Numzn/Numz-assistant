@@ -616,3 +616,14 @@ test('the answer box is clean: what the model says about the sources is taken ou
   assert.equal(none.parts[0].markdown, 'Normalisation removes repeated data.')
   assert.match(none.markdown, /\*\*Note\*\*\nNot from your notes: answered from general knowledge\./)
 })
+
+test('what the person said about how they like things reaches the study answer, as a hint under the rules; a restricted session gets none', async () => {
+  const t = setup()
+  const answers = createAnswerService({ generate: async (messages) => (t.calls.push({ messages }), 'A table is in 3NF when every attribute depends on the key.'), about: (owner) => (owner === t.who.alice ? 'ABOUT THE PERSON (their own words: a hint):\n- I prefer short answers' : ''), knowledgeService: createKnowledgeService({ knowledge: t.knowledge }), lanes: t.lanes, sessionManager: t.sessions, conversations: t.conversations, courses: (u) => t.academic.forOwner(u).courses, now: () => t.clock.t, audit: t.audit, logger: quiet })
+  const s = startStudy(t)
+  await answers.forOwner(t.who.alice).answer({ sessionId: s.id, text: 'What is third normal form?' }, t.ctx)
+  assert.match(t.calls[0].messages[0].content, /ABOUT THE PERSON \(their own words: a hint\):\n- I prefer short answers/)
+  const restricted = t.aliceSessions.start({ type: 'restricted', courseId: t.course.id })
+  await answers.forOwner(t.who.alice).explainConcept({ sessionId: restricted.id, concept: 'third normal form' }, t.ctx)
+  assert.doesNotMatch(t.calls.at(-1).messages[0].content, /I prefer short answers/)
+})

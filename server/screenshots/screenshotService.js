@@ -76,7 +76,7 @@ function describeFailure(err) {
   return { code: 'vision-unreachable', message: 'The vision service could not be reached. Check the connection and try again.', retryable: true }
 }
 
-export function createScreenshotService({ vision, sessions, now = Date.now, logger = console, newId = randomUUID, limits = {} } = {}) {
+export function createScreenshotService({ vision, sessions, about = () => '', now = Date.now, logger = console, newId = randomUUID, limits = {} } = {}) {
   const cap = { ...SCREENSHOT_LIMITS, ...limits }
   const items = new Map() // `${owner}\0${id}` -> item (an id is only ever looked up inside its owner's own space)
   const keyOf = (owner, id) => `${owner}\u0000${id}`
@@ -170,7 +170,7 @@ export function createScreenshotService({ vision, sessions, now = Date.now, logg
 
   /** Starts (or restarts) the background analysis of an item. The person's limits are checked here, before anything is sent. */
   function start(item, ctx) {
-    const { call, run } = callVision('vision_read', { messages: buildAnalyzeMessages({ question: item.question }), image: { bytes: item.picture.bytes, mimeType: item.picture.mimeType } }, ctx, item.conversationId)
+    const { call, run } = callVision('vision_read', { messages: buildAnalyzeMessages({ question: item.question, about: about(item.owner ?? ownerOf(ctx)) }), image: { bytes: item.picture.bytes, mimeType: item.picture.mimeType } }, ctx, item.conversationId)
     const controller = new AbortController()
     item.status = 'analyzing'
     item.error = null

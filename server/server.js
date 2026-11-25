@@ -8,6 +8,10 @@ import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import { assistantRouter } from './routes/assistant.js'
+import { createMemoryRouter } from './routes/assistantMemory.js'
+import { createMemoryRepository } from './persistence/memoryRepository.js'
+import { createContextService } from './assistant/contextService.js'
+import { assistantContext } from './assistant/assistantContext.js'
 import { createCameraRouter } from './routes/camera.js'
 import { createScreenshotRouter } from './routes/screenshots.js'
 import { createAcademicRouter } from './routes/academic.js'
@@ -43,7 +47,7 @@ import { createMeetingRepository } from './persistence/meetingRepository.js'
 import { createSpeechSessionRepository } from './persistence/speechSessionRepository.js'
 import { createTranscriptRepository } from './persistence/transcriptRepository.js'
 import { createConversationRepository } from './persistence/conversationRepository.js'
-import { sessionService } from './sessions/sessionService.js'
+import { LEGACY_OWNER, sessionService } from './sessions/sessionService.js'
 import { createMeetingSessionService } from './services/meetingSessionService.js'
 import { createMeetingAuth } from './auth/meetingAuth.js'
 import { createAssistantAuth } from './auth/assistantAuth.js'
@@ -205,8 +209,17 @@ logMeetingsConfig({ auth: meetingAuth })
 // but says it cannot read pictures. Each answered question is saved as an ordinary conversation (see cameraService.js).
 const cameraVision = createVisionFromEnv(process.env)
 console.log(describeVision(cameraVision))
+/** A short note on the person (how they like things, what they work towards) for the functions that answer them; looked up when used. */
+function aboutThePerson(owner) {
+  try {
+    return assistantContextService.about(!owner || owner === LEGACY_OWNER ? null : owner)
+  } catch {
+    return ''
+  }
+}
 const cameraService = createCameraService({
   vision: cameraVision,
+  about: aboutThePerson,
   answerEngine: async (messages, opts) => {
     requireAi()
     return generateResponse(messages, opts)
@@ -218,7 +231,7 @@ console.log(`[camera] up to ${cameraService.limits.maxReads} pictures are read p
 setInterval(() => cameraService.sweep(), 30_000).unref()
 // Screenshot Intelligence (the desktop app's screenshots) uses the SAME vision provider as the camera and the same conversations:
 // an analysis is saved as ordinary messages marked with the screenshot's id; the picture itself is held in memory for a few minutes.
-const screenshotService = createScreenshotService({ vision: cameraVision, sessions: sessionService })
+const screenshotService = createScreenshotService({ vision: cameraVision, sessions: sessionService, about: aboutThePerson })
 setInterval(() => screenshotService.sweep(), 30_000).unref()
 // Academic Intelligence: a person's courses, study sessions and learning memory (docs/academic-intelligence.md). The memory lanes are one
 // facade over the stores that already exist; nothing here is a second assistant. No live session survives a restart.
@@ -238,9 +251,39 @@ const sessionManager = createSessionManager({ academic: academicRepo, audit: aud
 const researchService = ['off', '0', 'false', 'no'].includes(String(process.env.ACADEMIC_RESEARCH ?? 'on').trim().toLowerCase()) ? null : createResearchService({})
 const captureService = createCaptureService({ vision: cameraVision, sessionManager, courses: (userId) => academicRepo.forOwner(userId).courses })
 const memoryLanes = createMemoryLaneManager({ academic: academicRepo, knowledge: knowledgeRepo, conversations: sessionService, sessionManager, audit: auditAcademic })
+
+// What the assistant remembers about a person, and what it knows of their day, goes in front of every conversation turn (see
+// server/assistant/contextService.js). Each source below answers for ONE owner and returns a short summary; a person with no sign-in (the shared
+// access code) has no meetings or study of their own, only the shared memory.
+const assistantMemories = createMemoryRepository(speechDatabase)
+const clip = (text, head, tail) => (text.length <= head + tail ? text : `${text.slice(0, head)} [...] ${text.slice(-tail)}`)
+const assistantContextService = createContextService({
+  memories: assistantMemories,
+  sources: {
+    meetings: (owner) => (owner ? meetingService.listMeetingsOwnedBy(owner, { limit: 4 }).map((m) => ({ title: m.metadata?.title ?? null, createdAt: m.createdAt, endedAt: m.endedAt, status: m.status })) : null),
+    meetingExcerpt: (owner) => {
+      const latest = owner ? meetingService.listMeetingsOwnedBy(owner, { limit: 10 }).find((m) => m.status === 'COMPLETED') : null
+      if (!latest) return null
+      const text = meetingService.getTranscript(latest.meetingId).map((segment) => segment.text).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+      return text ? { title: latest.metadata?.title ?? null, text: clip(text, 800, 1200) } : null
+    },
+    study: (owner) => {
+      if (!owner) return null
+      const mine = academicRepo.forOwner(owner)
+      const courses = mine.courses.list()
+      const open = mine.sessions.current()
+      const review = memoryLanes.forOwner(owner).progress().suggestedReview.map((r) => r.topic)
+      return { courses: courses.map((c) => c.title), current: open ? { type: open.sessionType, course: courses.find((c) => c.id === open.courseId)?.title ?? null, topic: open.activeTopic ?? null } : null, review }
+    },
+    conversations: (owner) => sessionService.forOwner(owner ?? LEGACY_OWNER).getHistory()?.list({ limit: 4 })?.conversations?.filter((c) => c.title).map((c) => ({ title: c.title })) ?? null
+  }
+})
+assistantContext.use({ memories: assistantMemories, context: assistantContextService })
+
 setInterval(() => academicRepo.maintain({ retentionDays: Number.parseInt(process.env.ACADEMIC_SESSION_RETENTION_DAYS ?? '14', 10) || 14 }), 10 * 60_000).unref()
 setInterval(() => sessionManager.sweep(), 60_000).unref()
 const answerService = createAnswerService({
+  about: aboutThePerson,
   generate: async (messages, opts) => {
     requireAi()
     return generateResponse(messages, opts)
@@ -365,6 +408,7 @@ function createApp() {
         (router, helpers) => addSessionRoutes(router, helpers, { sessionManager, captureService }),
         (router, helpers) => addAnswerRoutes(router, helpers, { answerService, researchService, knowledge: knowledgeRepo })
       ] }))
+  app.use('/api/v1/assistant/memory', access.requireSession('chat'), createMemoryRouter({ memories: assistantMemories, audit: auditAcademic }))
   app.use('/api/v1/assistant', access.requireSession('chat'), assistantRouter)
   app.use(
     '/api/v1/admin',
