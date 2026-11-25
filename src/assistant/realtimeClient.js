@@ -1,5 +1,6 @@
 import { safeJsonParse } from '../utils/json.js'
 import { withBase } from '../core/apiPaths.js'
+import { localTimeZone } from '../utils/timeZone.js'
 
 /**
  * Minimal WS streaming client.
@@ -116,6 +117,11 @@ export function createAssistantRealtimeClient({
         return
       }
 
+      if (type === 'MEMORY') {
+        onEvent?.({ event: 'MEMORY', data: msg })
+        return
+      }
+
       if (type === 'STATE') {
         bridged.add('state')
         onEvent?.({ event: 'state', data: { state: msg.state, sessionId: msg.sessionId ?? sessionId } })
@@ -145,7 +151,7 @@ export function createAssistantRealtimeClient({
       else signal.addEventListener('abort', abortHandler, { once: true })
     }
 
-    socket.send(JSON.stringify({ type: 'chat', sessionId, message }))
+    socket.send(JSON.stringify({ type: 'chat', sessionId, message, timeZone: localTimeZone() }))
 
     // Wait until we get a final message, or the stream ends.
     // Note: server currently doesn't emit a dedicated "done" for WS, but it may.
